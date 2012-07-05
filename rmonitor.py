@@ -17,6 +17,33 @@ class RaceTimeReceiver(LineOnlyReceiver):
     def lineReceived(self, data):
         # Process the line you're receiving here...
         print "Line received %s" % data
+        # Strip the carriage return and split it on commas
+        data = data.strip("\r")
+        data = data.split(',')
+        print data
+        # Decide what command has been issued. See AMB documentation
+        command = data[0]
+        if command == "$F":
+                print "Heartbeat @ " + data[3]
+        elif command == "$COMP":
+                print "Competitor information"
+        elif command == "$A":
+                print "Competitor information"
+        elif command == "$B":
+                print "Run information"
+        elif command == "$C":
+                print "Class information"
+        elif command == "$E":
+                print "Setting information"
+        elif command == "$G":
+                print "Race information"
+        elif command == "$H":
+                print "Practice/Qualifying information"
+        elif command == "$I":
+                print "Init record"
+        elif command == "$J":
+                print "Passing information"
+
 
 
 class RaceTimeClientFactory(ReconnectingClientFactory):
