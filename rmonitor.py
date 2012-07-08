@@ -42,8 +42,9 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 # print "Practice/Qualifying information : "  + str(data)
         elif command == "$I":
                 print "Init record"
-        #elif command == "$J":
-                # print "Passing information : "  + str(data)
+        elif command == "$J":
+		# Registration, lap time, Total time
+                print "Passing information : "  + str(data)
 
 
 
