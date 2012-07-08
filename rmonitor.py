@@ -15,8 +15,7 @@ from twisted.internet import reactor
 height = 10
 width = 8
 competitors = [[0 for _ in xrange(height)] for _ in xrange(width)]
-# competitors = [['Transponder', 'Registration', 'Position', 'First Name', 'Second name', 'Last lap time', 'Best lap time', 'Best lap']]
-
+# competitors = [['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']]
 
 class RaceTimeReceiver(LineOnlyReceiver):
     delimiter = "\n"
@@ -35,11 +34,11 @@ class RaceTimeReceiver(LineOnlyReceiver):
         if command == "$A":
                 # $A always comes before $COMP, and $A carries the transponder number
                 print "Competitor information : " + str(data)
-		x = 1 # This will become the row number for the competitor that we're updating.
-		competitors[x][0] = data[0] # Transponder
+		x = 0 # This will become the row number for the competitor that we're updating.
+		competitors[x][0] = data[3] # Transponder
 		competitors[x][1] = data[1] # Number
-		competitors[x][3] = data[3] # first name
-		competitors[x][4] = data[4] # Second name
+		competitors[x][2] = data[4] # first name
+		competitors[x][3] = data[5] # Second name
 		print competitors
         elif command == "$COMP":
                 print "Competitor information : " + str(data)
@@ -58,8 +57,6 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$J":
 		# Registration, lap time, Total time
                 print "Passing information : "  + str(data)
-
-
 
 class RaceTimeClientFactory(ReconnectingClientFactory):
 
