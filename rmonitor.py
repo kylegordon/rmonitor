@@ -10,6 +10,8 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.internet import reactor
 
+competitors = ['Transponder', 'Registration', 'Position', 'First Name', 'Second name', 'Last lap time', 'Best lap time', 'Best lap']
+
 
 class RaceTimeReceiver(LineOnlyReceiver):
     delimiter = "\n"
@@ -27,6 +29,9 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 # print "Heartbeat @ " + data[3]
         if command == "$COMP":
                 print "Competitor information : " + str(data)
+		if not competitors:
+			competitors = [data]
+		competitors = competitors + [data]
         elif command == "$A":
 		# $A always comes before $COMP, and $A carries the transponder number
                 print "Competitor information : " + str(data)
