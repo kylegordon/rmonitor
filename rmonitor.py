@@ -10,7 +10,12 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.internet import reactor
 
-competitors = ['Transponder', 'Registration', 'Position', 'First Name', 'Second name', 'Last lap time', 'Best lap time', 'Best lap']
+#Initialize a 2D array
+
+height = 10
+width = 8
+competitors = [[0 for _ in xrange(height)] for _ in xrange(width)]
+# competitors = [['Transponder', 'Registration', 'Position', 'First Name', 'Second name', 'Last lap time', 'Best lap time', 'Best lap']]
 
 
 class RaceTimeReceiver(LineOnlyReceiver):
@@ -27,13 +32,16 @@ class RaceTimeReceiver(LineOnlyReceiver):
         command = data[0]
         #if command == "$F":
                 # print "Heartbeat @ " + data[3]
-        if command == "$COMP":
+        if command == "$A":
+                # $A always comes before $COMP, and $A carries the transponder number
                 print "Competitor information : " + str(data)
-		if not competitors:
-			competitors = [data]
-		competitors = competitors + [data]
-        elif command == "$A":
-		# $A always comes before $COMP, and $A carries the transponder number
+		x = 1 # This will become the row number for the competitor that we're updating.
+		competitors[x][0] = data[0] # Transponder
+		competitors[x][1] = data[1] # Number
+		competitors[x][3] = data[3] # first name
+		competitors[x][4] = data[4] # Second name
+		print competitors
+        elif command == "$COMP":
                 print "Competitor information : " + str(data)
         elif command == "$B":
                 print "Run information"
