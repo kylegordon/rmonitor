@@ -16,33 +16,34 @@ class RaceTimeReceiver(LineOnlyReceiver):
 
     def lineReceived(self, data):
         # Process the line you're receiving here...
-        print "Line received %s" % data
+        ## print "Line received %s" % data
         # Strip the carriage return and split it on commas
         data = data.strip("\r")
         data = data.split(',')
-        print data
+        #print data
         # Decide what command has been issued. See AMB documentation
         command = data[0]
-        if command == "$F":
-                print "Heartbeat @ " + data[3]
-        elif command == "$COMP":
-                print "Competitor information"
+        #if command == "$F":
+                # print "Heartbeat @ " + data[3]
+        if command == "$COMP":
+                print "Competitor information : " + str(data)
         elif command == "$A":
-                print "Competitor information"
+		# $A always comes before $COMP, and $A carries the transponder number
+                print "Competitor information : " + str(data)
         elif command == "$B":
                 print "Run information"
         elif command == "$C":
-                print "Class information"
+                print "Class information : " + str(data)
         elif command == "$E":
-                print "Setting information"
+                print "Setting information : " + str(data)
         elif command == "$G":
-                print "Race information"
-        elif command == "$H":
-                print "Practice/Qualifying information"
+                print "Race information : " + str(data)
+        #elif command == "$H":
+                # print "Practice/Qualifying information : "  + str(data)
         elif command == "$I":
                 print "Init record"
-        elif command == "$J":
-                print "Passing information"
+        #elif command == "$J":
+                # print "Passing information : "  + str(data)
 
 
 
@@ -64,5 +65,5 @@ class RaceTimeClientFactory(ReconnectingClientFactory):
                                                          reason)
 if __name__ == "__main__":
     factory = RaceTimeClientFactory()
-    reactor.connectTCP("localhost", 50000, factory)
+    reactor.connectTCP("192.168.10.27", 50000, factory)
     reactor.run()
