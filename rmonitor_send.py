@@ -10,7 +10,7 @@ s.bind((HOST, PORT))
 s.listen(1)
 conn, addr = s.accept()
 
-f=open('examples/2009 Sebring Test Lites Session 4 - 1010-1200.txt')
+f=open('examples/sample.txt')
 
 print 'Connection from ', addr
 
