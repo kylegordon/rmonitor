@@ -37,5 +37,5 @@ class RaceTimeClientFactory(ReconnectingClientFactory):
                                                          reason)
 if __name__ == "__main__":
     factory = RaceTimeClientFactory()
-    reactor.connectTCP("192.168.11.254", 5555, factory)
+    reactor.connectTCP("localhost", 50000, factory)
     reactor.run()
