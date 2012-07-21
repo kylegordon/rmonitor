@@ -84,7 +84,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$E":
                 print "Setting information : " + str(data)
         elif command == "$G":
-                print "Race information : " + str(data)
+                print "Race positions information : " + str(data)
         #elif command == "$H":
                 # print "Practice/Qualifying information : "  + str(data)
         elif command == "$I":
@@ -92,7 +92,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$J":
 		# Registration, lap time, Total time
                 print "Passing information : "  + str(data)
-		# Find the competitor by number
+		# Find the competitor by entry number
 		result = search_nested(competitors, data[1])
 		print "Found competitor entry : " + str(result)
 
