@@ -1,6 +1,6 @@
 [global]
 debug = 1
-logfile = /var/log/cartracker.log
+logfile = /var/log/rmonitor.log
 hostname = 192.168.10.24
 port = 50000
 
