@@ -1,0 +1,10 @@
+[global]
+debug = 1
+logfile = /var/log/cartracker.log
+hostname = 192.168.10.24
+port = 50000
+
+[twitter]
+user = twitteraccount
+pass = twitterpassword
+
