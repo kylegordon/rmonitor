@@ -10,6 +10,18 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.internet import reactor
 
+import ConfigParser
+
+# Read the config file
+config = ConfigParser.RawConfigParser()
+config.read('rmonitor.cfg')
+debug = config.getboolean('global', 'debug')
+
+LOGFILE = config.get('global', 'logfile')
+hostname = config.get('global', 'hostname')
+port = config.getint('global', 'port')
+
+
 #Initialize a 2D array
 
 #height = 10
@@ -84,5 +96,5 @@ class RaceTimeClientFactory(ReconnectingClientFactory):
                                                          reason)
 if __name__ == "__main__":
     factory = RaceTimeClientFactory()
-    reactor.connectTCP("localhost", 50000, factory)
+    reactor.connectTCP(hostname, port, factory)
     reactor.run()
