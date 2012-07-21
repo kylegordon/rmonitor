@@ -30,8 +30,27 @@ port = config.getint('global', 'port')
 competitors = []
 # competitors = [['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']]
 
+def search_nested(mylist, val):
+    """ 
+    This function will search each cell of mylist for val and
+    if found will return the entire row
+    """
+    #loops i from 0 to the length of mylist (num of rows)
+    for i in range(len(mylist)):
+        #loops j from 0 to num of cols in each row
+        for j in range(len(mylist[i])):
+                #print i, j # my own debugging commented out
+                #compare each cell to search value
+                if mylist[i][j] == val:
+                        #if found, return entire row that the value was found in
+                        return mylist[i]
+    #if value not found, return a string instead
+    return str(val) + ' not found'
+
+
 class RaceTimeReceiver(LineOnlyReceiver):
     delimiter = "\n"
+
 
     def lineReceived(self, data):
     	competitor = []
@@ -40,6 +59,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
         # Strip the carriage return and split it on commas
         data = data.strip("\r")
         data = data.split(',')
+	data = map(lambda foo: foo.replace('"', ''), data)
         #print data
         # Decide what command has been issued. See AMB documentation
         command = data[0]
@@ -72,6 +92,10 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$J":
 		# Registration, lap time, Total time
                 print "Passing information : "  + str(data)
+		# Find the competitor by number
+		result = search_nested(competitors, data[1])
+		print "Found competitor entry : " + str(result)
+
 		
 	## Append to the big array of doom here
 	# Check that competitor isn't empty
