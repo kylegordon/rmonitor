@@ -47,12 +47,14 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 # print "Heartbeat @ " + data[3]
         if command == "$A":
                 # $A always comes before $COMP, and $A carries the transponder number
-                print "Competitor information : " + str(data)
+                # print "Competitor information : " + str(data)
 		competitor.append(data[3]) # Transponder
 		competitor.append(data[1]) # Number
 		competitor.append(data[4]) # first name
 		competitor.append(data[5]) # Second name
-		print competitor
+		# print competitor
+		competitors.append(competitor)
+		print competitors
         elif command == "$COMP":
                 print "Competitor information : " + str(data)
         elif command == "$B":
