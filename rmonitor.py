@@ -28,7 +28,6 @@ port = config.getint('global', 'port')
 #width = 8
 #competitors = [[0 for _ in xrange(height)] for _ in xrange(width)]
 competitors = []
-# competitors = [['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']]
 
 def search_nested(mylist, val):
     """ 
@@ -42,8 +41,8 @@ def search_nested(mylist, val):
                 #print i, j # my own debugging commented out
                 #compare each cell to search value
                 if mylist[i][j] == val:
-                        #if found, return entire row that the value was found in
-                        return mylist[i]
+                        #if found, return entire row that the value was found in and the row number
+                        return mylist[i], i
     #if value not found, return a string instead
     return str(val) + ' not found'
 
@@ -53,7 +52,9 @@ class RaceTimeReceiver(LineOnlyReceiver):
 
 
     def lineReceived(self, data):
-    	competitor = []
+	# Blank/create the individual array
+	# competitor = ['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']
+    	competitor = [0,0,0,0,0,0,0,0]
         # Process the line you're receiving here...
         ## print "Line received %s" % data
         # Strip the carriage return and split it on commas
@@ -68,10 +69,14 @@ class RaceTimeReceiver(LineOnlyReceiver):
         if command == "$A":
                 # $A always comes before $COMP, and $A carries the transponder number
                 # print "Competitor information : " + str(data)
-		competitor.append(data[3]) # Transponder
-		competitor.append(data[1]) # Number
-		competitor.append(data[4]) # first name
-		competitor.append(data[5]) # Second name
+		#competitor.append(data[3]) # Transponder
+		#competitor.append(data[1]) # Number
+		#competitor.append(data[4]) # first name
+		#competitor.append(data[5]) # Second name
+                competitor[0] = data[3] # Transponder
+                competitor[1] = data[1] # Number
+                competitor[2] = data[4] # first name
+                competitor[3] = data[5] # Second name
 		# print competitor
 		competitors.append(competitor)
 		print competitors
@@ -94,8 +99,10 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 print "Passing information : "  + str(data)
 		# Find the competitor by entry number
 		result = search_nested(competitors, data[1])
-		print "Found competitor entry : " + str(result)
-
+		resultdata = result[0]
+		resultindex = result[1]
+		print "Found competitors entry : " + str(resultdata) + " at index " + str(resultindex)
+		competitors[resultindex][5] = data[2] # Last lap time
 		
 	## Append to the big array of doom here
 	# Check that competitor isn't empty
