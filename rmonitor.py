@@ -88,8 +88,9 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$E":
                 print "Setting information : " + str(data)
         elif command == "$G":
+		# Position, Registration, Laps, Time
 		# There's a dump of $Gs upon connecting. 
-                print "Race positions information : " + str(data)
+                # print "Positions information : " + str(data)
                 # Find the competitor by entry number
                 result = search_nested(competitors, data[2])
 		if not "not found" in result:
@@ -97,14 +98,13 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 	resultindex = result[1]
         	        competitors[resultindex][4] = data[1] # Position
 		else: print "Couldn't find competitor to update"
-
         #elif command == "$H":
                 # print "Practice/Qualifying information : "  + str(data)
         elif command == "$I":
                 print "Init record"
         elif command == "$J":
-		# Registration, lap time, Total time
-                print "Passing information : "  + str(data)
+		# Registration, last lap time, total time
+                # print "Passing information : "  + str(data)
 		# Find the competitor by entry number
 		result = search_nested(competitors, data[1])
 		resultdata = result[0]
@@ -114,10 +114,10 @@ class RaceTimeReceiver(LineOnlyReceiver):
 		competitors[resultindex][5] = data[2] # Last lap time
 
 	## Grab the old record. If it's for the same competitor it's been a lap or posiiton update. Tweet appropriately
-	if resultindex and (competitors[resultindex] != old): 
+	if resultindex and (competitors[resultindex][1] != old): 
 		# print competitors[resultindex]
 		print "Entrant " + str(competitors[resultindex][1]) + " in position " + str(competitors[resultindex][4]) + " with lap time " + str(competitors[resultindex][5])
-		old = competitors[resultindex]
+		old = competitors[resultindex][1]
 
 	## Call something to do something
 
