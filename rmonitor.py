@@ -50,7 +50,6 @@ def search_nested(mylist, val):
 class RaceTimeReceiver(LineOnlyReceiver):
     delimiter = "\n"
 
-
     def lineReceived(self, data):
 	# Blank/create the individual array
 	# competitor = ['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']
@@ -99,8 +98,8 @@ class RaceTimeReceiver(LineOnlyReceiver):
 		if not "not found" in result:
 			resultdata = result[0]
                 	resultindex = result[1]
-	                # print "Updating position : " + str(resultdata) + " at index " + str(resultindex)
         	        competitors[resultindex][4] = data[1] # Position
+		else: print "Couldn't find competitor to update"
 
         #elif command == "$H":
                 # print "Practice/Qualifying information : "  + str(data)
@@ -118,14 +117,6 @@ class RaceTimeReceiver(LineOnlyReceiver):
 		competitors[resultindex][5] = data[2] # Last lap time
 		#print competitors[resultindex]
 
-	if resultindex: print "Entrant No. " + competitors[resultindex][1] + " in position " + competitors[resultindex][4]
-
-		
-	## Append to the big array of doom here
-	# Check that competitor isn't empty
-	#if competitor.length:
-	#	competitors.append(competitor)
-	
 	## Call something to do something
 
 class RaceTimeClientFactory(ReconnectingClientFactory):
