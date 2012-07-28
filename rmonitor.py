@@ -116,7 +116,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
 	## Grab the old record. If it's for the same competitor it's been a lap or posiiton update. Tweet appropriately
 	if resultindex and (competitors[resultindex] != old): 
 		# print competitors[resultindex]
-		print "Entrant " + str(competitors[resultindex][1]) + " on lap " + str(competitors[resultindex][4]) + " with lap time " + str(competitors[resultindex][5])
+		print "Entrant " + str(competitors[resultindex][1]) + " in position " + str(competitors[resultindex][4]) + " with lap time " + str(competitors[resultindex][5])
 		old = competitors[resultindex]
 
 	## Call something to do something
