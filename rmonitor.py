@@ -28,6 +28,7 @@ port = config.getint('global', 'port')
 #width = 8
 #competitors = [[0 for _ in xrange(height)] for _ in xrange(width)]
 competitors = []
+old = [0,0,0,0,0,0,0,0]
 
 def search_nested(mylist, val):
     """ 
@@ -55,6 +56,8 @@ class RaceTimeReceiver(LineOnlyReceiver):
 	# competitor = ['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']
     	competitor = [0,0,0,0,0,0,0,0]
 	
+	global old 
+
 	resultindex = ''
 
         # Process the line you're receiving here...
@@ -71,17 +74,11 @@ class RaceTimeReceiver(LineOnlyReceiver):
         if command == "$A":
                 # $A always comes before $COMP, and $A carries the transponder number
                 # print "Competitor information : " + str(data)
-		#competitor.append(data[3]) # Transponder
-		#competitor.append(data[1]) # Number
-		#competitor.append(data[4]) # first name
-		#competitor.append(data[5]) # Second name
                 competitor[0] = data[3] # Transponder
                 competitor[1] = data[1] # Number
                 competitor[2] = data[4] # first name
                 competitor[3] = data[5] # Second name
-		# print competitor
 		competitors.append(competitor)
-		#print competitors
         elif command == "$COMP":
                 print "Competitor information : " + str(data)
         elif command == "$B":
@@ -92,7 +89,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 print "Setting information : " + str(data)
         elif command == "$G":
 		# There's a dump of $Gs upon connecting. 
-                # print "Race positions information : " + str(data)
+                print "Race positions information : " + str(data)
                 # Find the competitor by entry number
                 result = search_nested(competitors, data[2])
 		if not "not found" in result:
@@ -107,7 +104,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 print "Init record"
         elif command == "$J":
 		# Registration, lap time, Total time
-                # print "Passing information : "  + str(data)
+                print "Passing information : "  + str(data)
 		# Find the competitor by entry number
 		result = search_nested(competitors, data[1])
 		resultdata = result[0]
@@ -115,7 +112,12 @@ class RaceTimeReceiver(LineOnlyReceiver):
 		## FIXME Don't update if lap time is 00:00:00.000 (first lap)
 		# print "Updating passing : " + str(resultdata) + " at index " + str(resultindex)
 		competitors[resultindex][5] = data[2] # Last lap time
-		#print competitors[resultindex]
+
+	## Grab the old record. If it's for the same competitor it's been a lap or posiiton update. Tweet appropriately
+	if resultindex and (competitors[resultindex] != old): 
+		# print competitors[resultindex]
+		print "Entrant " + str(competitors[resultindex][1]) + " on lap " + str(competitors[resultindex][4]) + " with lap time " + str(competitors[resultindex][5])
+		old = competitors[resultindex]
 
 	## Call something to do something
 
