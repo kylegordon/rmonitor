@@ -55,6 +55,9 @@ class RaceTimeReceiver(LineOnlyReceiver):
 	# Blank/create the individual array
 	# competitor = ['Transponder', 'Registration', 'First Name', 'Second name', 'Position', 'Last lap time', 'Best lap time', 'Best lap']
     	competitor = [0,0,0,0,0,0,0,0]
+	
+	resultindex = ''
+
         # Process the line you're receiving here...
         ## print "Line received %s" % data
         # Strip the carriage return and split it on commas
@@ -79,7 +82,7 @@ class RaceTimeReceiver(LineOnlyReceiver):
                 competitor[3] = data[5] # Second name
 		# print competitor
 		competitors.append(competitor)
-		print competitors
+		#print competitors
         elif command == "$COMP":
                 print "Competitor information : " + str(data)
         elif command == "$B":
@@ -89,20 +92,34 @@ class RaceTimeReceiver(LineOnlyReceiver):
         elif command == "$E":
                 print "Setting information : " + str(data)
         elif command == "$G":
-                print "Race positions information : " + str(data)
+		# There's a dump of $Gs upon connecting. 
+                # print "Race positions information : " + str(data)
+                # Find the competitor by entry number
+                result = search_nested(competitors, data[2])
+		if not "not found" in result:
+			resultdata = result[0]
+                	resultindex = result[1]
+	                # print "Updating position : " + str(resultdata) + " at index " + str(resultindex)
+        	        competitors[resultindex][4] = data[1] # Position
+
         #elif command == "$H":
                 # print "Practice/Qualifying information : "  + str(data)
         elif command == "$I":
                 print "Init record"
         elif command == "$J":
 		# Registration, lap time, Total time
-                print "Passing information : "  + str(data)
+                # print "Passing information : "  + str(data)
 		# Find the competitor by entry number
 		result = search_nested(competitors, data[1])
 		resultdata = result[0]
 		resultindex = result[1]
-		print "Found competitors entry : " + str(resultdata) + " at index " + str(resultindex)
+		## FIXME Don't update if lap time is 00:00:00.000 (first lap)
+		# print "Updating passing : " + str(resultdata) + " at index " + str(resultindex)
 		competitors[resultindex][5] = data[2] # Last lap time
+		#print competitors[resultindex]
+
+	if resultindex: print "Entrant No. " + competitors[resultindex][1] + " in position " + competitors[resultindex][4]
+
 		
 	## Append to the big array of doom here
 	# Check that competitor isn't empty
