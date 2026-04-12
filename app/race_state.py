@@ -156,7 +156,7 @@ class RaceState:
             secs = _lap_time_seconds(msg["lap_time"])
             if secs and secs > 0 and self.track_length_miles:
                 c["last_lap_speed_mph"] = round(
-                    self.track_length_miles / (secs / 3600), 2
+                    self.track_length_miles * 3600 / secs, 2
                 )
             else:
                 c["last_lap_speed_mph"] = None
@@ -173,7 +173,7 @@ class RaceState:
             secs = _lap_time_seconds(msg["lap_time"])
             if secs and secs > 0 and self.track_length_miles:
                 c["last_lap_speed_mph"] = round(
-                    self.track_length_miles / (secs / 3600), 2
+                    self.track_length_miles * 3600 / secs, 2
                 )
             else:
                 c["last_lap_speed_mph"] = None
