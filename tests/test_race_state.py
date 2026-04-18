@@ -199,6 +199,7 @@ def test_lap_info_updates_state(state):
     c = state.competitors["42"]
     assert c["last_lap_time"] == "00:01:30.000"
     assert c["laps"] == "7"
+    assert c["position"] == "1"
     # Speed = 2.5 / (90/3600) = 100.0 mph
     assert c["last_lap_speed_mph"] == 100.0
 
@@ -244,3 +245,34 @@ def test_snapshot_purple_flag_zero_total_time_sorted_last(state):
     snap = state.snapshot()
     reg_numbers = [e["reg_number"] for e in snap["entries"]]
     assert reg_numbers == ["A", "B"]  # non-zero time first, zero time last
+
+
+def test_snapshot_opening_lap_sorted_by_total_time(state):
+    """When no competitor has a position yet, sort by order over the line."""
+    state.process({"type": "passing", "reg_number": "A", "lap_time": "00:01:00.000", "total_time": "00:05:00.000"})
+    state.process({"type": "passing", "reg_number": "B", "lap_time": "00:01:00.000", "total_time": "00:03:00.000"})
+    state.process({"type": "passing", "reg_number": "C", "lap_time": "00:01:00.000", "total_time": "00:04:00.000"})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["B", "C", "A"]  # earliest total_time first
+
+
+def test_snapshot_opening_lap_not_yet_crossed_sorted_last(state):
+    """Cars that haven't crossed the line yet go after those that have."""
+    state.process({"type": "passing", "reg_number": "A", "lap_time": "00:01:00.000", "total_time": "00:04:00.000"})
+    state.process({"type": "competitor", "reg_number": "B", "number": "7", "first_name": "", "last_name": "", "nationality": "", "class_number": ""})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["A", "B"]  # crossed-line first, not-yet-out last
+
+
+def test_snapshot_positions_take_precedence_over_total_time(state):
+    """Cars with an assigned position always sort before those with only total_time."""
+    state.process({"type": "race_info", "position": "2", "reg_number": "A", "laps": "1", "total_time": "00:05:00.000"})
+    state.process({"type": "race_info", "position": "1", "reg_number": "B", "laps": "1", "total_time": "00:03:00.000"})
+    # C has crossed the line but has not yet been assigned a position
+    state.process({"type": "passing", "reg_number": "C", "lap_time": "00:01:00.000", "total_time": "00:04:00.000"})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["B", "A", "C"]  # positions first, then by total_time
+
