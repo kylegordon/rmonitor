@@ -148,6 +148,30 @@ def test_snapshot_sorted_by_position(state):
     assert positions == ["1", "2", "3"]
 
 
+def test_snapshot_sorted_by_best_lap_in_qualifying(state):
+    state.process({"type": "qual_info", "position": "3", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:50.000"})
+    state.process({"type": "qual_info", "position": "1", "reg_number": "B", "best_lap": "2", "best_lap_time": "00:01:40.000"})
+    state.process({"type": "qual_info", "position": "2", "reg_number": "C", "best_lap": "1", "best_lap_time": "00:01:45.000"})
+    snap = state.snapshot()
+    numbers = [e["reg_number"] for e in snap["entries"]]
+    assert numbers == ["B", "C", "A"]  # fastest first
+
+
+def test_snapshot_qualifying_no_lap_time_sorted_last(state):
+    state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:45.000"})
+    state.process({"type": "qual_info", "position": "2", "reg_number": "B", "best_lap": "", "best_lap_time": ""})
+    snap = state.snapshot()
+    numbers = [e["reg_number"] for e in snap["entries"]]
+    assert numbers == ["A", "B"]  # timed entry first, untimed last
+
+
+def test_is_qualifying_cleared_by_race_info(state):
+    state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:45.000"})
+    assert state.is_qualifying is True
+    state.process({"type": "race_info", "position": "1", "reg_number": "A", "laps": "5", "total_time": "00:10:00.000"})
+    assert state.is_qualifying is False
+
+
 def test_snapshot_resolves_class_description(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "GT3"})
     state.process({

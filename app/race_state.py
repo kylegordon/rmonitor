@@ -50,11 +50,16 @@ class RaceState:
         self.time_of_day: str = ""
         self.time_to_go: str = ""
         self.laps_to_go: str = ""
+        self._is_qualifying: bool = False
         self._dirty = True
 
     @property
     def dirty(self) -> bool:
         return self._dirty
+
+    @property
+    def is_qualifying(self) -> bool:
+        return self._is_qualifying
 
     def mark_clean(self):
         self._dirty = False
@@ -135,16 +140,20 @@ class RaceState:
             c["laps"] = msg["laps"]
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
+        self._is_qualifying = False
         self._dirty = True
         return "race_info"
 
     def _qual_info(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
+        if msg.get("position"):
+            c["position"] = msg["position"]
         if msg.get("best_lap_time"):
             c["best_lap_time"] = msg["best_lap_time"]
         if msg.get("best_lap"):
             c["best_lap"] = msg["best_lap"]
+        self._is_qualifying = True
         self._dirty = True
         return "qual_info"
 
@@ -193,9 +202,10 @@ class RaceState:
 
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict."""
+        sort_fn = _sort_key_best_lap if self._is_qualifying else _sort_key
         entries = sorted(
             self.competitors.values(),
-            key=lambda c: _sort_key(c),
+            key=lambda c: sort_fn(c),
         )
         # Resolve class descriptions
         for e in entries:
@@ -254,3 +264,15 @@ def _sort_key(c: dict):
         return (0, int(c["position"]))
     except (ValueError, TypeError):
         return (1, c.get("number", ""))
+
+
+def _sort_key_best_lap(c: dict):
+    """Sort competitors by best lap time (ascending), unknowns last.
+
+    A zero or missing best lap time means the competitor has not set a
+    timed lap yet; those entries are sorted last by car number.
+    """
+    t = _lap_time_seconds(c.get("best_lap_time", ""))
+    if t is not None and t > 0:
+        return (0, t)
+    return (1, c.get("number", ""))

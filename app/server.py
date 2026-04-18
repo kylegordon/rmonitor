@@ -36,7 +36,7 @@ async def handle_api_state(request: web.Request) -> web.Response:
 
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
     clients: set = request.app["ws_clients"]
     clients.add(ws)

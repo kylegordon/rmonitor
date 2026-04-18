@@ -9,3 +9,17 @@ services:
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8080
     restart: unless-stopped
+
+  # Optional: expose rmonitor through a Cloudflare Tunnel.
+  # Set CLOUDFLARE_TUNNEL_TOKEN in your environment or a .env file, then run:
+  #   docker compose --profile tunnel up
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles:
+      - tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - rmonitor
+    restart: unless-stopped
