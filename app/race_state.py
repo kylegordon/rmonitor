@@ -188,6 +188,8 @@ class RaceState:
                 c["last_lap_speed_mph"] = None
         if msg.get("lap_number"):
             c["laps"] = msg["lap_number"]
+        if msg.get("position"):
+            c["position"] = msg["position"]
         self._dirty = True
         return "lap_info"
 
@@ -264,11 +266,28 @@ def _empty_competitor(reg: str) -> dict:
 
 
 def _sort_key(c: dict):
-    """Sort competitors by position (numeric), unknowns last."""
+    """Sort competitors by position (numeric).
+
+    When a competitor has no position yet (opening lap) their order is
+    determined by ``total_time`` – i.e. the order in which they crossed the
+    timing line.  Competitors that have not yet crossed are sorted last by
+    car number.
+
+    Tuple structure: (tier, position, time_seconds, car_number)
+      tier 0 – competitor has an assigned position
+      tier 1 – no position but has crossed the line (sort by total_time)
+      tier 2 – not yet crossed the line (sort by car number)
+    """
     try:
-        return (0, int(c["position"]))
+        pos = int(c["position"])
+        if pos > 0:
+            return (0, pos, 0.0, "")
     except (ValueError, TypeError):
-        return (1, c.get("number", ""))
+        pass
+    total_time_seconds = _lap_time_seconds(c.get("total_time", ""))
+    if total_time_seconds is not None and total_time_seconds > 0:
+        return (1, 0, total_time_seconds, "")
+    return (2, 0, 0.0, c.get("number", ""))
 
 
 def _sort_key_best_lap(c: dict):
