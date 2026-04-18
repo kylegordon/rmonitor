@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rMonitor Live Timing</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --accent: #0f3460;
+      --text: #e0e0e0;
+      --highlight: #e94560;
+      --green: #2ecc71;
+      --yellow: #f1c40f;
+      --red: #e74c3c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      background: var(--surface);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid var(--accent);
+    }
+    header h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+    }
+    .status-bar {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+      flex-wrap: wrap;
+    }
+    .status-bar .label {
+      opacity: 0.6;
+      margin-right: 0.3rem;
+    }
+    .flag-indicator {
+      padding: 0.2rem 0.8rem;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .flag-green  { background: var(--green); color: #000; }
+    .flag-yellow { background: var(--yellow); color: #000; }
+    .flag-red    { background: var(--red); color: #fff; }
+    .flag-unknown { background: var(--accent); color: var(--text); }
+
+    .connection-status {
+      position: fixed;
+      top: 0.5rem;
+      right: 1rem;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 3px;
+      z-index: 10;
+    }
+    .connected { background: var(--green); color: #000; }
+    .disconnected { background: var(--red); color: #fff; }
+
+    main { padding: 1rem 2rem; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    thead th {
+      background: var(--accent);
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      position: sticky;
+      top: 0;
+    }
+    tbody tr {
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      transition: background 0.3s;
+    }
+    tbody tr:hover { background: rgba(255,255,255,0.05); }
+    tbody tr.updated { background: rgba(233,69,96,0.15); }
+    td {
+      padding: 0.5rem 0.8rem;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+    td.pos {
+      font-weight: 700;
+      font-size: 1.1rem;
+      width: 3rem;
+      text-align: center;
+    }
+    td.number {
+      font-weight: 700;
+      color: var(--highlight);
+      width: 4rem;
+      text-align: center;
+    }
+    td.speed { color: var(--green); }
+
+    .empty-state {
+      text-align: center;
+      padding: 4rem 1rem;
+      opacity: 0.5;
+      font-size: 1.1rem;
+    }
+
+    @media (max-width: 768px) {
+      header { flex-direction: column; gap: 0.5rem; }
+      main { padding: 0.5rem; }
+      td, th { padding: 0.3rem 0.4rem; font-size: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="conn-status" class="connection-status disconnected">Connecting…</div>
+  <header>
+    <h1 id="title">rMonitor Live Timing</h1>
+    <div class="status-bar">
+      <span><span class="label">Track:</span> <span id="track">—</span></span>
+      <span><span class="label">Session:</span> <span id="session">—</span></span>
+      <span><span class="label">Race Time:</span> <span id="race-time">—</span></span>
+      <span><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
+      <span><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
+      <span id="flag-badge" class="flag-indicator flag-unknown">—</span>
+    </div>
+  </header>
+  <main>
+    <table>
+      <thead>
+        <tr>
+          <th>Pos</th>
+          <th>#</th>
+          <th>Name</th>
+          <th>Nationality</th>
+          <th>Class</th>
+          <th>Laps</th>
+          <th>Last Lap</th>
+          <th>Speed (mph)</th>
+          <th>Best Lap</th>
+          <th>Total Time</th>
+        </tr>
+      </thead>
+      <tbody id="entries">
+        <tr><td colspan="10" class="empty-state">Waiting for data from rMonitor feed…</td></tr>
+      </tbody>
+    </table>
+  </main>
+
+  <script>
+    const tbody = document.getElementById('entries');
+    const trackEl = document.getElementById('track');
+    const sessionEl = document.getElementById('session');
+    const raceTimeEl = document.getElementById('race-time');
+    const timeToGoEl = document.getElementById('time-to-go');
+    const lapsToGoEl = document.getElementById('laps-to-go');
+    const flagEl = document.getElementById('flag-badge');
+    const connEl = document.getElementById('conn-status');
+
+    let previousRegs = new Set();
+
+    function flagClass(flag) {
+      const f = (flag || '').toLowerCase();
+      if (f.includes('green')) return 'flag-green';
+      if (f.includes('yellow') || f.includes('caution')) return 'flag-yellow';
+      if (f.includes('red')) return 'flag-red';
+      return 'flag-unknown';
+    }
+
+    function render(data) {
+      trackEl.textContent = data.track_name || '—';
+      sessionEl.textContent = data.run_description || '—';
+      raceTimeEl.textContent = data.race_time || '—';
+      timeToGoEl.textContent = data.time_to_go || '—';
+      const ltg = data.laps_to_go;
+      lapsToGoEl.textContent = (ltg && ltg !== '9999') ? ltg : '—';
+      flagEl.textContent = data.flag || '—';
+      flagEl.className = 'flag-indicator ' + flagClass(data.flag);
+
+      const entries = data.entries || [];
+      if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-state">Waiting for data from rMonitor feed…</td></tr>';
+        return;
+      }
+
+      const currentRegs = new Set(entries.map(e => e.reg_number));
+      const html = entries.map(e => {
+        const isNew = !previousRegs.has(e.reg_number);
+        const name = [e.first_name, e.last_name].filter(Boolean).join(' ') || '—';
+        const speed = e.last_lap_speed_mph != null ? e.last_lap_speed_mph.toFixed(1) : '—';
+        const cls = e.class_description || '—';
+        return `<tr class="${isNew ? 'updated' : ''}">
+          <td class="pos">${e.position || '—'}</td>
+          <td class="number">${e.number || e.reg_number}</td>
+          <td>${name}</td>
+          <td>${e.nationality || '—'}</td>
+          <td>${cls}</td>
+          <td>${e.laps || '—'}</td>
+          <td>${e.last_lap_time || '—'}</td>
+          <td class="speed">${speed}</td>
+          <td>${e.best_lap_time || '—'}</td>
+          <td>${e.total_time || '—'}</td>
+        </tr>`;
+      }).join('');
+      tbody.innerHTML = html;
+      previousRegs = currentRegs;
+
+      // Remove highlight after a short delay
+      setTimeout(() => {
+        document.querySelectorAll('tr.updated').forEach(r => r.classList.remove('updated'));
+      }, 2000);
+    }
+
+    // WebSocket connection with auto-reconnect
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        connEl.textContent = 'Connected';
+        connEl.className = 'connection-status connected';
+      };
+
+      ws.onclose = () => {
+        connEl.textContent = 'Disconnected – reconnecting…';
+        connEl.className = 'connection-status disconnected';
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => ws.close();
+
+      ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+        if (msg.event === 'full' || msg.event === 'update') {
+          render(msg.data);
+        } else if (msg.event === 'init') {
+          previousRegs = new Set();
+          render(msg.data);
+        }
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
