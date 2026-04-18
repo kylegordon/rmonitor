@@ -177,6 +177,7 @@
     const connEl = document.getElementById('conn-status');
 
     let previousRegs = new Set();
+    let knownServerInstanceId = null;
 
     function flagClass(flag) {
       const f = (flag || '').toLowerCase();
@@ -257,6 +258,18 @@
 
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
+
+        // Detect server restart: if the server instance ID changes after the
+        // initial connection, reload the page to avoid stale state.
+        if (msg.server_instance_id !== undefined) {
+          if (knownServerInstanceId === null) {
+            knownServerInstanceId = msg.server_instance_id;
+          } else if (msg.server_instance_id !== knownServerInstanceId) {
+            window.location.reload();
+            return;
+          }
+        }
+
         if (msg.event === 'full' || msg.event === 'update') {
           render(msg.data);
         } else if (msg.event === 'init') {
