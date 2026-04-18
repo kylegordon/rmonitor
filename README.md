@@ -65,6 +65,36 @@ All configuration is via environment variables:
 | `WEB_HOST` | `0.0.0.0` | Web server bind address |
 | `WEB_PORT` | `8080` | Web server port |
 
+## Cloudflare Tunnel
+
+The app works behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) without any extra configuration. The JavaScript client automatically uses `wss://` when the page is served over HTTPS, and the server sends WebSocket ping frames every 30 seconds to keep connections alive through Cloudflare's 100-second idle timeout.
+
+### Quick setup with Docker Compose
+
+1. Create a tunnel in the [Zero Trust dashboard](https://one.dash.cloudflare.com/) and copy the tunnel token.
+2. Point the tunnel's public hostname to `http://rmonitor:8080` (the Docker service name).
+3. Start both services:
+
+```bash
+export RMONITOR_HOST=192.168.10.24
+export CLOUDFLARE_TUNNEL_TOKEN=<your-token-here>
+
+docker compose --profile tunnel up --build
+```
+
+The app will be available at your configured public hostname over HTTPS.
+
+### Without Docker
+
+Install and run `cloudflared` manually:
+
+```bash
+# Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+cloudflared tunnel --no-autoupdate run --token <your-token-here>
+```
+
+Configure the tunnel's ingress rule to point to `http://localhost:8080`.
+
 ## Testing with sample data
 
 A test sender script replays the bundled Sebring sample data:
