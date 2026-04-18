@@ -188,6 +188,8 @@ class RaceState:
                 c["last_lap_speed_mph"] = None
         if msg.get("lap_number"):
             c["laps"] = msg["lap_number"]
+        if msg.get("position"):
+            c["position"] = msg["position"]
         self._dirty = True
         return "lap_info"
 
