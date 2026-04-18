@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import pathlib
+import uuid
 
 from aiohttp import web
 
@@ -15,6 +16,7 @@ def create_app(race_state) -> web.Application:
     app = web.Application()
     app["race_state"] = race_state
     app["ws_clients"] = set()
+    app["server_instance_id"] = str(uuid.uuid4())
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
@@ -41,8 +43,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     state = request.app["race_state"]
     log.info("WebSocket client connected (%d total)", len(clients))
     try:
-        # Send the full current state on connect
-        await ws.send_json({"event": "full", "data": state.snapshot()})
+        # Send the full current state on connect, including the server instance ID
+        # so clients can detect a server restart and reload the page.
+        await ws.send_json({
+            "event": "full",
+            "data": state.snapshot(),
+            "server_instance_id": request.app["server_instance_id"],
+        })
         async for _msg in ws:
             pass  # We don't expect client-to-server messages
     finally:
@@ -53,7 +60,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 async def broadcast(app: web.Application, event: str, data: dict):
     """Send a JSON message to every connected WebSocket client."""
-    payload = json.dumps({"event": event, "data": data})
+    payload = json.dumps({
+        "event": event,
+        "data": data,
+        "server_instance_id": app["server_instance_id"],
+    })
     closed = []
     for ws in app["ws_clients"]:
         try:
