@@ -201,3 +201,46 @@ def test_lap_info_updates_state(state):
     assert c["laps"] == "7"
     # Speed = 2.5 / (90/3600) = 100.0 mph
     assert c["last_lap_speed_mph"] == 100.0
+
+
+def _set_purple_flag(state):
+    state.process({
+        "type": "heartbeat",
+        "laps_to_go": "9999",
+        "time_to_go": "00:00:00",
+        "time_of_day": "14:00:00",
+        "race_time": "00:00:10",
+        "flag": "Purple",
+    })
+
+
+def test_snapshot_purple_flag_sorted_by_total_time(state):
+    """Cars with earlier total_time come first under a purple flag."""
+    _set_purple_flag(state)
+    # Provide race_info so competitors exist; total_time is set via passing
+    state.process({"type": "race_info", "position": "3", "reg_number": "A", "laps": "", "total_time": "00:00:08.000"})
+    state.process({"type": "race_info", "position": "1", "reg_number": "B", "laps": "", "total_time": "00:00:05.000"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "C", "laps": "", "total_time": "00:00:06.000"})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["B", "C", "A"]  # earliest total_time first
+
+
+def test_snapshot_purple_flag_no_total_time_sorted_last(state):
+    """Cars without a total_time go last under a purple flag."""
+    _set_purple_flag(state)
+    state.process({"type": "race_info", "position": "1", "reg_number": "A", "laps": "", "total_time": "00:00:05.000"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "B", "laps": "", "total_time": ""})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["A", "B"]  # timed entry first, untimed last
+
+
+def test_snapshot_purple_flag_zero_total_time_sorted_last(state):
+    """Cars with a zero total_time are treated as not-yet-out under a purple flag."""
+    _set_purple_flag(state)
+    state.process({"type": "race_info", "position": "1", "reg_number": "A", "laps": "", "total_time": "00:00:07.000"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "B", "laps": "", "total_time": "00:00:00.000"})
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["A", "B"]  # non-zero time first, zero time last

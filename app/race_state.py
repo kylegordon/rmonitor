@@ -202,7 +202,12 @@ class RaceState:
 
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict."""
-        sort_fn = _sort_key_best_lap if self._is_qualifying else _sort_key
+        if self._is_qualifying:
+            sort_fn = _sort_key_best_lap
+        elif self.flag.strip().lower() == "purple":
+            sort_fn = _sort_key_purple
+        else:
+            sort_fn = _sort_key
         entries = sorted(
             self.competitors.values(),
             key=lambda c: sort_fn(c),
@@ -272,7 +277,24 @@ def _sort_key_best_lap(c: dict):
     A zero or missing best lap time means the competitor has not set a
     timed lap yet; those entries are sorted last by car number.
     """
-    t = _lap_time_seconds(c.get("best_lap_time", ""))
+    return _sort_key_by_time(c, "best_lap_time")
+
+
+def _sort_key_purple(c: dict):
+    """Sort competitors by total_time (ascending) under a purple flag.
+
+    When the purple flag is shown, cars are coming out onto the circuit.
+    Those that have already crossed the timing loop (non-zero total_time)
+    are sorted by the time at which they crossed, earliest first.
+    Cars that have not yet crossed (zero or missing total_time) are sorted
+    last by car number.
+    """
+    return _sort_key_by_time(c, "total_time")
+
+
+def _sort_key_by_time(c: dict, time_field: str):
+    """Common sort helper: sort by *time_field* ascending, unknowns last."""
+    t = _lap_time_seconds(c.get(time_field, ""))
     if t is not None and t > 0:
         return (0, t)
     return (1, c.get("number", ""))

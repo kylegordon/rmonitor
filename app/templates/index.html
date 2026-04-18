@@ -14,6 +14,7 @@
       --green: #2ecc71;
       --yellow: #f1c40f;
       --red: #e74c3c;
+      --purple: #9b59b6;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -53,6 +54,7 @@
     .flag-green  { background: var(--green); color: #000; }
     .flag-yellow { background: var(--yellow); color: #000; }
     .flag-red    { background: var(--red); color: #fff; }
+    .flag-purple { background: var(--purple); color: #fff; }
     .flag-unknown { background: var(--accent); color: var(--text); }
 
     .heartbeat {
@@ -204,6 +206,7 @@
       if (f.includes('green')) return 'flag-green';
       if (f.includes('yellow') || f.includes('caution')) return 'flag-yellow';
       if (f.includes('red')) return 'flag-red';
+      if (f.includes('purple')) return 'flag-purple';
       return 'flag-unknown';
     }
 
