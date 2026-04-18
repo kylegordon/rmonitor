@@ -55,6 +55,24 @@
     .flag-red    { background: var(--red); color: #fff; }
     .flag-unknown { background: var(--accent); color: var(--text); }
 
+    .heartbeat {
+      font-size: 1.3rem;
+      line-height: 1;
+      user-select: none;
+      transition: transform 0.1s ease, color 0.1s ease;
+      color: var(--highlight);
+      display: inline-block;
+    }
+    @keyframes pulse {
+      0%   { transform: scale(1);    color: var(--highlight); }
+      30%  { transform: scale(1.5);  color: #ff6b8a; }
+      60%  { transform: scale(0.95); color: var(--highlight); }
+      100% { transform: scale(1);    color: var(--highlight); }
+    }
+    .heartbeat.beating {
+      animation: pulse 0.4s ease forwards;
+    }
+
     .connection-status {
       position: fixed;
       top: 50%;
@@ -143,6 +161,7 @@
       <span><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
       <span><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
       <span id="flag-badge" class="flag-indicator flag-unknown">—</span>
+      <span id="heartbeat" class="heartbeat" title="Data heartbeat">♥</span>
     </div>
   </header>
   <main>
@@ -174,6 +193,7 @@
     const timeToGoEl = document.getElementById('time-to-go');
     const lapsToGoEl = document.getElementById('laps-to-go');
     const flagEl = document.getElementById('flag-badge');
+    const heartbeatEl = document.getElementById('heartbeat');
     const connEl = document.getElementById('conn-status');
 
     let previousRegs = new Set();
@@ -256,6 +276,9 @@
       ws.onerror = () => ws.close();
 
       ws.onmessage = (evt) => {
+        heartbeatEl.classList.remove('beating');
+        void heartbeatEl.offsetWidth; // reflow to restart animation
+        heartbeatEl.classList.add('beating');
         const msg = JSON.parse(evt.data);
         if (msg.event === 'full' || msg.event === 'update') {
           render(msg.data);
