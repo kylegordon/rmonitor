@@ -57,12 +57,21 @@
 
     .connection-status {
       position: fixed;
-      top: 0.5rem;
-      right: 1rem;
-      font-size: 0.75rem;
-      padding: 0.2rem 0.6rem;
-      border-radius: 3px;
-      z-index: 10;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 1rem 2rem;
+      border-radius: 8px;
+      z-index: 100;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      transition: opacity 1s ease;
+      pointer-events: none;
+    }
+    .connection-status.hidden {
+      display: none;
     }
     .connected { background: var(--green); color: #000; }
     .disconnected { background: var(--red); color: #fff; }
@@ -230,11 +239,19 @@
       ws.onopen = () => {
         connEl.textContent = 'Connected';
         connEl.className = 'connection-status connected';
+        connEl.style.opacity = '1';
+        // Show briefly, then fade out and hide over 1 second
+        setTimeout(() => {
+          connEl.style.opacity = '0';
+          setTimeout(() => connEl.classList.add('hidden'), 1000);
+        }, 1000);
       };
 
       ws.onclose = () => {
+        connEl.classList.remove('hidden');
         connEl.textContent = 'Disconnected – reconnecting…';
         connEl.className = 'connection-status disconnected';
+        connEl.style.opacity = '1';
         setTimeout(connect, 2000);
       };
 
