@@ -152,7 +152,6 @@
           <th>Pos</th>
           <th>#</th>
           <th>Name</th>
-          <th>Nationality</th>
           <th>Class</th>
           <th>Laps</th>
           <th>Last Lap</th>
@@ -162,7 +161,7 @@
         </tr>
       </thead>
       <tbody id="entries">
-        <tr><td colspan="10" class="empty-state">Waiting for data from rMonitor feed…</td></tr>
+        <tr><td colspan="9" class="empty-state">Waiting for data from rMonitor feed…</td></tr>
       </tbody>
     </table>
   </main>
@@ -199,7 +198,7 @@
 
       const entries = data.entries || [];
       if (entries.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="empty-state">Waiting for data from rMonitor feed…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Waiting for data from rMonitor feed…</td></tr>';
         return;
       }
 
@@ -213,7 +212,6 @@
           <td class="pos">${e.position || '—'}</td>
           <td class="number">${e.number || e.reg_number}</td>
           <td>${name}</td>
-          <td>${e.nationality || '—'}</td>
           <td>${cls}</td>
           <td>${e.laps || '—'}</td>
           <td>${e.last_lap_time || '—'}</td>
