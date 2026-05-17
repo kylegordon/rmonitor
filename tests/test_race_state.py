@@ -276,3 +276,52 @@ def test_snapshot_positions_take_precedence_over_total_time(state):
     reg_numbers = [e["reg_number"] for e in snap["entries"]]
     assert reg_numbers == ["B", "A", "C"]  # positions first, then by total_time
 
+
+def test_interleaved_G_H_preserves_race_positions(state):
+    """$H messages must not overwrite race positions set by $G during a race.
+
+    In the real protocol, $G (race position) and $H (best-lap ranking) are
+    interleaved.  Before this fix, $H could overwrite a car's race position
+    with its best-lap ranking AND flip _is_qualifying to True, breaking sort.
+    """
+    state.process({
+        "type": "heartbeat", "laps_to_go": "9999", "time_to_go": "00:00:00",
+        "time_of_day": "08:00:55", "race_time": "00:00:57", "flag": "Green",
+    })
+    # Interleaved $G and $H as seen in real captures
+    state.process({"type": "race_info", "position": "1", "reg_number": "21", "laps": "", "total_time": "00:00:56.665"})
+    state.process({"type": "qual_info", "position": "1", "reg_number": "21", "best_lap": "0", "best_lap_time": "00:59:59.999"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "45", "laps": "", "total_time": "00:59:59.999"})
+    state.process({"type": "race_info", "position": "3", "reg_number": "92", "laps": "", "total_time": "00:59:59.999"})
+    state.process({"type": "race_info", "position": "4", "reg_number": "44", "laps": "", "total_time": "00:59:59.999"})
+    state.process({"type": "race_info", "position": "5", "reg_number": "46", "laps": "", "total_time": "00:59:59.999"})
+    state.process({"type": "qual_info", "position": "3", "reg_number": "45", "best_lap": "0", "best_lap_time": "00:59:59.999"})
+
+    # Car 45 should still have race position 2 (from $G), not 3 (from $H)
+    assert state.competitors["45"]["position"] == "2"
+    assert state.is_qualifying is False
+
+    snap = state.snapshot()
+    positions = [e["position"] for e in snap["entries"]]
+    assert positions == ["1", "2", "3", "4", "5"]
+
+
+def test_green_flag_overrides_qualifying_sort(state):
+    """Even if _is_qualifying lingers, green flag forces race position sort."""
+    # Start with qualifying
+    state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:50.000"})
+    state.process({"type": "qual_info", "position": "2", "reg_number": "B", "best_lap": "2", "best_lap_time": "00:01:40.000"})
+    assert state.is_qualifying is True
+
+    # Green flag with race positions (different order from qualifying)
+    state.process({
+        "type": "heartbeat", "laps_to_go": "10", "time_to_go": "00:10:00",
+        "time_of_day": "14:00:00", "race_time": "00:50:00", "flag": "Green",
+    })
+    state.process({"type": "race_info", "position": "1", "reg_number": "B", "laps": "5", "total_time": "00:10:00.000"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "A", "laps": "5", "total_time": "00:10:05.000"})
+
+    snap = state.snapshot()
+    reg_numbers = [e["reg_number"] for e in snap["entries"]]
+    assert reg_numbers == ["B", "A"]  # race position order, not best-lap order
+

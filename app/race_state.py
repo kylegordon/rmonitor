@@ -51,6 +51,7 @@ class RaceState:
         self.time_to_go: str = ""
         self.laps_to_go: str = ""
         self._is_qualifying: bool = False
+        self._seen_race_info: bool = False
         self._dirty = True
 
     @property
@@ -141,34 +142,40 @@ class RaceState:
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
         self._is_qualifying = False
+        self._seen_race_info = True
         self._dirty = True
         return "race_info"
 
     def _qual_info(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
-        if msg.get("position"):
+        if not self._seen_race_info and msg.get("position"):
             c["position"] = msg["position"]
         if msg.get("best_lap_time"):
             c["best_lap_time"] = msg["best_lap_time"]
         if msg.get("best_lap"):
             c["best_lap"] = msg["best_lap"]
-        self._is_qualifying = True
+        if not self._seen_race_info:
+            self._is_qualifying = True
         self._dirty = True
         return "qual_info"
+
+    def _update_lap_speed(self, competitor: dict, lap_time: str) -> None:
+        """Update last lap time and computed speed on *competitor*."""
+        competitor["last_lap_time"] = lap_time
+        secs = _lap_time_seconds(lap_time)
+        if secs and secs > 0 and self.track_length_miles:
+            competitor["last_lap_speed_mph"] = round(
+                self.track_length_miles * 3600 / secs, 2
+            )
+        else:
+            competitor["last_lap_speed_mph"] = None
 
     def _passing(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if msg.get("lap_time"):
-            c["last_lap_time"] = msg["lap_time"]
-            secs = _lap_time_seconds(msg["lap_time"])
-            if secs and secs > 0 and self.track_length_miles:
-                c["last_lap_speed_mph"] = round(
-                    self.track_length_miles * 3600 / secs, 2
-                )
-            else:
-                c["last_lap_speed_mph"] = None
+            self._update_lap_speed(c, msg["lap_time"])
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
         self._dirty = True
@@ -178,14 +185,7 @@ class RaceState:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if msg.get("lap_time"):
-            c["last_lap_time"] = msg["lap_time"]
-            secs = _lap_time_seconds(msg["lap_time"])
-            if secs and secs > 0 and self.track_length_miles:
-                c["last_lap_speed_mph"] = round(
-                    self.track_length_miles * 3600 / secs, 2
-                )
-            else:
-                c["last_lap_speed_mph"] = None
+            self._update_lap_speed(c, msg["lap_time"])
         if msg.get("lap_number"):
             c["laps"] = msg["lap_number"]
         if msg.get("position"):
@@ -198,16 +198,28 @@ class RaceState:
         self.reset()
         return "init"
 
-    _HANDLERS: dict = {}
+    _HANDLERS: dict = {
+        "heartbeat": _heartbeat,
+        "competitor": _competitor,
+        "run": _run,
+        "class_info": _class_info,
+        "setting": _setting,
+        "race_info": _race_info,
+        "qual_info": _qual_info,
+        "passing": _passing,
+        "lap_info": _lap_info,
+        "init": _init,
+    }
 
     # ---- serialisation ----
 
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict."""
-        if self._is_qualifying:
-            sort_fn = _sort_key_best_lap
-        elif self.flag.strip().lower() == "purple":
+        flag = self.flag.strip().lower()
+        if flag == "purple":
             sort_fn = _sort_key_purple
+        elif self._is_qualifying and flag not in ("green", "yellow", "red"):
+            sort_fn = _sort_key_best_lap
         else:
             sort_fn = _sort_key
         entries = sorted(
@@ -222,6 +234,7 @@ class RaceState:
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
+            "session_mode": self._derive_session_mode(),
             "flag": self.flag,
             "race_time": self.race_time,
             "time_of_day": self.time_of_day,
@@ -230,20 +243,24 @@ class RaceState:
             "entries": entries,
         }
 
-
-# Register handlers after class body is complete
-RaceState._HANDLERS = {
-    "heartbeat": RaceState._heartbeat,
-    "competitor": RaceState._competitor,
-    "run": RaceState._run,
-    "class_info": RaceState._class_info,
-    "setting": RaceState._setting,
-    "race_info": RaceState._race_info,
-    "qual_info": RaceState._qual_info,
-    "passing": RaceState._passing,
-    "lap_info": RaceState._lap_info,
-    "init": RaceState._init,
-}
+    def _derive_session_mode(self) -> str:
+        """Derive a short session mode label from the run description."""
+        if self._is_qualifying:
+            return "Qualifying"
+        desc = self.run_description.lower()
+        if "race" in desc:
+            return "Race"
+        if "practice" in desc or "prac" in desc:
+            return "Practice"
+        if "qual" in desc:
+            return "Qualifying"
+        if "warm" in desc:
+            return "Warm Up"
+        if "test" in desc:
+            return "Test"
+        if self.run_description:
+            return self.run_description
+        return ""
 
 
 def _empty_competitor(reg: str) -> dict:
@@ -315,5 +332,5 @@ def _sort_key_by_time(c: dict, time_field: str):
     """Common sort helper: sort by *time_field* ascending, unknowns last."""
     t = _lap_time_seconds(c.get(time_field, ""))
     if t is not None and t > 0:
-        return (0, t)
-    return (1, c.get("number", ""))
+        return (0, t, "")
+    return (1, float("inf"), c.get("number", ""))

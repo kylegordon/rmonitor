@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+captures/
+docs/
+examples/
+tests/
+*.md
+*.log
+.env
+docker-compose.yml
+Dockerfile
+rmonitor_capture.py
+rmonitor_send.py

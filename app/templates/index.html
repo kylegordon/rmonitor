@@ -57,6 +57,23 @@
     .flag-purple { background: var(--purple); color: #fff; }
     .flag-unknown { background: var(--accent); color: var(--text); }
 
+    .mode-badge {
+      padding: 0.2rem 0.8rem;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      background: var(--accent);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+    .mode-race { background: var(--highlight); color: #fff; }
+    .mode-practice { background: #2980b9; color: #fff; }
+    .mode-qualifying { background: var(--purple); color: #fff; }
+    .mode-warmup { background: #e67e22; color: #fff; }
+    .mode-test { background: #16a085; color: #fff; }
+
     .heartbeat {
       font-size: 1.3rem;
       line-height: 1;
@@ -157,6 +174,7 @@
   <header>
     <h1 id="title">rMonitor Live Timing</h1>
     <div class="status-bar">
+      <span id="mode-badge" class="mode-badge">—</span>
       <span><span class="label">Track:</span> <span id="track">—</span></span>
       <span><span class="label">Session:</span> <span id="session">—</span></span>
       <span><span class="label">Race Time:</span> <span id="race-time">—</span></span>
@@ -191,6 +209,7 @@
     const tbody = document.getElementById('entries');
     const trackEl = document.getElementById('track');
     const sessionEl = document.getElementById('session');
+    const modeBadgeEl = document.getElementById('mode-badge');
     const raceTimeEl = document.getElementById('race-time');
     const timeToGoEl = document.getElementById('time-to-go');
     const lapsToGoEl = document.getElementById('laps-to-go');
@@ -199,6 +218,7 @@
     const connEl = document.getElementById('conn-status');
 
     let previousRegs = new Set();
+    let rowMap = {};
     let knownServerInstanceId = null;
 
     function flagClass(flag) {
@@ -210,7 +230,20 @@
       return 'flag-unknown';
     }
 
+    function modeClass(mode) {
+      const m = (mode || '').toLowerCase();
+      if (m === 'race') return 'mode-race';
+      if (m === 'practice') return 'mode-practice';
+      if (m === 'qualifying') return 'mode-qualifying';
+      if (m === 'warm up') return 'mode-warmup';
+      if (m === 'test') return 'mode-test';
+      return '';
+    }
+
     function render(data) {
+      const mode = data.session_mode || '';
+      modeBadgeEl.textContent = mode || '—';
+      modeBadgeEl.className = 'mode-badge ' + modeClass(mode);
       trackEl.textContent = data.track_name || '—';
       sessionEl.textContent = data.run_description || '—';
       raceTimeEl.textContent = data.race_time || '—';
@@ -223,28 +256,73 @@
       const entries = data.entries || [];
       if (entries.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Waiting for data from rMonitor feed…</td></tr>';
+        rowMap = {};
         return;
       }
 
       const currentRegs = new Set(entries.map(e => e.reg_number));
-      const html = entries.map(e => {
+      const newRowMap = {};
+      entries.forEach((e, idx) => {
         const isNew = !previousRegs.has(e.reg_number);
         const name = [e.first_name, e.last_name].filter(Boolean).join(' ') || '—';
+        const ad = e.additional_data || '';
+        const extra = ad ? ad.replace(/^(\d+)([STst]?)$/, (_, cc, s) => {
+          const suffix = {S:'Super',s:'Super',T:'Turbo',t:'Turbo'}[s] || '';
+          return cc + 'cc' + (suffix ? ' ' + suffix : '');
+        }) : '';
+        const vehicle = [e.nationality, extra].filter(Boolean).join(' — ');
         const speed = e.last_lap_speed_mph != null ? e.last_lap_speed_mph.toFixed(1) : '—';
         const cls = e.class_description || '—';
-        return `<tr class="${isNew ? 'updated' : ''}">
-          <td class="pos">${e.position || '—'}</td>
-          <td class="number">${e.number || e.reg_number}</td>
-          <td>${name}</td>
-          <td>${cls}</td>
-          <td>${e.laps || '—'}</td>
-          <td>${e.last_lap_time || '—'}</td>
-          <td class="speed">${speed}</td>
-          <td>${e.best_lap_time || '—'}</td>
-          <td>${e.total_time || '—'}</td>
-        </tr>`;
-      }).join('');
-      tbody.innerHTML = html;
+        const cellData = [
+          { text: e.position || '—', cls: 'pos' },
+          { text: e.number || e.reg_number, cls: 'number' },
+          { text: name, title: vehicle },
+          { text: cls },
+          { text: e.laps || '—' },
+          { text: e.last_lap_time || '—' },
+          { text: speed, cls: 'speed' },
+          { text: e.best_lap_time || '—' },
+          { text: e.total_time || '—' },
+        ];
+
+        let tr = rowMap[e.reg_number];
+        if (tr) {
+          // Update existing row cells in place
+          const tds = tr.children;
+          cellData.forEach((c, i) => {
+            const td = tds[i];
+            if (td.textContent !== c.text) td.textContent = c.text;
+            if (c.cls && td.className !== c.cls) td.className = c.cls;
+            if (c.title !== undefined) {
+              if (td.title !== c.title) td.title = c.title;
+            }
+          });
+        } else {
+          // Create new row
+          tr = document.createElement('tr');
+          if (isNew) tr.classList.add('updated');
+          cellData.forEach(c => {
+            const td = document.createElement('td');
+            td.textContent = c.text;
+            if (c.cls) td.className = c.cls;
+            if (c.title) td.title = c.title;
+            tr.appendChild(td);
+          });
+        }
+        newRowMap[e.reg_number] = tr;
+
+        // Ensure correct position in DOM
+        const current = tbody.children[idx];
+        if (current !== tr) {
+          tbody.insertBefore(tr, current || null);
+        }
+      });
+
+      // Remove rows no longer present
+      while (tbody.children.length > entries.length) {
+        tbody.removeChild(tbody.lastChild);
+      }
+      rowMap = newRowMap;
       previousRegs = currentRegs;
 
       // Remove highlight after a short delay
@@ -300,6 +378,7 @@
           render(msg.data);
         } else if (msg.event === 'init') {
           previousRegs = new Set();
+          rowMap = {};
           render(msg.data);
         }
       };

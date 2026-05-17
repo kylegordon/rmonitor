@@ -9,7 +9,7 @@ from aiohttp import web
 
 from app.race_state import RaceState
 from app.rmonitor_client import RMonitorClient
-from app.server import broadcast, create_app
+from app.server import BROADCAST_INTERVAL, broadcast, create_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,26 +32,40 @@ async def on_message(msg: dict):
     """Called by the rMonitor client for every parsed message."""
     event = race_state.process(msg)
     if event == "init":
-        # New session/race – push full reset to all clients
+        # New session/race – push full reset to all clients immediately
         await broadcast(app, "init", race_state.snapshot())
-    elif event and race_state.dirty:
-        await broadcast(app, "update", race_state.snapshot())
         race_state.mark_clean()
+
+
+async def _broadcast_loop():
+    """Periodically push dirty state to WebSocket clients.
+
+    This decouples the message-processing rate from the broadcast rate so
+    that bursts of rMonitor messages (e.g. many cars crossing the line)
+    are coalesced into a single UI update.
+    """
+    while True:
+        await asyncio.sleep(BROADCAST_INTERVAL)
+        if race_state.dirty:
+            await broadcast(app, "update", race_state.snapshot())
+            race_state.mark_clean()
 
 
 async def start_background_tasks(_app: web.Application):
     client = RMonitorClient(RMONITOR_HOST, RMONITOR_PORT, on_message)
     _app["rmonitor_task"] = asyncio.create_task(client.run())
+    _app["broadcast_task"] = asyncio.create_task(_broadcast_loop())
 
 
 async def cleanup_background_tasks(_app: web.Application):
-    task = _app.get("rmonitor_task")
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    for key in ("rmonitor_task", "broadcast_task"):
+        task = _app.get(key)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app.on_startup.append(start_background_tasks)

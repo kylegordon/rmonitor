@@ -17,6 +17,11 @@ leaderboard in the browser.
 
 ## Protocol compatibility
 
+> **Note:** The `$A` and `$COMP` competitor records include a `nationality`
+> field, but in practice many timing operators use it to carry the **vehicle
+> make/model** (e.g. "Porsche 911 GT3 RSR", "Mini Cooper S"). The web
+> interface displays this as a tooltip when hovering over a driver's name.
+
 The parser follows the same protocol specification as:
 
 - [only-entertainment/rmonitor](https://github.com/only-entertainment/rmonitor) (Python)
