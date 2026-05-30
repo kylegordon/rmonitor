@@ -1,0 +1,45 @@
+---
+# Server-only compose for deployment on deepcore (lodge.glasgownet.com).
+# The relay component runs on-premise; only the server runs here.
+# Traefik (already running on deepcore) handles TLS and routing to
+# https://timing.glasgownet.com via the traefik_traefik_proxy network.
+#
+# Usage: see up.sh
+
+networks:
+  traefik_proxy:
+    external: true
+    name: traefik_traefik_proxy
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: rmonitor-server
+    environment:
+      - RELAY_SECRET=${RELAY_SECRET}
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8080
+      - STATE_FILE=/data/state.json
+    volumes:
+      - /docker/timing:/data
+    networks:
+      - traefik_proxy
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_traefik_proxy
+      # HTTP → HTTPS redirect
+      - traefik.http.routers.timing-http.entrypoints=web
+      - traefik.http.routers.timing-http.rule=Host(`timing.glasgownet.com`)
+      - traefik.http.routers.timing-http.middlewares=timing-https
+      - traefik.http.middlewares.timing-https.redirectscheme.scheme=https
+      # HTTPS router (wildcard cert managed by Traefik on deepcore)
+      - traefik.http.routers.timing.rule=Host(`timing.glasgownet.com`)
+      - traefik.http.routers.timing.entrypoints=websecure
+      - traefik.http.routers.timing.tls=true
+      - traefik.http.routers.timing.tls.certresolver=letsencrypt
+      - traefik.http.services.timing.loadbalancer.server.port=8080
+      - traefik.http.services.timing.loadbalancer.healthcheck.path=/healthz
+      - traefik.http.services.timing.loadbalancer.healthcheck.port=8080
