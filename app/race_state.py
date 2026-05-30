@@ -9,7 +9,9 @@ Protocol as implemented by:
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class RaceState:
         self.time_to_go: str = ""
         self.laps_to_go: str = ""
         self._is_qualifying: bool = False
+        self._seen_race_info: bool = False
         self._dirty = True
 
     @property
@@ -135,40 +138,46 @@ class RaceState:
     def _race_info(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
-        c["position"] = msg["position"]
+        _update_position(c, msg["position"])
         if msg.get("laps"):
             c["laps"] = msg["laps"]
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
         self._is_qualifying = False
+        self._seen_race_info = True
         self._dirty = True
         return "race_info"
 
     def _qual_info(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
-        if msg.get("position"):
+        if not self._seen_race_info and msg.get("position"):
             c["position"] = msg["position"]
         if msg.get("best_lap_time"):
             c["best_lap_time"] = msg["best_lap_time"]
         if msg.get("best_lap"):
             c["best_lap"] = msg["best_lap"]
-        self._is_qualifying = True
+        if not self._seen_race_info:
+            self._is_qualifying = True
         self._dirty = True
         return "qual_info"
+
+    def _update_lap_speed(self, competitor: dict, lap_time: str) -> None:
+        """Update last lap time and computed speed on *competitor*."""
+        competitor["last_lap_time"] = lap_time
+        secs = _lap_time_seconds(lap_time)
+        if secs and secs > 0 and self.track_length_miles:
+            competitor["last_lap_speed_mph"] = round(
+                self.track_length_miles * 3600 / secs, 2
+            )
+        else:
+            competitor["last_lap_speed_mph"] = None
 
     def _passing(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if msg.get("lap_time"):
-            c["last_lap_time"] = msg["lap_time"]
-            secs = _lap_time_seconds(msg["lap_time"])
-            if secs and secs > 0 and self.track_length_miles:
-                c["last_lap_speed_mph"] = round(
-                    self.track_length_miles * 3600 / secs, 2
-                )
-            else:
-                c["last_lap_speed_mph"] = None
+            self._update_lap_speed(c, msg["lap_time"])
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
         self._dirty = True
@@ -178,18 +187,11 @@ class RaceState:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if msg.get("lap_time"):
-            c["last_lap_time"] = msg["lap_time"]
-            secs = _lap_time_seconds(msg["lap_time"])
-            if secs and secs > 0 and self.track_length_miles:
-                c["last_lap_speed_mph"] = round(
-                    self.track_length_miles * 3600 / secs, 2
-                )
-            else:
-                c["last_lap_speed_mph"] = None
+            self._update_lap_speed(c, msg["lap_time"])
         if msg.get("lap_number"):
             c["laps"] = msg["lap_number"]
         if msg.get("position"):
-            c["position"] = msg["position"]
+            _update_position(c, msg["position"])
         self._dirty = True
         return "lap_info"
 
@@ -198,16 +200,28 @@ class RaceState:
         self.reset()
         return "init"
 
-    _HANDLERS: dict = {}
+    _HANDLERS: dict = {
+        "heartbeat": _heartbeat,
+        "competitor": _competitor,
+        "run": _run,
+        "class_info": _class_info,
+        "setting": _setting,
+        "race_info": _race_info,
+        "qual_info": _qual_info,
+        "passing": _passing,
+        "lap_info": _lap_info,
+        "init": _init,
+    }
 
     # ---- serialisation ----
 
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict."""
-        if self._is_qualifying:
-            sort_fn = _sort_key_best_lap
-        elif self.flag.strip().lower() == "purple":
+        flag = self.flag.strip().lower()
+        if flag == "purple":
             sort_fn = _sort_key_purple
+        elif self._is_qualifying:
+            sort_fn = _sort_key_best_lap
         else:
             sort_fn = _sort_key
         entries = sorted(
@@ -222,6 +236,7 @@ class RaceState:
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
+            "session_mode": self._derive_session_mode(),
             "flag": self.flag,
             "race_time": self.race_time,
             "time_of_day": self.time_of_day,
@@ -230,20 +245,85 @@ class RaceState:
             "entries": entries,
         }
 
+    def save(self, path: str | Path) -> None:
+        """Persist internal state to a JSON file."""
+        path = Path(path)
+        data = {
+            "competitors": self.competitors,
+            "classes": self.classes,
+            "track_name": self.track_name,
+            "track_length_miles": self.track_length_miles,
+            "run_description": self.run_description,
+            "flag": self.flag,
+            "race_time": self.race_time,
+            "time_of_day": self.time_of_day,
+            "time_to_go": self.time_to_go,
+            "laps_to_go": self.laps_to_go,
+            "_is_qualifying": self._is_qualifying,
+            "_seen_race_info": self._seen_race_info,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+        log.debug("State saved to %s", path)
 
-# Register handlers after class body is complete
-RaceState._HANDLERS = {
-    "heartbeat": RaceState._heartbeat,
-    "competitor": RaceState._competitor,
-    "run": RaceState._run,
-    "class_info": RaceState._class_info,
-    "setting": RaceState._setting,
-    "race_info": RaceState._race_info,
-    "qual_info": RaceState._qual_info,
-    "passing": RaceState._passing,
-    "lap_info": RaceState._lap_info,
-    "init": RaceState._init,
-}
+    def load(self, path: str | Path) -> bool:
+        """Restore state from a JSON file.  Returns True if loaded."""
+        path = Path(path)
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.competitors = data.get("competitors", {})
+            self.classes = data.get("classes", {})
+            self.track_name = data.get("track_name", "")
+            self.track_length_miles = data.get("track_length_miles")
+            self.run_description = data.get("run_description", "")
+            self.flag = data.get("flag", "")
+            self.race_time = data.get("race_time", "")
+            self.time_of_day = data.get("time_of_day", "")
+            self.time_to_go = data.get("time_to_go", "")
+            self.laps_to_go = data.get("laps_to_go", "")
+            self._is_qualifying = data.get("_is_qualifying", False)
+            self._seen_race_info = data.get("_seen_race_info", False)
+            self._dirty = True
+            log.info("State restored from %s", path)
+            return True
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to load state from %s: %s", path, exc)
+            return False
+
+    def _derive_session_mode(self) -> str:
+        """Derive a short session mode label from the run description."""
+        if self._is_qualifying:
+            return "Qualifying"
+        desc = self.run_description.lower()
+        if "practice" in desc or "prac" in desc or "familiarisation" in desc:
+            return "Practice"
+        if "qual" in desc:
+            return "Qualifying"
+        if self._seen_race_info or self.run_description:
+            return "Race"
+        return ""
+
+
+def _update_position(competitor: dict, new_position: str) -> None:
+    """Update position and track direction of change."""
+    old = competitor["position"]
+    competitor["position"] = new_position
+    if old and new_position:
+        try:
+            old_int = int(old)
+            new_int = int(new_position)
+            if new_int < old_int:
+                competitor["position_change"] = "up"
+            elif new_int > old_int:
+                competitor["position_change"] = "down"
+            # If equal, keep the existing change indicator
+        except (ValueError, TypeError):
+            pass
+    competitor["prev_position"] = old
 
 
 def _empty_competitor(reg: str) -> dict:
@@ -256,6 +336,8 @@ def _empty_competitor(reg: str) -> dict:
         "additional_data": "",
         "class_number": "",
         "position": "",
+        "prev_position": "",
+        "position_change": "",
         "laps": "",
         "total_time": "",
         "last_lap_time": "",
@@ -315,5 +397,5 @@ def _sort_key_by_time(c: dict, time_field: str):
     """Common sort helper: sort by *time_field* ascending, unknowns last."""
     t = _lap_time_seconds(c.get(time_field, ""))
     if t is not None and t > 0:
-        return (0, t)
-    return (1, c.get("number", ""))
+        return (0, t, "")
+    return (1, float("inf"), c.get("number", ""))

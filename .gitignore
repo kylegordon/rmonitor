@@ -8,3 +8,6 @@ build/
 .pytest_cache/
 .venv/
 venv/
+.env
+captures/*.log
+data/

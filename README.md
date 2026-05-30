@@ -1,4 +1,4 @@
-# rMonitor Live Timing Display
+# SMART Live Timing
 
 A Python web application that connects to an **AMB rMonitor** timing feed
 (as used by MyLaps Orbits and similar systems) and displays a live-updating
@@ -16,6 +16,11 @@ leaderboard in the browser.
 - Runs as a lightweight Python server — ideal for Docker deployment
 
 ## Protocol compatibility
+
+> **Note:** The `$A` and `$COMP` competitor records include a `nationality`
+> field, but in practice many timing operators use it to carry the **vehicle
+> make/model** (e.g. "Porsche 911 GT3 RSR", "Mini Cooper S"). The web
+> interface displays this as a tooltip when hovering over a driver's name.
 
 The parser follows the same protocol specification as:
 
