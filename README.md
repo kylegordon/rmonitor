@@ -1,19 +1,91 @@
 # SMART Live Timing
 
-A Python web application that connects to an **AMB rMonitor** timing feed
+A Python application that connects to an **AMB rMonitor** timing feed
 (as used by MyLaps Orbits and similar systems) and displays a live-updating
 leaderboard in the browser.
 
+The application is split into two components that can each run in Docker:
+
+| Component | Where it runs | Purpose |
+|-----------|---------------|---------|
+| **relay** | On-premise (same network as the timing system) | Connects to the rMonitor TCP feed, parses messages, forwards them to the server |
+| **server** | Cloud / web server | Receives messages from the relay, maintains race state, serves the live leaderboard |
+
 ## Features
 
-- Connects to any rMonitor TCP feed and parses the full protocol
-  (`$F`, `$A`, `$COMP`, `$B`, `$C`, `$E`, `$G`, `$H`, `$I`, `$J`, `$SP`, `$SR`)
+- Parses the full rMonitor protocol (`$F`, `$A`, `$COMP`, `$B`, `$C`, `$E`, `$G`, `$H`, `$I`, `$J`, `$SP`, `$SR`)
 - Real-time HTML leaderboard via WebSocket — no polling, no page refresh
 - Shows entrant names, numbers, positions, lap times, lap speeds, best laps
 - Track name, race time, flag status and laps/time remaining in the header
 - Automatic reconnect to the timing feed on connection loss
 - Clears and restarts the display when a new session/race begins (`$I` init)
-- Runs as a lightweight Python server — ideal for Docker deployment
+- State persisted to disk — server resumes after a restart
+
+## Quick start
+
+### With Docker Compose (both components on one machine)
+
+```bash
+# Required: shared secret between relay and server
+export RELAY_SECRET=change-me
+
+# Set the rMonitor feed host
+export RMONITOR_HOST=192.168.10.24
+
+docker compose up --build
+```
+
+Then open <http://localhost:8080>.
+
+### Running components separately
+
+**Server** (cloud):
+```bash
+cd server
+pip install -r requirements.txt
+export RELAY_SECRET=change-me
+python -m server
+```
+
+**Relay** (on-premise):
+```bash
+cd relay
+pip install -r requirements.txt
+export RMONITOR_HOST=192.168.10.24
+export SERVER_URL=https://your-server.example.com
+export RELAY_SECRET=change-me
+python -m relay
+```
+
+## Configuration
+
+### Relay
+
+| Variable | Default | Description |
+|---|---|---|
+| `RMONITOR_HOST` | `127.0.0.1` | rMonitor feed hostname or IP |
+| `RMONITOR_PORT` | `50000` | rMonitor feed TCP port |
+| `SERVER_URL` | `http://localhost:8080` | Base URL of the server |
+| `RELAY_SECRET` | *(empty)* | Shared key sent as `Authorization: Bearer` header |
+| `POST_TIMEOUT` | `5.0` | HTTP POST timeout in seconds |
+| `RETRY_DELAY` | `1.0` | Delay between retries on transient failure |
+
+### Server
+
+| Variable | Default | Description |
+|---|---|---|
+| `RELAY_SECRET` | *(empty)* | Must match the relay's value; disables auth if empty |
+| `WEB_HOST` | `0.0.0.0` | Web server bind address |
+| `WEB_PORT` | `8080` | Web server port |
+| `STATE_FILE` | `data/state.json` | Where to persist race state |
+| `SAVE_INTERVAL` | `10` | How often (seconds) to persist state |
+| `BROADCAST_INTERVAL` | `0.25` | WebSocket push interval (seconds) |
+
+## Communication
+
+The relay authenticates each POST with `Authorization: Bearer <RELAY_SECRET>`.
+No encryption is applied to the message body (use HTTPS / a tunnel for transport
+security). Each rMonitor message is sent as a single JSON object to `POST /api/ingest`.
 
 ## Protocol compatibility
 
@@ -31,106 +103,68 @@ Based on:
 - [AMB RMonitor Timing Protocol](http://www.imsatiming.com/software/protocols/AMB%20RMonitor%20Timing%20Protocol.pdf)
 - [IMSA Enhanced RMon Timing Protocol](http://www.imsatiming.com/software/protocols/IMSA%20Enhanced%20RMon%20Timing%20Protocol%20v1.03.pdf)
 
-## Quick start
-
-### With Docker (recommended)
-
-```bash
-# Set the rMonitor feed host and port
-export RMONITOR_HOST=192.168.10.24
-export RMONITOR_PORT=50000
-
-docker compose up --build
-```
-
-Then open <http://localhost:8080>.
-
-### Without Docker
-
-```bash
-pip install -r requirements.txt
-
-# Configure via environment variables
-export RMONITOR_HOST=192.168.10.24
-export RMONITOR_PORT=50000
-
-python -m app.main
-```
-
-Open <http://localhost:8080>.
-
-## Configuration
-
-All configuration is via environment variables:
-
-| Variable | Default | Description |
-|---|---|---|
-| `RMONITOR_HOST` | `127.0.0.1` | rMonitor feed hostname or IP |
-| `RMONITOR_PORT` | `50000` | rMonitor feed TCP port |
-| `WEB_HOST` | `0.0.0.0` | Web server bind address |
-| `WEB_PORT` | `8080` | Web server port |
-
 ## Cloudflare Tunnel
 
-The app works behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) without any extra configuration. The JavaScript client automatically uses `wss://` when the page is served over HTTPS, and the server sends WebSocket ping frames every 30 seconds to keep connections alive through Cloudflare's 100-second idle timeout.
-
-### Quick setup with Docker Compose
-
-1. Create a tunnel in the [Zero Trust dashboard](https://one.dash.cloudflare.com/) and copy the tunnel token.
-2. Point the tunnel's public hostname to `http://rmonitor:8080` (the Docker service name).
-3. Start both services:
+The server works behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/). The JavaScript client automatically uses `wss://` when the page is served over HTTPS, and the server sends WebSocket ping frames every 30 seconds to keep connections alive through Cloudflare's 100-second idle timeout.
 
 ```bash
 export RMONITOR_HOST=192.168.10.24
-export CLOUDFLARE_TUNNEL_TOKEN=<your-token-here>
+export RELAY_SECRET=change-me
+export CLOUDFLARE_TUNNEL_TOKEN=<your-token>
 
 docker compose --profile tunnel up --build
 ```
 
-The app will be available at your configured public hostname over HTTPS.
-
-### Without Docker
-
-Install and run `cloudflared` manually:
-
-```bash
-# Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-cloudflared tunnel --no-autoupdate run --token <your-token-here>
-```
-
-Configure the tunnel's ingress rule to point to `http://localhost:8080`.
+Configure the tunnel to point to `http://server:8080`.
 
 ## Testing with sample data
 
-A test sender script replays the bundled Sebring sample data:
-
 ```bash
-# Terminal 1: start the test sender
-python rmonitor_send.py
+# Terminal 1: start the server (defaults to 127.0.0.1:50000 for relay)
+export RELAY_SECRET=dev
+python -m server
 
-# Terminal 2: start the web app (defaults to 127.0.0.1:50000)
-python -m app.main
+# Terminal 2: run the relay locally
+export RELAY_SECRET=dev
+python -m relay
+
+# Terminal 3: replay sample data
+python rmonitor_send.py
 ```
 
 ## Running tests
 
 ```bash
-pip install pytest
+pip install pytest pytest-asyncio aiohttp
 python -m pytest tests/ -v
 ```
 
 ## Architecture
 
 ```
-app/
-├── main.py             # Entry point — starts TCP client + web server
+relay/
 ├── rmonitor_client.py  # Async TCP client and protocol parser
-├── race_state.py       # In-memory race state management
-├── server.py           # aiohttp web server with WebSocket
+└── main.py             # Entry point — connects to feed, POSTs to server
+
+server/
+├── race_state.py       # In-memory race state
+├── state_store.py      # StateStore ABC + JsonFileStateStore
+├── server.py           # aiohttp web server (WebSocket + /api/ingest)
+├── main.py             # Entry point — starts web server
 └── templates/
     └── index.html      # Live-updating HTML leaderboard
 ```
 
+### Future Lambda deployment
+
+`StateStore` is an abstract interface. To deploy the server on AWS Lambda:
+1. Implement `DynamoStateStore` (or `RedisStateStore`) replacing `JsonFileStateStore`
+2. Use API Gateway WebSocket API instead of the in-process aiohttp WebSocket handler
+3. Deploy `server/` as Lambda functions
+
+No other server code needs to change.
+
 ## License
 
 See existing repository licence.
+

@@ -7,8 +7,8 @@ import pytest
 import pytest_asyncio
 from aiohttp import test_utils, web
 
-from app.race_state import RaceState
-from app.server import broadcast, create_app, ws_clients_key
+from server.race_state import RaceState
+from server.server import broadcast, create_app, ws_clients_key
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def race_state():
 
 @pytest.fixture
 def app(race_state):
-    return create_app(race_state)
+    return create_app(race_state, relay_secret="test-secret")
 
 
 @pytest_asyncio.fixture
@@ -51,7 +51,7 @@ async def test_index_returns_html(client):
     assert resp.status == 200
     assert "text/html" in resp.content_type
     text = await resp.text()
-    assert "rMonitor Live Timing" in text
+    assert "SMART Live Timing" in text
 
 
 @pytest.mark.asyncio
@@ -107,3 +107,94 @@ async def test_broadcast_removes_closed_clients(app, client):
     # Broadcast should clean up the closed client
     await broadcast(app, "update", {"test": True})
     assert len(app[ws_clients_key]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Ingest endpoint tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ingest_valid_auth_returns_ok(client):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+              "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_ingest_invalid_auth_returns_401(client):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+              "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+        headers={"Authorization": "Bearer wrong-secret"},
+    )
+    assert resp.status == 401
+
+
+@pytest.mark.asyncio
+async def test_ingest_missing_auth_returns_401(client):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+              "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+    )
+    assert resp.status == 401
+
+
+@pytest.mark.asyncio
+async def test_ingest_updates_race_state(client, app):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "setting", "description": "TRACKNAME", "value": "Brands Hatch"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    from server.server import race_state_key
+    assert app[race_state_key].track_name == "Brands Hatch"
+
+
+@pytest.mark.asyncio
+async def test_ingest_missing_type_returns_400(client):
+    resp = await client.post(
+        "/api/ingest",
+        json={"flag": "Green"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_ingest_malformed_json_returns_400(client):
+    resp = await client.post(
+        "/api/ingest",
+        data=b"not json",
+        headers={
+            "Authorization": "Bearer test-secret",
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_ingest_init_broadcasts_to_ws_clients(app, client):
+    """An init message via /api/ingest triggers an immediate 'init' broadcast."""
+    async with client.ws_connect("/ws") as ws:
+        await ws.receive_json()  # consume initial 'full' message
+
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "init", "time_of_day": "10:00:00", "date": "01 Jan 25"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+
+        msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert msg["event"] == "init"
+

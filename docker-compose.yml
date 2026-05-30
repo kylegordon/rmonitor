@@ -1,18 +1,37 @@
 services:
-  rmonitor:
-    build: .
-    ports:
-      - "8080:8080"
+  # On-premise relay: connects to the rMonitor timing feed and forwards
+  # parsed messages to the server via HTTP POST.
+  relay:
+    build:
+      context: .
+      dockerfile: relay/Dockerfile
     environment:
       - RMONITOR_HOST=${RMONITOR_HOST:-192.168.10.24}
       - RMONITOR_PORT=${RMONITOR_PORT:-50000}
-      - WEB_HOST=0.0.0.0
-      - WEB_PORT=8080
-    volumes:
-      - ./data:/app/data
+      - SERVER_URL=${SERVER_URL:-http://server:8080}
+      - RELAY_SECRET=${RELAY_SECRET}
+    depends_on:
+      - server
     restart: unless-stopped
 
-  # Optional: expose rmonitor through a Cloudflare Tunnel.
+  # Cloud server: receives data from the relay, maintains race state,
+  # and serves the live timing web UI.
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - RELAY_SECRET=${RELAY_SECRET}
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8080
+      - STATE_FILE=/data/state.json
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  # Optional: expose the server through a Cloudflare Tunnel.
   # Set CLOUDFLARE_TUNNEL_TOKEN in your environment or a .env file, then run:
   #   docker compose --profile tunnel up
   cloudflared:
@@ -23,5 +42,6 @@ services:
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - rmonitor
+      - server
     restart: unless-stopped
+

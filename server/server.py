@@ -18,18 +18,21 @@ BROADCAST_INTERVAL = float(os.environ.get("BROADCAST_INTERVAL", "0.25"))
 race_state_key = web.AppKey("race_state")
 ws_clients_key = web.AppKey("ws_clients", set)
 server_instance_id_key = web.AppKey("server_instance_id", str)
+relay_secret_key = web.AppKey("relay_secret", str)
 
 
-def create_app(race_state) -> web.Application:
+def create_app(race_state, relay_secret: str = "") -> web.Application:
     app = web.Application()
     app[race_state_key] = race_state
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
+    app[relay_secret_key] = relay_secret
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/api/state", handle_api_state)
     app.router.add_get("/healthz", handle_healthz)
+    app.router.add_post("/api/ingest", handle_ingest)
 
     return app
 
@@ -69,6 +72,30 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         clients.discard(ws)
         log.info("WebSocket client disconnected (%d remaining)", len(clients))
     return ws
+
+
+async def handle_ingest(request: web.Request) -> web.Response:
+    """Receive a parsed rMonitor message from the relay and apply it to state."""
+    secret = request.app[relay_secret_key]
+    auth = request.headers.get("Authorization", "")
+    if secret and auth != f"Bearer {secret}":
+        raise web.HTTPUnauthorized(reason="Invalid relay secret")
+    try:
+        msg = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(reason="Invalid JSON body")
+    if not isinstance(msg, dict) or "type" not in msg:
+        raise web.HTTPBadRequest(reason="Missing 'type' field")
+    state = request.app[race_state_key]
+    try:
+        event = state.process(msg)
+    except Exception:
+        log.exception("Error processing ingest message: %s", msg)
+        raise web.HTTPBadRequest(reason="Message could not be processed")
+    if event == "init":
+        await broadcast(request.app, "init", state.snapshot())
+        state.mark_clean()
+    return web.json_response({"status": "ok"})
 
 
 async def broadcast(app: web.Application, event: str, data: dict):

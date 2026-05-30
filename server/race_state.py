@@ -9,9 +9,7 @@ Protocol as implemented by:
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -245,10 +243,9 @@ class RaceState:
             "entries": entries,
         }
 
-    def save(self, path: str | Path) -> None:
-        """Persist internal state to a JSON file."""
-        path = Path(path)
-        data = {
+    def _to_dict(self) -> dict:
+        """Serialise state for a :class:`~server.state_store.StateStore`."""
+        return {
             "competitors": self.competitors,
             "classes": self.classes,
             "track_name": self.track_name,
@@ -262,37 +259,22 @@ class RaceState:
             "_is_qualifying": self._is_qualifying,
             "_seen_race_info": self._seen_race_info,
         }
-        tmp = path.with_suffix(".tmp")
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)
-        log.debug("State saved to %s", path)
 
-    def load(self, path: str | Path) -> bool:
-        """Restore state from a JSON file.  Returns True if loaded."""
-        path = Path(path)
-        if not path.exists():
-            return False
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            self.competitors = data.get("competitors", {})
-            self.classes = data.get("classes", {})
-            self.track_name = data.get("track_name", "")
-            self.track_length_miles = data.get("track_length_miles")
-            self.run_description = data.get("run_description", "")
-            self.flag = data.get("flag", "")
-            self.race_time = data.get("race_time", "")
-            self.time_of_day = data.get("time_of_day", "")
-            self.time_to_go = data.get("time_to_go", "")
-            self.laps_to_go = data.get("laps_to_go", "")
-            self._is_qualifying = data.get("_is_qualifying", False)
-            self._seen_race_info = data.get("_seen_race_info", False)
-            self._dirty = True
-            log.info("State restored from %s", path)
-            return True
-        except (json.JSONDecodeError, OSError) as exc:
-            log.warning("Failed to load state from %s: %s", path, exc)
-            return False
+    def _load_dict(self, data: dict) -> None:
+        """Restore state from a dict returned by a StateStore."""
+        self.competitors = data.get("competitors", {})
+        self.classes = data.get("classes", {})
+        self.track_name = data.get("track_name", "")
+        self.track_length_miles = data.get("track_length_miles")
+        self.run_description = data.get("run_description", "")
+        self.flag = data.get("flag", "")
+        self.race_time = data.get("race_time", "")
+        self.time_of_day = data.get("time_of_day", "")
+        self.time_to_go = data.get("time_to_go", "")
+        self.laps_to_go = data.get("laps_to_go", "")
+        self._is_qualifying = data.get("_is_qualifying", False)
+        self._seen_race_info = data.get("_seen_race_info", False)
+        self._dirty = True
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description."""
