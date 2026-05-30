@@ -4,8 +4,8 @@ import pathlib
 
 import pytest
 
-from app.race_state import RaceState
-from app.rmonitor_client import parse_line
+from server.race_state import RaceState
+from relay.rmonitor_client import parse_line
 
 EXAMPLES_DIR = pathlib.Path(__file__).resolve().parent.parent / "examples"
 SAMPLE_FILES = sorted(EXAMPLES_DIR.glob("*.txt"))

@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.race_state import RaceState
+from server.race_state import RaceState
 
 
 @pytest.fixture

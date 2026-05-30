@@ -7,7 +7,7 @@ Message formats are verified against the protocol as implemented by:
 
 import pytest
 
-from app.rmonitor_client import parse_line
+from relay.rmonitor_client import parse_line
 
 
 # -- $F Heartbeat -----------------------------------------------------------
