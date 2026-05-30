@@ -9,7 +9,9 @@ Protocol as implemented by:
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +138,7 @@ class RaceState:
     def _race_info(self, msg: dict) -> str:
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
-        c["position"] = msg["position"]
+        _update_position(c, msg["position"])
         if msg.get("laps"):
             c["laps"] = msg["laps"]
         if msg.get("total_time"):
@@ -189,7 +191,7 @@ class RaceState:
         if msg.get("lap_number"):
             c["laps"] = msg["lap_number"]
         if msg.get("position"):
-            c["position"] = msg["position"]
+            _update_position(c, msg["position"])
         self._dirty = True
         return "lap_info"
 
@@ -218,7 +220,7 @@ class RaceState:
         flag = self.flag.strip().lower()
         if flag == "purple":
             sort_fn = _sort_key_purple
-        elif self._is_qualifying and flag not in ("green", "yellow", "red"):
+        elif self._is_qualifying:
             sort_fn = _sort_key_best_lap
         else:
             sort_fn = _sort_key
@@ -243,24 +245,85 @@ class RaceState:
             "entries": entries,
         }
 
+    def save(self, path: str | Path) -> None:
+        """Persist internal state to a JSON file."""
+        path = Path(path)
+        data = {
+            "competitors": self.competitors,
+            "classes": self.classes,
+            "track_name": self.track_name,
+            "track_length_miles": self.track_length_miles,
+            "run_description": self.run_description,
+            "flag": self.flag,
+            "race_time": self.race_time,
+            "time_of_day": self.time_of_day,
+            "time_to_go": self.time_to_go,
+            "laps_to_go": self.laps_to_go,
+            "_is_qualifying": self._is_qualifying,
+            "_seen_race_info": self._seen_race_info,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+        log.debug("State saved to %s", path)
+
+    def load(self, path: str | Path) -> bool:
+        """Restore state from a JSON file.  Returns True if loaded."""
+        path = Path(path)
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.competitors = data.get("competitors", {})
+            self.classes = data.get("classes", {})
+            self.track_name = data.get("track_name", "")
+            self.track_length_miles = data.get("track_length_miles")
+            self.run_description = data.get("run_description", "")
+            self.flag = data.get("flag", "")
+            self.race_time = data.get("race_time", "")
+            self.time_of_day = data.get("time_of_day", "")
+            self.time_to_go = data.get("time_to_go", "")
+            self.laps_to_go = data.get("laps_to_go", "")
+            self._is_qualifying = data.get("_is_qualifying", False)
+            self._seen_race_info = data.get("_seen_race_info", False)
+            self._dirty = True
+            log.info("State restored from %s", path)
+            return True
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to load state from %s: %s", path, exc)
+            return False
+
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description."""
         if self._is_qualifying:
             return "Qualifying"
         desc = self.run_description.lower()
-        if "race" in desc:
-            return "Race"
-        if "practice" in desc or "prac" in desc:
+        if "practice" in desc or "prac" in desc or "familiarisation" in desc:
             return "Practice"
         if "qual" in desc:
             return "Qualifying"
-        if "warm" in desc:
-            return "Warm Up"
-        if "test" in desc:
-            return "Test"
-        if self.run_description:
-            return self.run_description
+        if self._seen_race_info or self.run_description:
+            return "Race"
         return ""
+
+
+def _update_position(competitor: dict, new_position: str) -> None:
+    """Update position and track direction of change."""
+    old = competitor["position"]
+    competitor["position"] = new_position
+    if old and new_position:
+        try:
+            old_int = int(old)
+            new_int = int(new_position)
+            if new_int < old_int:
+                competitor["position_change"] = "up"
+            elif new_int > old_int:
+                competitor["position_change"] = "down"
+            # If equal, keep the existing change indicator
+        except (ValueError, TypeError):
+            pass
+    competitor["prev_position"] = old
 
 
 def _empty_competitor(reg: str) -> dict:
@@ -273,6 +336,8 @@ def _empty_competitor(reg: str) -> dict:
         "additional_data": "",
         "class_number": "",
         "position": "",
+        "prev_position": "",
+        "position_change": "",
         "laps": "",
         "total_time": "",
         "last_lap_time": "",

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>rMonitor Live Timing</title>
+  <title>SMART Live Timing</title>
   <style>
     :root {
       --bg: #1a1a2e;
@@ -71,8 +71,6 @@
     .mode-race { background: var(--highlight); color: #fff; }
     .mode-practice { background: #2980b9; color: #fff; }
     .mode-qualifying { background: var(--purple); color: #fff; }
-    .mode-warmup { background: #e67e22; color: #fff; }
-    .mode-test { background: #16a085; color: #fff; }
 
     .heartbeat {
       font-size: 1.3rem;
@@ -147,6 +145,25 @@
       width: 3rem;
       text-align: center;
     }
+    td.pos .arrow-up {
+      color: var(--green);
+      font-size: 0.75rem;
+      margin-left: 0.2rem;
+    }
+    td.pos .arrow-down {
+      color: var(--red);
+      font-size: 0.75rem;
+      margin-left: 0.2rem;
+    }
+    td.pos .arrow-none {
+      display: inline-block;
+      width: 0.5rem;
+      height: 0.5rem;
+      background: var(--yellow);
+      border-radius: 50%;
+      margin-left: 0.3rem;
+      vertical-align: middle;
+    }
     td.number {
       font-weight: 700;
       color: var(--highlight);
@@ -172,7 +189,7 @@
 <body>
   <div id="conn-status" class="connection-status disconnected">Connecting…</div>
   <header>
-    <h1 id="title">rMonitor Live Timing</h1>
+    <h1 id="title">SMART Live Timing</h1>
     <div class="status-bar">
       <span id="mode-badge" class="mode-badge">—</span>
       <span><span class="label">Track:</span> <span id="track">—</span></span>
@@ -200,7 +217,7 @@
         </tr>
       </thead>
       <tbody id="entries">
-        <tr><td colspan="9" class="empty-state">Waiting for data from rMonitor feed…</td></tr>
+        <tr><td colspan="9" class="empty-state">Waiting for data from timing feed…</td></tr>
       </tbody>
     </table>
   </main>
@@ -235,8 +252,6 @@
       if (m === 'race') return 'mode-race';
       if (m === 'practice') return 'mode-practice';
       if (m === 'qualifying') return 'mode-qualifying';
-      if (m === 'warm up') return 'mode-warmup';
-      if (m === 'test') return 'mode-test';
       return '';
     }
 
@@ -255,7 +270,7 @@
 
       const entries = data.entries || [];
       if (entries.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Waiting for data from rMonitor feed…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Waiting for data from timing feed…</td></tr>';
         rowMap = {};
         return;
       }
@@ -273,8 +288,12 @@
         const vehicle = [e.nationality, extra].filter(Boolean).join(' — ');
         const speed = e.last_lap_speed_mph != null ? e.last_lap_speed_mph.toFixed(1) : '—';
         const cls = e.class_description || '—';
+        const posText = e.position || '—';
+        const posArrow = e.position_change === 'up' ? ' <span class="arrow-up">▲</span>'
+                       : e.position_change === 'down' ? ' <span class="arrow-down">▼</span>'
+                       : ' <span class="arrow-none"></span>';
         const cellData = [
-          { text: e.position || '—', cls: 'pos' },
+          { html: posText + posArrow, cls: 'pos' },
           { text: e.number || e.reg_number, cls: 'number' },
           { text: name, title: vehicle },
           { text: cls },
@@ -291,7 +310,11 @@
           const tds = tr.children;
           cellData.forEach((c, i) => {
             const td = tds[i];
-            if (td.textContent !== c.text) td.textContent = c.text;
+            if (c.html !== undefined) {
+              if (td.innerHTML !== c.html) td.innerHTML = c.html;
+            } else {
+              if (td.textContent !== c.text) td.textContent = c.text;
+            }
             if (c.cls && td.className !== c.cls) td.className = c.cls;
             if (c.title !== undefined) {
               if (td.title !== c.title) td.title = c.title;
@@ -303,7 +326,11 @@
           if (isNew) tr.classList.add('updated');
           cellData.forEach(c => {
             const td = document.createElement('td');
-            td.textContent = c.text;
+            if (c.html !== undefined) {
+              td.innerHTML = c.html;
+            } else {
+              td.textContent = c.text;
+            }
             if (c.cls) td.className = c.cls;
             if (c.title) td.title = c.title;
             tr.appendChild(td);

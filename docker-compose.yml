@@ -8,6 +8,8 @@ services:
       - RMONITOR_PORT=${RMONITOR_PORT:-50000}
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8080
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
 
   # Optional: expose rmonitor through a Cloudflare Tunnel.

@@ -1,4 +1,4 @@
-# rMonitor Live Timing Display
+# SMART Live Timing
 
 A Python web application that connects to an **AMB rMonitor** timing feed
 (as used by MyLaps Orbits and similar systems) and displays a live-updating
