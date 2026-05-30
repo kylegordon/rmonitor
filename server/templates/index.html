@@ -195,8 +195,8 @@
       <span><span class="label">Track:</span> <span id="track">—</span></span>
       <span><span class="label">Session:</span> <span id="session">—</span></span>
       <span><span class="label">Race Time:</span> <span id="race-time">—</span></span>
-      <span><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
-      <span><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
+      <span id="time-to-go-wrap"><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
+      <span id="laps-to-go-wrap"><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
       <span id="flag-badge" class="flag-indicator flag-unknown">—</span>
       <span id="heartbeat" class="heartbeat" title="Data heartbeat">♥</span>
     </div>
@@ -230,6 +230,8 @@
     const raceTimeEl = document.getElementById('race-time');
     const timeToGoEl = document.getElementById('time-to-go');
     const lapsToGoEl = document.getElementById('laps-to-go');
+    const timeToGoWrapEl = document.getElementById('time-to-go-wrap');
+    const lapsToGoWrapEl = document.getElementById('laps-to-go-wrap');
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
     const connEl = document.getElementById('conn-status');
@@ -262,9 +264,29 @@
       trackEl.textContent = data.track_name || '—';
       sessionEl.textContent = data.run_description || '—';
       raceTimeEl.textContent = data.race_time || '—';
-      timeToGoEl.textContent = data.time_to_go || '—';
+
+      const ttg = data.time_to_go || '';
       const ltg = data.laps_to_go;
-      lapsToGoEl.textContent = (ltg && ltg !== '9999') ? ltg : '—';
+
+      const hasLaps = ltg && ltg !== '0' && ltg !== '9999';
+      const hasTime = ttg && ttg !== '0:00:00' && ttg !== '00:00:00';
+
+      timeToGoEl.textContent = hasTime ? ttg : '—';
+      lapsToGoEl.textContent = hasLaps ? ltg : '—';
+
+      // Show/hide wrappers based on what's meaningful
+      if (hasLaps) {
+        // Laps takes priority whenever present
+        lapsToGoWrapEl.style.display = '';
+        timeToGoWrapEl.style.display = 'none';
+      } else if (hasTime) {
+        timeToGoWrapEl.style.display = '';
+        lapsToGoWrapEl.style.display = 'none';
+      } else {
+        // Both zero/missing — show both as dashes
+        timeToGoWrapEl.style.display = '';
+        lapsToGoWrapEl.style.display = '';
+      }
       flagEl.textContent = data.flag || '—';
       flagEl.className = 'flag-indicator ' + flagClass(data.flag);
 
