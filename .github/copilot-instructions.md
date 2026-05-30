@@ -2,59 +2,79 @@
 
 ## Project Overview
 
-`rmonitor` is a Python asyncio web application that connects to an **AMB rMonitor** TCP timing feed (as used by MyLaps Orbits and similar motorsport timing systems) and exposes a live-updating leaderboard in the browser via WebSocket.
+`rmonitor` is a Python asyncio application split into two components — a lightweight **relay** that runs on-premise near the timing hardware, and a **server** that runs in the cloud and serves the live leaderboard. Both are deployed as Docker containers.
 
 ## Technology Stack
 
 - **Python 3.12** — all async/await patterns using `asyncio`
-- **aiohttp ≥ 3.9, < 4** — the only runtime dependency (web server, WebSocket)
-- **pytest** — for testing (not listed in `requirements.txt`; install separately with `pip install pytest`)
+- **aiohttp ≥ 3.9, < 4** — the only runtime dependency (HTTP client in relay; web server in server)
+- **pytest + pytest-asyncio** — for testing (`pip install pytest pytest-asyncio aiohttp`)
 - **Docker / Docker Compose** — for containerised deployment
 - No database, no ORM, no frontend build step
 
 ## Repository Layout
 
 ```
-app/
-├── main.py             # Entry point: wires up the TCP client and the web server
+relay/
 ├── rmonitor_client.py  # Async TCP client + full rMonitor protocol parser
+├── main.py             # Entry point: connects to feed, POSTs messages to server
+├── __main__.py         # `python -m relay` entry point
+├── requirements.txt    # aiohttp only
+└── Dockerfile          # Build context: repo root
+
+server/
 ├── race_state.py       # In-memory race state, updated from parsed messages
-├── server.py           # aiohttp routes: HTML page, /ws WebSocket, /api/state
+├── state_store.py      # StateStore ABC + JsonFileStateStore (pluggable for Lambda)
+├── server.py           # aiohttp routes: HTML page, /ws WebSocket, /api/state, /api/ingest
+├── main.py             # Entry point: starts web server (no TCP client)
+├── __main__.py         # `python -m server` entry point
+├── requirements.txt    # aiohttp only
+├── Dockerfile          # Build context: repo root
 └── templates/
     └── index.html      # Single-page HTML leaderboard (vanilla JS + WebSocket)
+
 tests/
-├── test_parser.py      # Unit tests for the protocol parser
-└── test_race_state.py  # Unit tests for RaceState
+├── test_parser.py      # Unit tests for the protocol parser (relay.rmonitor_client)
+├── test_race_state.py  # Unit tests for RaceState (server.race_state)
+├── test_server.py      # aiohttp TestClient tests incl. /api/ingest
+└── test_integration.py # Replay sample capture files end-to-end
+
 examples/               # Sample AMB rMonitor capture files (real Sebring data)
 captures/               # (runtime) destination for rmonitor_capture.py output
 rmonitor_send.py        # Dev helper: TCP server that replays a sample file
 rmonitor_capture.py     # Diagnostic tool: captures a live feed to a timestamped log
-Dockerfile              # Production image (python:3.12-slim)
-docker-compose.yml      # Compose file; optional `tunnel` profile adds cloudflared
-requirements.txt        # Runtime deps only (aiohttp)
+docker-compose.yml      # Both services; optional `tunnel` profile adds cloudflared
 ```
 
 ## Architecture
 
 ```
-asyncio event loop
-├── RMonitorClient.run()         # TCP → lines → parse_line() → on_message()
-│     (auto-reconnects on error)
-└── aiohttp web server
-      ├── GET /                  → serves app/templates/index.html
-      ├── GET /ws                → WebSocket (push-only; browser reconnects on drop)
-      └── GET /api/state         → JSON snapshot of current race state
+[rMonitor timing system]
+        ↓ TCP (port 50000)
+┌──────────────────────┐
+│  relay               │  POST /api/ingest   ┌──────────────────────────┐
+│  RMonitorClient.run()│ ─────────────────→  │  server                  │
+│  (auto-reconnects)   │  Bearer <secret>    │  aiohttp web server      │
+└──────────────────────┘                     │  ├── GET /               │
+                                             │  ├── GET /ws (WebSocket) │
+                                             │  ├── GET /api/state      │
+                                             │  └── POST /api/ingest    │
+                                             └──────────────────────────┘
+                                                        ↓ WebSocket
+                                                 [Browser clients]
 ```
 
-- **`RaceState`** is the single source of truth. It is mutated by `on_message()` in `main.py` and read by `server.py` for snapshot/broadcast.
-- **`dirty` flag** on `RaceState` prevents redundant WebSocket broadcasts (only broadcast when state has actually changed).
-- On a `$I` (init) message the full state is cleared and an `"init"` event is broadcast to all clients, causing the browser to re-render from scratch.
-- The aiohttp `WebSocketResponse` uses a 30-second heartbeat to keep connections alive through Cloudflare's 100-second idle timeout.
-- A `server_instance_id` UUID is sent to each WebSocket client on connect and with every broadcast, so clients can detect a server restart and reload.
+- **Relay** parses each TCP line → dict → POSTs to `/api/ingest` with `Authorization: Bearer <RELAY_SECRET>`. Retries on 5xx/429/network errors; drops on 4xx.
+- **Server** applies messages to `RaceState` and broadcasts to WebSocket clients. Returns 401 on bad key, 400 on bad/missing payload.
+- **`StateStore`** (`server/state_store.py`) abstracts persistence: `JsonFileStateStore` for Docker, replaceable with DynamoDB/Redis for Lambda.
+- **`dirty` flag** on `RaceState` prevents redundant WebSocket broadcasts.
+- On a `$I` (init) message, state is cleared and an `"init"` event is broadcast immediately via the ingest handler (not the periodic loop).
+- The aiohttp WebSocket uses a 30-second heartbeat to survive Cloudflare's 100-second idle timeout.
+- A `server_instance_id` UUID lets clients detect a server restart and reload.
 
 ## Protocol Messages
 
-The parser in `rmonitor_client.py` handles these `$`-prefixed, comma-separated, double-quote-delimited lines:
+The parser in `relay/rmonitor_client.py` handles these `$`-prefixed, comma-separated, double-quote-delimited lines:
 
 | Token  | Parsed type    | Key fields |
 |--------|----------------|------------|
@@ -71,83 +91,97 @@ The parser in `rmonitor_client.py` handles these `$`-prefixed, comma-separated, 
 | `$SP`  | `lap_info`     | position, reg_number, lap_number, lap_time (undocumented) |
 | `$SR`  | `lap_info`     | same as `$SP` (undocumented) |
 
-Adding a new message type: register a parser function with the `@_reg("$X")` decorator in `rmonitor_client.py`, define a handler method on `RaceState`, and add it to `RaceState._HANDLERS`.
+Adding a new message type: register a parser with `@_reg("$X")` in `relay/rmonitor_client.py`, add a handler on `RaceState` in `server/race_state.py`, and register it in `RaceState._HANDLERS`.
 
 ## Configuration (Environment Variables)
 
-| Variable               | Default       | Description                          |
-|------------------------|---------------|--------------------------------------|
-| `RMONITOR_HOST`        | `127.0.0.1`   | rMonitor feed hostname or IP         |
-| `RMONITOR_PORT`        | `50000`       | rMonitor feed TCP port               |
-| `WEB_HOST`             | `0.0.0.0`     | Web server bind address              |
-| `WEB_PORT`             | `8080`        | Web server port                      |
-| `CAPTURE_DIR`          | `captures`    | Output directory for capture files   |
-| `CLOUDFLARE_TUNNEL_TOKEN` | —          | Used only with the `tunnel` Compose profile |
+### Relay
+| Variable        | Default         | Description                                  |
+|-----------------|-----------------|----------------------------------------------|
+| `RMONITOR_HOST` | `127.0.0.1`     | rMonitor feed hostname or IP                 |
+| `RMONITOR_PORT` | `50000`         | rMonitor feed TCP port                       |
+| `SERVER_URL`    | `http://localhost:8080` | Base URL of the server               |
+| `RELAY_SECRET`  | *(empty)*       | Shared key; warning logged if unset          |
+| `POST_TIMEOUT`  | `5.0`           | HTTP POST timeout (seconds)                  |
+| `RETRY_DELAY`   | `1.0`           | Delay between retries on transient failure   |
+
+### Server
+| Variable            | Default             | Description                              |
+|---------------------|---------------------|------------------------------------------|
+| `RELAY_SECRET`      | *(empty)*           | Must match relay's value; disables auth if empty |
+| `WEB_HOST`          | `0.0.0.0`           | Web server bind address                  |
+| `WEB_PORT`          | `8080`              | Web server port                          |
+| `STATE_FILE`        | `data/state.json`   | Persistence path                         |
+| `SAVE_INTERVAL`     | `10`                | How often to persist state (seconds)     |
+| `BROADCAST_INTERVAL`| `0.25`              | WebSocket push interval (seconds)        |
 
 ## How to Run
 
-### Install dependencies
+### With Docker Compose (both components)
 ```bash
-pip install -r requirements.txt
-```
-
-### Run the web app
-```bash
-python -m app.main
+export RELAY_SECRET=change-me
+export RMONITOR_HOST=192.168.10.24
+docker compose up --build
 # Browse to http://localhost:8080
 ```
 
-### Test with sample data (no real timing hardware needed)
+### Individually (development)
 ```bash
-# Terminal 1 – replay Sebring sample data on port 50000
+# Server
+cd server && pip install -r requirements.txt
+export RELAY_SECRET=dev && python -m server
+
+# Relay
+cd relay && pip install -r requirements.txt
+export RELAY_SECRET=dev && export RMONITOR_HOST=127.0.0.1 && python -m relay
+```
+
+### Test with sample data (no real timing hardware)
+```bash
+# Terminal 1 – relay the Sebring sample on port 50000
 python rmonitor_send.py
 
-# Terminal 2 – start the web app (defaults to 127.0.0.1:50000)
-python -m app.main
+# Terminal 2 – server
+export RELAY_SECRET=dev && python -m server
+
+# Terminal 3 – relay pointing at the local test sender
+export RELAY_SECRET=dev && python -m relay
 ```
 
-`rmonitor_send.py` accepts optional positional args: `[FILE] [PORT]`.
-
-### Capture a live feed
+### With Cloudflare Tunnel
 ```bash
-python rmonitor_capture.py   # writes timestamped log to captures/
-```
-
-### Run with Docker
-```bash
+export RELAY_SECRET=change-me
 export RMONITOR_HOST=192.168.10.24
-docker compose up --build
-# With Cloudflare Tunnel:
 export CLOUDFLARE_TUNNEL_TOKEN=<token>
 docker compose --profile tunnel up --build
 ```
+Point the tunnel public hostname to `http://server:8080`.
 
 ## Testing
 
 ```bash
-pip install pytest
+pip install pytest pytest-asyncio aiohttp
 python -m pytest tests/ -v
 ```
 
-- `tests/test_parser.py` — parses raw protocol strings and checks the resulting dict
-- `tests/test_race_state.py` — feeds parsed message dicts into `RaceState` and checks resulting state and snapshots
-- Tests are pure unit tests; no network, no aiohttp TestClient
-- All tests pass with zero warnings on a clean `pip install -r requirements.txt && pip install pytest` install
+- `test_parser.py` — raw protocol string → parsed dict
+- `test_race_state.py` — message dicts → RaceState mutations and snapshot ordering
+- `test_server.py` — aiohttp TestClient: WebSocket, `/api/state`, `/api/ingest` (auth, message processing, init broadcast)
+- `test_integration.py` — replay full sample capture files through parser + RaceState
 
 ## Common Pitfalls and Workarounds
 
-1. **`reg_number` vs `number`**: `reg_number` is the registration key used internally (e.g. `"21"`). `number` is the displayed car number (may include letters, e.g. `"12X"`). Always key competitor dicts by `reg_number`.
+1. **`reg_number` vs `number`**: `reg_number` is the internal registration key (e.g. `"21"`). `number` is the displayed car number (may include letters, e.g. `"12X"`). Always key competitor dicts by `reg_number`.
 
-2. **Empty-string field updates**: `RaceState._competitor` intentionally skips updating a field when the incoming value is an empty string, to avoid blanking out data already received from an earlier `$A` or `$COMP` message.
+2. **Empty-string field updates**: `RaceState._competitor` intentionally skips updating a field when the incoming value is an empty string, to avoid blanking data from an earlier `$A`/`$COMP` message.
 
-3. **Qualifying vs race mode**: `_is_qualifying` is set to `True` on `$H` messages and cleared back to `False` on `$G` messages. The snapshot sort order changes accordingly (`best_lap_time` ascending for qualifying, `position` numeric for race, `total_time` ascending under a purple flag).
+3. **Qualifying vs race mode**: `_is_qualifying` is set on `$H` messages and cleared on `$G` messages. Snapshot sort order changes accordingly: `best_lap_time` ascending for qualifying, `position` numeric for race, `total_time` ascending under a purple flag.
 
-4. **Speed calculation**: `last_lap_speed_mph` is computed only when both `track_length_miles` (from `$E TRACKLENGTH`) and a positive lap time are available. A zero or missing lap time yields `None`.
+4. **Speed calculation**: `last_lap_speed_mph` is computed only when both `track_length_miles` (from `$E TRACKLENGTH`) and a positive lap time are available. Zero or missing yields `None`.
 
-5. **`$SP`/`$SR` are undocumented**: These are real messages emitted by some Orbits setups; they carry per-lap position and time and map to the `lap_info` type.
+5. **`$SP`/`$SR` are undocumented**: Real messages from some Orbits setups; carry per-lap position and time, map to `lap_info`.
 
-6. **Protocol token quirks**: The tokeniser (`_tokenize`) strips double-quotes and surrounding whitespace from every token after splitting on commas. Flag strings in `$F` messages can have a trailing space (e.g., `"Green "`), which the `strip()` call removes.
+6. **Protocol token quirks**: `_tokenize()` strips double-quotes and whitespace from every token. Flag strings in `$F` can have trailing spaces (`"Green "`), removed by `strip()`.
 
-7. **Shallow clone**: If you need git history or other branches, run `git fetch --unshallow origin` before any merge/rebase operation.
+7. **No linter/formatter config**: Follow existing style — PEP 8, 4-space indent, double-quoted strings in tests, type hints on public functions.
 
-8. **No linter/formatter config present**: The project has no `pyproject.toml`, `setup.cfg`, `.flake8`, or similar. Follow the existing code style (PEP 8, 4-space indent, double-quoted strings in tests, type hints on public functions).
