@@ -70,6 +70,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     clients: set = request.app[ws_clients_key]
     clients.add(ws)
     state = request.app[race_state_key]
+    instance_id = request.app[server_instance_id_key]
     log.info("WebSocket client connected (%d total)", len(clients))
     try:
         # Send the full current state on connect, including the server instance ID
@@ -77,8 +78,17 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         await ws.send_json({
             "event": "full",
             "data": state.snapshot(),
-            "server_instance_id": request.app[server_instance_id_key],
+            "server_instance_id": instance_id,
         })
+        # If the feed is already known to be lost (or timed out before the
+        # watchdog's next poll), tell this client immediately so it doesn't
+        # sit showing hours-old stale data until the next watchdog tick.
+        fs = _feed_state(request.app)
+        feed_timed_out = (time.monotonic() - fs["last_ingest_at"]) > NO_FEED_TIMEOUT
+        if fs["feed_lost"] or feed_timed_out:
+            if not fs["feed_lost"]:
+                fs["feed_lost"] = True  # sync flag so watchdog won't double-fire
+            await ws.send_json({"event": "no_feed", "data": {}, "server_instance_id": instance_id})
         async for _msg in ws:
             pass  # We don't expect client-to-server messages
     finally:

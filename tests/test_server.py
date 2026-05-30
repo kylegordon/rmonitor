@@ -210,6 +210,30 @@ async def test_ingest_init_broadcasts_to_ws_clients(app, client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_no_feed_sent_immediately_on_connect_when_feed_already_lost(app, client):
+    """A client connecting while the feed is lost receives no_feed right after full."""
+    app[feed_state_key]["feed_lost"] = True
+    async with client.ws_connect("/ws") as ws:
+        first = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert first["event"] == "full"
+        second = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert second["event"] == "no_feed"
+
+
+@pytest.mark.asyncio
+async def test_no_feed_sent_immediately_on_connect_when_timed_out(app, client):
+    """A client connecting when last_ingest_at is stale receives no_feed right away."""
+    app[feed_state_key]["last_ingest_at"] = time.monotonic() - 400  # beyond 300 s threshold
+    app[feed_state_key]["feed_lost"] = False
+    async with client.ws_connect("/ws") as ws:
+        first = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert first["event"] == "full"
+        second = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert second["event"] == "no_feed"
+        # Flag should now be set so watchdog won't double-fire
+        assert app[feed_state_key]["feed_lost"] is True
+
+@pytest.mark.asyncio
 async def test_no_feed_watchdog_broadcasts_no_feed(app, client):
     """Watchdog sends 'no_feed' event after the timeout threshold is exceeded."""
     async with client.ws_connect("/ws") as ws:
