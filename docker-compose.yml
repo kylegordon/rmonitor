@@ -21,7 +21,7 @@ services:
       context: .
       dockerfile: server/Dockerfile
     ports:
-      - "${WEB_PORT:-8080}:8080"
+      - "8080:8080"
     environment:
       - RELAY_SECRET=${RELAY_SECRET}
       - WEB_HOST=0.0.0.0
