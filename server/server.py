@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import pathlib
+import time
 import uuid
 
 from aiohttp import web
@@ -13,12 +14,20 @@ log = logging.getLogger(__name__)
 TEMPLATES = pathlib.Path(__file__).parent / "templates"
 
 BROADCAST_INTERVAL = float(os.environ.get("BROADCAST_INTERVAL", "0.25"))
+NO_FEED_TIMEOUT = float(os.environ.get("NO_FEED_TIMEOUT", "300"))  # seconds
 
 # Typed app keys (avoids NotAppKeyWarning)
 race_state_key = web.AppKey("race_state")
 ws_clients_key = web.AppKey("ws_clients", set)
 server_instance_id_key = web.AppKey("server_instance_id", str)
 relay_secret_key = web.AppKey("relay_secret", str)
+# Mutable feed-state dict; mutate contents rather than reassigning the key.
+# Keys: "last_ingest_at" (float|None), "feed_lost" (bool), "watchdog_task" (Task|None)
+feed_state_key = web.AppKey("feed_state", dict)
+
+
+def _feed_state(app) -> dict:
+    return app[feed_state_key]
 
 
 def create_app(race_state, relay_secret: str = "") -> web.Application:
@@ -27,12 +36,16 @@ def create_app(race_state, relay_secret: str = "") -> web.Application:
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
     app[relay_secret_key] = relay_secret
+    app[feed_state_key] = {"last_ingest_at": None, "feed_lost": False, "watchdog_task": None}
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/api/state", handle_api_state)
     app.router.add_get("/healthz", handle_healthz)
     app.router.add_post("/api/ingest", handle_ingest)
+
+    app.on_startup.append(_start_watchdog)
+    app.on_cleanup.append(_stop_watchdog)
 
     return app
 
@@ -86,6 +99,14 @@ async def handle_ingest(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(reason="Invalid JSON body")
     if not isinstance(msg, dict) or "type" not in msg:
         raise web.HTTPBadRequest(reason="Missing 'type' field")
+
+    fs = _feed_state(request.app)
+    fs["last_ingest_at"] = time.monotonic()
+    was_lost = fs["feed_lost"]
+    if was_lost:
+        fs["feed_lost"] = False
+        log.info("Timing feed restored")
+
     state = request.app[race_state_key]
     try:
         event = state.process(msg)
@@ -95,7 +116,39 @@ async def handle_ingest(request: web.Request) -> web.Response:
     if event == "init":
         await broadcast(request.app, "init", state.snapshot())
         state.mark_clean()
+    elif was_lost:
+        # Feed just came back — push full state so clients dismiss the modal.
+        await broadcast(request.app, "full", state.snapshot())
+        state.mark_clean()
     return web.json_response({"status": "ok"})
+
+
+async def _feed_watchdog(app: web.Application) -> None:
+    """Background task: broadcast 'no_feed' if ingest has been silent for too long."""
+    fs = _feed_state(app)
+    try:
+        while True:
+            await asyncio.sleep(30)
+            if fs["feed_lost"]:
+                continue
+            last = fs["last_ingest_at"]
+            if last is not None and (time.monotonic() - last) > NO_FEED_TIMEOUT:
+                log.warning("No timing feed received for %.0f seconds — notifying clients", NO_FEED_TIMEOUT)
+                fs["feed_lost"] = True
+                await broadcast(app, "no_feed", {})
+    except asyncio.CancelledError:
+        pass
+
+
+async def _start_watchdog(app: web.Application) -> None:
+    _feed_state(app)["watchdog_task"] = asyncio.create_task(_feed_watchdog(app))
+
+
+async def _stop_watchdog(app: web.Application) -> None:
+    task = _feed_state(app).get("watchdog_task")
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def broadcast(app: web.Application, event: str, data: dict):

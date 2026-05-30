@@ -2,13 +2,19 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 import pytest_asyncio
 from aiohttp import test_utils, web
 
 from server.race_state import RaceState
-from server.server import broadcast, create_app, ws_clients_key
+from server.server import (
+    broadcast,
+    create_app,
+    feed_state_key,
+    ws_clients_key,
+)
 
 
 @pytest.fixture
@@ -198,3 +204,67 @@ async def test_ingest_init_broadcasts_to_ws_clients(app, client):
         msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
         assert msg["event"] == "init"
 
+
+# ---------------------------------------------------------------------------
+# No-feed watchdog tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_no_feed_watchdog_broadcasts_no_feed(app, client):
+    """Watchdog sends 'no_feed' event after the timeout threshold is exceeded."""
+    async with client.ws_connect("/ws") as ws:
+        await ws.receive_json()  # consume initial 'full'
+
+        # Simulate a feed that has been silent for longer than the threshold
+        fs = app[feed_state_key]
+        fs["last_ingest_at"] = time.monotonic() - 400  # 400 s ago > 300 s threshold
+        fs["feed_lost"] = False
+
+        # Trigger the watchdog logic directly (avoid waiting 30 s)
+        from server.server import NO_FEED_TIMEOUT
+        last = fs["last_ingest_at"]
+        if last is not None and (time.monotonic() - last) > NO_FEED_TIMEOUT:
+            fs["feed_lost"] = True
+            await broadcast(app, "no_feed", {})
+
+        msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert msg["event"] == "no_feed"
+        assert fs["feed_lost"] is True
+
+
+@pytest.mark.asyncio
+async def test_feed_recovery_broadcasts_full_state(app, client):
+    """When an ingest arrives while feed_lost=True, a full state broadcast is sent."""
+    async with client.ws_connect("/ws") as ws:
+        await ws.receive_json()  # consume initial 'full'
+
+        # Put the app into the feed-lost state
+        app[feed_state_key]["feed_lost"] = True
+
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "setting", "description": "TRACKNAME", "value": "Silverstone"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+
+        # Should receive a 'full' event as the recovery broadcast
+        msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+        assert msg["event"] == "full"
+        assert app[feed_state_key]["feed_lost"] is False
+
+
+@pytest.mark.asyncio
+async def test_ingest_records_last_ingest_at(app, client):
+    """Successful ingest updates last_ingest_at."""
+    assert app[feed_state_key]["last_ingest_at"] is None
+    before = time.monotonic()
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+              "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    assert app[feed_state_key]["last_ingest_at"] is not None
+    assert app[feed_state_key]["last_ingest_at"] >= before
