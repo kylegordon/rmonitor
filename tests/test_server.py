@@ -256,8 +256,9 @@ async def test_feed_recovery_broadcasts_full_state(app, client):
 
 @pytest.mark.asyncio
 async def test_ingest_records_last_ingest_at(app, client):
-    """Successful ingest updates last_ingest_at."""
-    assert app[feed_state_key]["last_ingest_at"] is None
+    """Successful ingest updates last_ingest_at (which is pre-seeded at startup)."""
+    # last_ingest_at is seeded at startup time, not None
+    assert app[feed_state_key]["last_ingest_at"] is not None
     before = time.monotonic()
     resp = await client.post(
         "/api/ingest",
@@ -266,5 +267,4 @@ async def test_ingest_records_last_ingest_at(app, client):
         headers={"Authorization": "Bearer test-secret"},
     )
     assert resp.status == 200
-    assert app[feed_state_key]["last_ingest_at"] is not None
     assert app[feed_state_key]["last_ingest_at"] >= before

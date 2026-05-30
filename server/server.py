@@ -141,6 +141,10 @@ async def _feed_watchdog(app: web.Application) -> None:
 
 
 async def _start_watchdog(app: web.Application) -> None:
+    # Seed last_ingest_at to now so the 5-minute clock starts at server
+    # startup. Without this, a server that never receives any relay data
+    # would never trigger the no_feed modal (because last_ingest_at stays None).
+    _feed_state(app)["last_ingest_at"] = time.monotonic()
     _feed_state(app)["watchdog_task"] = asyncio.create_task(_feed_watchdog(app))
 
 
