@@ -169,6 +169,18 @@ python -m pytest tests/ -v
 - `test_server.py` — aiohttp TestClient: WebSocket, `/api/state`, `/api/ingest` (auth, message processing, init broadcast)
 - `test_integration.py` — replay full sample capture files through parser + RaceState
 
+## Git Workflow — MANDATORY
+
+**All changes must go through a pull request. Never commit directly to `master`.**
+
+1. Create a branch: `git checkout -b copilot/<short-description> origin/master`
+2. Make commits on the branch
+3. Push: `git push -u origin copilot/<short-description>`
+4. Open a PR: `gh pr create --base master --fill`
+5. Do **not** merge or push to `master` directly under any circumstances
+
+This applies to every change, no matter how small.
+
 ## Common Pitfalls and Workarounds
 
 1. **`reg_number` vs `number`**: `reg_number` is the internal registration key (e.g. `"21"`). `number` is the displayed car number (may include letters, e.g. `"12X"`). Always key competitor dicts by `reg_number`.

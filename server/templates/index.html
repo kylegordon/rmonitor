@@ -193,6 +193,31 @@
       font-size: 1.1rem;
     }
 
+    /* No-feed modal */
+    .no-feed-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+    }
+    .no-feed-overlay.hidden {
+      display: none;
+    }
+    .no-feed-box {
+      background: var(--red);
+      color: #fff;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      padding: 1.5rem 3rem;
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      text-align: center;
+    }
+
     @media (max-width: 768px) {
       header { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
       .header-right { flex-direction: column; align-items: flex-start; }
@@ -202,6 +227,9 @@
   </style>
 </head>
 <body>
+  <div id="no-feed-modal" class="no-feed-overlay hidden">
+    <div class="no-feed-box">No timing feed</div>
+  </div>
   <div id="conn-status" class="connection-status disconnected">Connecting…</div>
   <header>
     <h1 id="title">SMART Live Timing</h1>
@@ -254,6 +282,7 @@
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
     const connEl = document.getElementById('conn-status');
+    const noFeedEl = document.getElementById('no-feed-modal');
 
     let previousRegs = new Set();
     let rowMap = {};
@@ -274,6 +303,28 @@
       if (m === 'practice') return 'mode-practice';
       if (m === 'qualifying') return 'mode-qualifying';
       return '';
+    }
+
+    function showNoFeedModal() {
+      noFeedEl.classList.remove('hidden');
+      // Clear the results display
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No timing feed</td></tr>';
+      rowMap = {};
+      previousRegs = new Set();
+      // Reset header fields
+      modeBadgeEl.textContent = '—';
+      modeBadgeEl.className = 'mode-badge';
+      flagEl.textContent = '—';
+      flagEl.className = 'flag-indicator flag-unknown';
+      trackEl.textContent = '—';
+      sessionEl.textContent = '—';
+      raceTimeEl.textContent = '—';
+      timeToGoEl.textContent = '—';
+      lapsToGoEl.textContent = '—';
+    }
+
+    function hideNoFeedModal() {
+      noFeedEl.classList.add('hidden');
     }
 
     function render(data) {
@@ -443,11 +494,15 @@
         }
 
         if (msg.event === 'full' || msg.event === 'update') {
+          hideNoFeedModal();
           render(msg.data);
         } else if (msg.event === 'init') {
+          hideNoFeedModal();
           previousRegs = new Set();
           rowMap = {};
           render(msg.data);
+        } else if (msg.event === 'no_feed') {
+          showNoFeedModal();
         }
       };
     }
