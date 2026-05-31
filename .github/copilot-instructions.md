@@ -1,5 +1,19 @@
 # Copilot Instructions for rmonitor
 
+## Git Workflow — MANDATORY
+
+**All changes must go through a pull request. Never commit directly to `master`.**
+
+1. **Fetch first**: `git fetch origin` — always do this before branching or pushing
+2. **Create a branch**: `git checkout -b copilot/<short-description> origin/master`
+3. Make commits on the branch
+4. **Check PR status** before pushing: `gh pr list --head <branch>` — if a PR for this branch already exists and is merged/closed, create a new branch instead
+5. **Push**: `git push -u origin copilot/<short-description>`
+6. **Open a PR**: `gh pr create --base master --fill`
+7. Do **not** merge or push to `master` directly under any circumstances
+
+This applies to every change, no matter how small.
+
 ## Project Overview
 
 `rmonitor` is a Python asyncio application split into two components — a lightweight **relay** that runs on-premise near the timing hardware, and a **server** that runs in the cloud and serves the live leaderboard. Both are deployed as Docker containers.
@@ -161,25 +175,19 @@ Point the tunnel public hostname to `http://server:8080`.
 
 ```bash
 pip install pytest pytest-asyncio aiohttp
-python -m pytest tests/ -v
+python3 -m pytest tests/ -v
+
+# Run a single test file
+python3 -m pytest tests/test_server.py -v
+
+# Run a single test by name
+python3 -m pytest tests/test_server.py::test_ingest_valid_auth_returns_ok -v
 ```
 
 - `test_parser.py` — raw protocol string → parsed dict
 - `test_race_state.py` — message dicts → RaceState mutations and snapshot ordering
 - `test_server.py` — aiohttp TestClient: WebSocket, `/api/state`, `/api/ingest` (auth, message processing, init broadcast)
 - `test_integration.py` — replay full sample capture files through parser + RaceState
-
-## Git Workflow — MANDATORY
-
-**All changes must go through a pull request. Never commit directly to `master`.**
-
-1. Create a branch: `git checkout -b copilot/<short-description> origin/master`
-2. Make commits on the branch
-3. Push: `git push -u origin copilot/<short-description>`
-4. Open a PR: `gh pr create --base master --fill`
-5. Do **not** merge or push to `master` directly under any circumstances
-
-This applies to every change, no matter how small.
 
 ## Common Pitfalls and Workarounds
 
@@ -196,4 +204,16 @@ This applies to every change, no matter how small.
 6. **Protocol token quirks**: `_tokenize()` strips double-quotes and whitespace from every token. Flag strings in `$F` can have trailing spaces (`"Green "`), removed by `strip()`.
 
 7. **No linter/formatter config**: Follow existing style — PEP 8, 4-space indent, double-quoted strings in tests, type hints on public functions.
+
+8. **aiohttp: never reassign `AppKey` values after app startup**. Doing `app[some_key] = new_value` inside a request handler or background task triggers `DeprecationWarning: Changing state of started or joined application is deprecated`. Instead, store a mutable container (dict or set) under the key at creation time and mutate its contents:
+   ```python
+   # At app creation (fine):
+   app[my_key] = {"value": None, "flag": False}
+   # In a handler (fine — mutating the dict, not the key):
+   app[my_key]["value"] = time.monotonic()
+   # BAD — reassigning the key after startup:
+   app[my_key] = time.monotonic()
+   ```
+
+9. **Server-side stateful features: initialise timestamps at startup, not lazily**. If a background watchdog or timeout compares `time.monotonic() - last_seen`, initialise `last_seen` to `time.monotonic()` in the app startup hook — not to `None`. A `None` check (`if last is not None`) means the condition never fires on a fresh server that has never received data. Similarly, when a new WebSocket client connects, `handle_ws` must immediately reflect the *current* server state — if the feed is already known to be lost (or timed-out), send the `no_feed` event right after the initial `full` message so the client doesn't display stale persisted data and wait for the next watchdog poll.
 
