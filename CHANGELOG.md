@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/kylegordon/rmonitor/compare/v0.1.2...v0.1.3) (2026-05-31)
+
+
+### Bug Fixes
+
+* integrate Docker publish into release-please workflow ([5b0e172](https://github.com/kylegordon/rmonitor/commit/5b0e172043c3ded7def69cccfe9ff9e177b7f838))
+
 ## [0.1.2](https://github.com/kylegordon/rmonitor/compare/v0.1.1...v0.1.2) (2026-05-31)
 
 
