@@ -362,7 +362,9 @@
 
       const entries = data.entries || [];
       if (entries.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Waiting for data from timing feed…</td></tr>';
+        const hasClockFeed = !!(data.race_time && data.race_time !== '—');
+        const waitMsg = hasClockFeed ? 'Waiting for entrant data…' : 'Waiting for timing data…';
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">${waitMsg}</td></tr>`;
         rowMap = {};
         return;
       }
