@@ -325,3 +325,61 @@ def test_green_flag_overrides_qualifying_sort(state):
     reg_numbers = [e["reg_number"] for e in snap["entries"]]
     assert reg_numbers == ["B", "A"]  # race position order, not best-lap order
 
+
+
+# ---- session mode derivation ----
+
+@pytest.mark.parametrize("description,expected_mode", [
+    # Warm-up variants
+    ("Warm up",              "Practice"),
+    ("Warm-up",              "Practice"),
+    ("Warmup",               "Practice"),
+    ("warm up session",      "Practice"),
+    ("WARM UP",              "Practice"),
+    # Practice variants
+    ("Practice 1",           "Practice"),
+    ("Free Practice",        "Practice"),
+    ("Prac 1",               "Practice"),
+    # Familiarisation
+    ("Familiarisation",      "Practice"),
+    ("familiarisation run",  "Practice"),
+])
+def test_session_mode_practice_keywords(state, description, expected_mode):
+    """Descriptions that should derive 'Practice' mode."""
+    state.process({"type": "run", "description": description})
+    assert state.snapshot()["session_mode"] == expected_mode
+
+
+def test_session_mode_race(state):
+    """A race session (with $G data) derives 'Race'."""
+    state.process({"type": "run", "description": "Race 1"})
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "1",
+        "laps": "1", "total_time": "00:01:30.000",
+    })
+    assert state.snapshot()["session_mode"] == "Race"
+
+
+def test_session_mode_qualifying_from_flag(state):
+    """$H messages (without prior $G) set qualifying mode."""
+    state.process({
+        "type": "qual_info", "position": "1", "reg_number": "1",
+        "best_lap": "1", "best_lap_time": "00:01:50.000",
+    })
+    assert state.snapshot()["session_mode"] == "Qualifying"
+
+
+def test_session_mode_qualifying_from_description(state):
+    """'Qual' in description derives 'Qualifying' even without $H."""
+    state.process({"type": "run", "description": "Qualifying 1"})
+    assert state.snapshot()["session_mode"] == "Qualifying"
+
+
+def test_session_mode_warm_up_with_race_info_is_practice(state):
+    """Warm-up description takes priority over _seen_race_info flag."""
+    state.process({"type": "run", "description": "Warm-up"})
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "1",
+        "laps": "1", "total_time": "00:01:30.000",
+    })
+    assert state.snapshot()["session_mode"] == "Practice"
