@@ -1,0 +1,16 @@
+# Local development override — restores build: contexts so
+# `docker compose up --build` builds from source instead of pulling
+# the published GHCR images.
+#
+# Docker Compose merges this automatically with docker-compose.yml.
+# This file is git-ignored and should not be committed.
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: relay/Dockerfile
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile

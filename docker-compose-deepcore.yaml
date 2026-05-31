@@ -13,9 +13,7 @@ networks:
 
 services:
   server:
-    build:
-      context: .
-      dockerfile: server/Dockerfile
+    image: ghcr.io/kylegordon/rmonitor-server:latest
     container_name: rmonitor-server
     environment:
       - RELAY_SECRET=${RELAY_SECRET}

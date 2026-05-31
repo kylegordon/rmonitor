@@ -11,3 +11,4 @@ venv/
 .env
 captures/*.log
 data/
+docker-compose.override.yml

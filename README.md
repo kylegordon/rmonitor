@@ -32,10 +32,28 @@ export RELAY_SECRET=change-me
 # Set the rMonitor feed host
 export RMONITOR_HOST=192.168.10.24
 
-docker compose up --build
+docker compose up
 ```
 
 Then open <http://localhost:8080>.
+
+This pulls the latest pre-built images from GHCR
+(`ghcr.io/kylegordon/rmonitor-relay` and `ghcr.io/kylegordon/rmonitor-server`).
+
+#### Building from local source
+
+To build the images yourself (e.g. for testing unreleased changes):
+
+```bash
+# Option A — build directly and run
+docker build -f relay/Dockerfile -t ghcr.io/kylegordon/rmonitor-relay:latest .
+docker build -f server/Dockerfile -t ghcr.io/kylegordon/rmonitor-server:latest .
+docker compose up
+
+# Option B — use a Compose override file (one-time setup)
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose up --build   # now builds from source automatically
+```
 
 ### Running components separately
 
@@ -112,7 +130,7 @@ export RMONITOR_HOST=192.168.10.24
 export RELAY_SECRET=change-me
 export CLOUDFLARE_TUNNEL_TOKEN=<your-token>
 
-docker compose --profile tunnel up --build
+docker compose --profile tunnel up
 ```
 
 Configure the tunnel to point to `http://server:8080`.
@@ -136,7 +154,7 @@ python rmonitor_send.py
 
 ```bash
 pip install pytest pytest-asyncio aiohttp
-python -m pytest tests/ -v
+python3 -m pytest tests/ -v
 ```
 
 ## Architecture
