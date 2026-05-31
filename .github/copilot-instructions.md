@@ -230,3 +230,18 @@ python3 -m pytest tests/test_server.py::test_ingest_valid_auth_returns_ok -v
 
 9. **Server-side stateful features: initialise timestamps at startup, not lazily**. If a background watchdog or timeout compares `time.monotonic() - last_seen`, initialise `last_seen` to `time.monotonic()` in the app startup hook — not to `None`. A `None` check (`if last is not None`) means the condition never fires on a fresh server that has never received data. Similarly, when a new WebSocket client connects, `handle_ws` must immediately reflect the *current* server state — if the feed is already known to be lost (or timed-out), send the `no_feed` event right after the initial `full` message so the client doesn't display stale persisted data and wait for the next watchdog poll.
 
+10. **Session mode detection has several non-obvious behaviours** — understand these before touching `_derive_session_mode`, `_is_qualifying`, or `_seen_race_info`:
+
+    **Two-track detection**: There are two independent signals that must agree:
+    - `_is_qualifying` (bool): set **by message type** — True when a `$H` (qual_info) arrives and `_seen_race_info` is still False; cleared to False on any `$G` (race_info). Controls sort order directly in `snapshot()`.
+    - `session_mode` string label: derived by `_derive_session_mode()` via **substring matching** on `run_description` (from `$B`). Checks for `"practice"`, `"prac"`, `"familiarisation"`, `"qual"`.
+    - `_is_qualifying=True` takes priority — `_derive_session_mode()` returns `"Qualifying"` immediately without reading the description.
+
+    **Warm-up is not handled**: If the timing system sends `$B,"Warm-up"` alongside `$G` race_info messages, `_derive_session_mode()` returns `"Race"` (none of the keyword matches hit, and `_seen_race_info` is True). The mode badge will incorrectly read "Race" during a warm-up. To fix: add `"warm"` to the practice keyword list in `_derive_session_mode()`.
+
+    **`$H` during a race**: Some Orbits setups send `$H` (qual_info) during a race for best-lap tracking. The guard `if not self._seen_race_info` prevents `_is_qualifying` from being set and prevents `$H` positions from overwriting `$G` race positions. Best-lap fields (`best_lap_time`, `best_lap`) are always updated regardless.
+
+    **Purple flag overrides sort regardless of mode**: Under a purple flag, `snapshot()` uses `_sort_key_purple` (total_time ascending) regardless of `_is_qualifying`. Intended for formation/pace laps at race end where cars are on track in order of total time.
+
+    **String matching is spelling-sensitive**: `_derive_session_mode()` handles `"familiarisation"` (British English) but will silently return `"Race"` for any unrecognised description (e.g. `"Free Practice"`, `"Shakedown"`, `"Warm-up"`). Always check `_derive_session_mode()` when a new session type is needed.
+
