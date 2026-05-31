@@ -3,6 +3,7 @@ name: Publish Docker Images
 on:
   push:
     branches: [master]
+    tags: ['v*.*.*']
 
 permissions:
   contents: read
@@ -28,7 +29,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/rmonitor-relay
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
 
       - name: Set up Docker Buildx
@@ -64,7 +67,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/rmonitor-server
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
 
       - name: Set up Docker Buildx
