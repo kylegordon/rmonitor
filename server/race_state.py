@@ -281,7 +281,7 @@ class RaceState:
         if self._is_qualifying:
             return "Qualifying"
         desc = self.run_description.lower()
-        if "practice" in desc or "prac" in desc or "familiarisation" in desc:
+        if "practice" in desc or "prac" in desc or "warm" in desc or "familiarisation" in desc:
             return "Practice"
         if "qual" in desc:
             return "Qualifying"

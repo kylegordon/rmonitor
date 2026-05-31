@@ -237,7 +237,7 @@ python3 -m pytest tests/test_server.py::test_ingest_valid_auth_returns_ok -v
     - `session_mode` string label: derived by `_derive_session_mode()` via **substring matching** on `run_description` (from `$B`). Checks for `"practice"`, `"prac"`, `"familiarisation"`, `"qual"`.
     - `_is_qualifying=True` takes priority — `_derive_session_mode()` returns `"Qualifying"` immediately without reading the description.
 
-    **Warm-up is not handled**: If the timing system sends `$B,"Warm-up"` alongside `$G` race_info messages, `_derive_session_mode()` returns `"Race"` (none of the keyword matches hit, and `_seen_race_info` is True). The mode badge will incorrectly read "Race" during a warm-up. To fix: add `"warm"` to the practice keyword list in `_derive_session_mode()`.
+    **Warm-up is now handled**: `"warm"` is in the practice keyword list, covering "Warm up", "Warm-up", "Warmup", etc. The full practice keyword list is: `"practice"`, `"prac"`, `"warm"`, `"familiarisation"`. Any description not matching these or `"qual"` falls through to `"Race"` if `_seen_race_info` or `run_description` is set — so always extend `_derive_session_mode()` when a new session type is needed.
 
     **`$H` during a race**: Some Orbits setups send `$H` (qual_info) during a race for best-lap tracking. The guard `if not self._seen_race_info` prevents `_is_qualifying` from being set and prevents `$H` positions from overwriting `$G` race positions. Best-lap fields (`best_lap_time`, `best_lap`) are always updated regardless.
 
