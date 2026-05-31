@@ -135,9 +135,22 @@ Adding a new message type: register a parser with `@_reg("$X")` in `relay/rmonit
 ```bash
 export RELAY_SECRET=change-me
 export RMONITOR_HOST=192.168.10.24
-docker compose up --build
+docker compose up
 # Browse to http://localhost:8080
 ```
+
+Published images from GHCR are used by default. To build from local source
+instead (e.g. to test unreleased changes), build the images first:
+
+```bash
+docker build -f relay/Dockerfile -t ghcr.io/kylegordon/rmonitor-relay:latest .
+docker build -f server/Dockerfile -t ghcr.io/kylegordon/rmonitor-server:latest .
+docker compose up
+```
+
+Alternatively, create a git-ignored `docker-compose.override.yml` that restores
+`build:` contexts so `docker compose up --build` builds from source automatically
+(see `docker-compose.override.yml` in the repo root for a ready-to-use template).
 
 ### Individually (development)
 ```bash
