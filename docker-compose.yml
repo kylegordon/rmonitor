@@ -2,9 +2,7 @@ services:
   # On-premise relay: connects to the rMonitor timing feed and forwards
   # parsed messages to the server via HTTP POST.
   relay:
-    build:
-      context: .
-      dockerfile: relay/Dockerfile
+    image: ghcr.io/kylegordon/rmonitor-relay:latest
     environment:
       - RMONITOR_HOST=${RMONITOR_HOST:-192.168.10.24}
       - RMONITOR_PORT=${RMONITOR_PORT:-50000}
@@ -17,9 +15,7 @@ services:
   # Cloud server: receives data from the relay, maintains race state,
   # and serves the live timing web UI.
   server:
-    build:
-      context: .
-      dockerfile: server/Dockerfile
+    image: ghcr.io/kylegordon/rmonitor-server:latest
     ports:
       - "8080:8080"
     environment:
