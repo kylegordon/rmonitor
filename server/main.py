@@ -33,7 +33,7 @@ saved = store.load()
 if saved:
     race_state._load_dict(saved)
 
-app = create_app(race_state, relay_secret=RELAY_SECRET)
+app = create_app(race_state, relay_secret=RELAY_SECRET, restored=bool(saved))
 
 
 async def _broadcast_loop() -> None:

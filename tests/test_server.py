@@ -221,6 +221,19 @@ async def test_no_feed_sent_immediately_on_connect_when_feed_already_lost(app, c
 
 
 @pytest.mark.asyncio
+async def test_no_feed_sent_immediately_when_state_restored_at_startup(race_state):
+    """A server started with restored (persisted) state seeds feed_lost=True so a
+    connecting client is told not to trust the snapshot until fresh data arrives."""
+    restored_app = create_app(race_state, relay_secret="test-secret", restored=True)
+    async with test_utils.TestClient(test_utils.TestServer(restored_app)) as client:
+        async with client.ws_connect("/ws") as ws:
+            first = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+            assert first["event"] == "full"
+            second = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+            assert second["event"] == "no_feed"
+
+
+@pytest.mark.asyncio
 async def test_no_feed_sent_immediately_on_connect_when_timed_out(app, client):
     """A client connecting when last_ingest_at is stale receives no_feed right away."""
     app[feed_state_key]["last_ingest_at"] = time.monotonic() - 400  # beyond 300 s threshold
