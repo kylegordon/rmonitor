@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.6](https://github.com/kylegordon/rmonitor/compare/v0.1.5...v0.1.6) (2026-07-11)
+
+## What's Changed
+* Replace release-please with custom release workflow by @kylegordon in https://github.com/kylegordon/rmonitor/pull/38
+* Compact mobile headers by @kylegordon in https://github.com/kylegordon/rmonitor/pull/37
+* Merge pull request #37 from kylegordon/master by @kylegordon in https://github.com/kylegordon/rmonitor/pull/40
+* fix: don't show stale race data on first daily server startup by @kylegordon in https://github.com/kylegordon/rmonitor/pull/41
+* chore(master): release 0.1.5 by @github-actions[bot] in https://github.com/kylegordon/rmonitor/pull/39
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.4...v0.1.6
+
+
 ## [0.1.5](https://github.com/kylegordon/rmonitor/compare/v0.1.4...v0.1.5) (2026-07-11)
 
 ## What's Changed
