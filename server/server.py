@@ -113,11 +113,16 @@ async def handle_ingest(request: web.Request) -> web.Response:
     fs = _feed_state(request.app)
     fs["last_ingest_at"] = time.monotonic()
     was_lost = fs["feed_lost"]
+    state = request.app[race_state_key]
     if was_lost:
         fs["feed_lost"] = False
-        log.info("Timing feed restored")
+        log.warning(
+            "Timing feed restored after an extended outage – resetting race "
+            "state, since a session change ($I) may have been missed while "
+            "the feed was down"
+        )
+        state.reset()
 
-    state = request.app[race_state_key]
     try:
         event = state.process(msg)
     except Exception:
