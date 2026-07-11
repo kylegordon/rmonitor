@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/kylegordon/rmonitor/compare/v0.1.3...v0.1.4) (2026-05-31)
+
+
+### Features
+
+* compact mobile header with branding left, pills right ([678fcd8](https://github.com/kylegordon/rmonitor/commit/678fcd86da524ed2c5e6dba0bedbb28934d6f66b))
+
 ## [0.1.3](https://github.com/kylegordon/rmonitor/compare/v0.1.2...v0.1.3) (2026-05-31)
 
 
