@@ -292,6 +292,42 @@ async def test_feed_recovery_broadcasts_full_state(app, client):
 
 
 @pytest.mark.asyncio
+async def test_feed_recovery_clears_stale_entrants(app, client):
+    """Entrants from before a feed outage must not merge with the new race.
+
+    Regression test: if the feed drops out (e.g. DNS failures on the relay)
+    for long enough to trip the no-feed watchdog, and a session-change ($I)
+    message is missed during the outage, competitors from the old race must
+    not linger and get mixed in with the new race's entrants once the feed
+    reconnects.
+    """
+    from server.server import race_state_key
+
+    assert len(app[race_state_key].competitors) == 1  # "Alice" from the fixture
+
+    app[feed_state_key]["feed_lost"] = True
+
+    resp = await client.post(
+        "/api/ingest",
+        json={
+            "type": "competitor",
+            "reg_number": "2",
+            "number": "2",
+            "first_name": "Bob",
+            "last_name": "Racer",
+            "nationality": "GBR",
+            "class_number": "1",
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+
+    competitors = app[race_state_key].competitors
+    assert "1" not in competitors  # stale entrant from before the outage is gone
+    assert "2" in competitors  # only the new race's entrant remains
+
+
+@pytest.mark.asyncio
 async def test_ingest_records_last_ingest_at(app, client):
     """Successful ingest updates last_ingest_at (which is pre-seeded at startup)."""
     # last_ingest_at is seeded at startup time, not None
