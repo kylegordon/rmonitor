@@ -30,13 +30,13 @@ def _feed_state(app) -> dict:
     return app[feed_state_key]
 
 
-def create_app(race_state, relay_secret: str = "") -> web.Application:
+def create_app(race_state, relay_secret: str = "", restored: bool = False) -> web.Application:
     app = web.Application()
     app[race_state_key] = race_state
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
     app[relay_secret_key] = relay_secret
-    app[feed_state_key] = {"last_ingest_at": None, "feed_lost": False, "watchdog_task": None}
+    app[feed_state_key] = {"last_ingest_at": None, "feed_lost": restored, "watchdog_task": None}
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
