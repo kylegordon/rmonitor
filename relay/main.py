@@ -6,11 +6,17 @@ and forwards it to the server via HTTP POST.
 Messages are delivered in order: each POST completes (or retries) before
 the next TCP message is read, preserving protocol ordering at the cost of
 blocking the TCP reader during transient server outages.
+
+Connection-level failures (DNS resolution, refused connections, timeouts)
+are not retried in-process: the relay exits and relies on the container's
+`restart: unless-stopped` policy to come back up with a fresh event loop,
+connector, and resolver state rather than spinning in a stuck retry loop.
 """
 
 import asyncio
 import logging
 import os
+import sys
 
 import aiohttp
 
@@ -30,10 +36,12 @@ _RETRIABLE = frozenset({429, 500, 502, 503, 504})
 
 
 async def post_message(session: aiohttp.ClientSession, msg: dict) -> None:
-    """POST a parsed message to the server, retrying on transient failures.
+    """POST a parsed message to the server, retrying on transient HTTP failures.
 
     Non-retriable responses (400, 401, …) are logged and dropped so that
-    a poison message cannot stall the relay indefinitely.
+    a poison message cannot stall the relay indefinitely. Connection-level
+    failures (DNS, refused connections, timeouts) are not retried here –
+    they exit the process so the container restart policy can recover.
     """
     url = f"{SERVER_URL.rstrip('/')}/api/ingest"
     headers = {"Authorization": f"Bearer {RELAY_SECRET}"}
@@ -55,7 +63,8 @@ async def post_message(session: aiohttp.ClientSession, msg: dict) -> None:
                     "Server returned %s – retrying in %ss", resp.status, RETRY_DELAY
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            log.warning("POST failed: %s – retrying in %ss", exc, RETRY_DELAY)
+            log.error("POST failed: %s – exiting so the container can restart", exc)
+            sys.exit(1)
         await asyncio.sleep(RETRY_DELAY)
 
 
