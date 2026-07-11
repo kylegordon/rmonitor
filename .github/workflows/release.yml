@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  prepare-release:
+    name: Prepare Release PR
+    runs-on: ubuntu-latest
+    if: "!startsWith(github.event.head_commit.message, 'chore(master): release ')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        run: |
+          CURRENT=$(cat VERSION)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEXT"
+
+      - name: Generate release notes
+        id: notes
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data } = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: 'v${{ steps.version.outputs.next }}',
+              target_commitish: 'master',
+            });
+            return data.body;
+          result-encoding: string
+
+      - name: Update VERSION and CHANGELOG.md
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.version.outputs.next }}
+          NOTES: ${{ steps.notes.outputs.result }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "$NEXT" > VERSION
+          TODAY=$(date -u +%Y-%m-%d)
+          {
+            echo "# Changelog"
+            echo
+            echo "## [$NEXT](https://github.com/$REPO/compare/v$CURRENT...v$NEXT) ($TODAY)"
+            echo
+            echo "$NOTES"
+            echo
+            tail -n +2 CHANGELOG.md
+          } > CHANGELOG.md.new
+          mv CHANGELOG.md.new CHANGELOG.md
+
+      - name: Create or update release PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(master): release ${{ steps.version.outputs.next }}"
+          branch: release/next
+          title: "chore(master): release ${{ steps.version.outputs.next }}"
+          body: ${{ steps.notes.outputs.result }}
+          labels: release
+
+  publish-release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    if: "startsWith(github.event.head_commit.message, 'chore(master): release ')"
+    outputs:
+      tag_name: v${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-relay:
+    needs: publish-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/rmonitor-relay
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}},value=${{ needs.publish-release.outputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.publish-release.outputs.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push relay image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: relay/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=relay
+          cache-to: type=gha,scope=relay,mode=max
+
+  publish-server:
+    needs: publish-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/rmonitor-server
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}},value=${{ needs.publish-release.outputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.publish-release.outputs.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
