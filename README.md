@@ -122,6 +122,13 @@ security). Each rMonitor message is sent as a single JSON object to `POST /api/i
 > make/model** (e.g. "Porsche 911 GT3 RSR", "Mini Cooper S"). The web
 > interface displays this as a tooltip when hovering over a driver's name.
 
+> **Note:** Competitor/class/run records (`$A`/`$COMP`/`$C`/`$B`) are only
+> sent by Orbits on change, or on a periodic "refresh" broadcast. If the
+> relay connects (or reconnects) mid-session and the display shows car
+> numbers with no driver names or classes, use Orbits' **"Refresh
+> Scoreboard Feed"** button to force it to resend the full competitor list
+> immediately, rather than waiting for the next periodic refresh or session.
+
 The parser follows the same protocol specification as:
 
 - [only-entertainment/rmonitor](https://github.com/only-entertainment/rmonitor) (Python)
