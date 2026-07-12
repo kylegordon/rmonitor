@@ -26,6 +26,7 @@ log = logging.getLogger("relay")
 
 RMONITOR_HOST = os.environ.get("RMONITOR_HOST", "127.0.0.1")
 RMONITOR_PORT = int(os.environ.get("RMONITOR_PORT", "50000"))
+FEED_READ_TIMEOUT = float(os.environ.get("FEED_READ_TIMEOUT", "30.0"))
 SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8080")
 RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 POST_TIMEOUT = float(os.environ.get("POST_TIMEOUT", "5.0"))
@@ -105,5 +106,7 @@ async def main() -> None:
         async def on_message(msg: dict) -> None:
             await post_message(http, msg)
 
-        client = RMonitorClient(RMONITOR_HOST, RMONITOR_PORT, on_message)
+        client = RMonitorClient(
+            RMONITOR_HOST, RMONITOR_PORT, on_message, read_timeout=FEED_READ_TIMEOUT
+        )
         await client.run()
