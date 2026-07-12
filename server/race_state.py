@@ -10,6 +10,7 @@ Protocol as implemented by:
 from __future__ import annotations
 
 import logging
+import time
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class RaceState:
         self._is_qualifying: bool = False
         self._seen_race_info: bool = False
         self._dirty = True
+        self.last_updated: float = time.time()
 
     @property
     def dirty(self) -> bool:
@@ -86,7 +88,10 @@ class RaceState:
         should be notified, or *None* for silent updates."""
         handler = self._HANDLERS.get(msg.get("type"))
         if handler:
-            return handler(self, _coerce_scalars(msg))
+            event = handler(self, _coerce_scalars(msg))
+            if event is not None:
+                self.last_updated = time.time()
+            return event
         return None
 
     # ---- handlers ----
@@ -274,6 +279,7 @@ class RaceState:
             "laps_to_go": self.laps_to_go,
             "_is_qualifying": self._is_qualifying,
             "_seen_race_info": self._seen_race_info,
+            "last_updated": self.last_updated,
         }
 
     def _load_dict(self, data: dict) -> None:
@@ -290,6 +296,7 @@ class RaceState:
         self.laps_to_go = data.get("laps_to_go", "")
         self._is_qualifying = data.get("_is_qualifying", False)
         self._seen_race_info = data.get("_seen_race_info", False)
+        self.last_updated = data.get("last_updated", time.time())
         self._dirty = True
 
     def _derive_session_mode(self) -> str:

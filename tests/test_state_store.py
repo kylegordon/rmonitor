@@ -42,3 +42,21 @@ def test_no_max_age_restores_regardless_of_age(tmp_path):
     path.write_text(json.dumps(payload), encoding="utf-8")
     store = JsonFileStateStore(path)
     assert store.load() == {"track_name": "Silverstone"}
+
+
+def test_repeated_saves_of_unchanged_data_do_not_refresh_staleness(tmp_path):
+    """A periodic save loop calls save() unconditionally on every tick, even
+    when the underlying race hasn't produced a new message in a while. If
+    save() stamped saved_at with wall-clock "now" on every call, that alone
+    would keep resetting the age of genuinely stale data back to zero,
+    defeating the max-age check entirely. staleness must track the data's
+    own last_updated, not the time save() happened to run.
+    """
+    path = tmp_path / "state.json"
+    store = JsonFileStateStore(path, max_age_seconds=900)
+    stale_data = {"track_name": "Silverstone", "last_updated": time.time() - 3600}
+
+    for _ in range(3):
+        store.save(stale_data)
+
+    assert store.load() == {}
