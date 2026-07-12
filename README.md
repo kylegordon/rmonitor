@@ -1,5 +1,11 @@
 # SMART Live Timing
 
+[![Tests](https://github.com/kylegordon/rmonitor/actions/workflows/tests.yml/badge.svg)](https://github.com/kylegordon/rmonitor/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/kylegordon/rmonitor)](https://github.com/kylegordon/rmonitor/releases)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org)
+[![Docker Image - relay](https://img.shields.io/badge/ghcr.io-rmonitor--relay-blue?logo=docker&logoColor=white)](https://github.com/kylegordon/rmonitor/pkgs/container/rmonitor-relay)
+[![Docker Image - server](https://img.shields.io/badge/ghcr.io-rmonitor--server-blue?logo=docker&logoColor=white)](https://github.com/kylegordon/rmonitor/pkgs/container/rmonitor-server)
+
 A Python application that connects to an **AMB rMonitor** timing feed
 (as used by MyLaps Orbits and similar systems) and displays a live-updating
 leaderboard in the browser.
