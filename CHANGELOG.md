@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.8](https://github.com/kylegordon/rmonitor/compare/v0.1.7...v0.1.8) (2026-07-12)
+
+## What's Changed
+* fix(relay): exit on connection failure instead of retrying forever by @kylegordon in https://github.com/kylegordon/rmonitor/pull/45
+* fix(server): reset race state when the feed recovers from an outage by @kylegordon in https://github.com/kylegordon/rmonitor/pull/47
+* fix(server): discard stale persisted state on restart by @kylegordon in https://github.com/kylegordon/rmonitor/pull/48
+* fix: harden ingest handling, close broadcast/auth/retry gaps found in review by @kylegordon in https://github.com/kylegordon/rmonitor/pull/49
+* docs: add badges to README by @kylegordon in https://github.com/kylegordon/rmonitor/pull/51
+* fix(relay): reconnect when the feed goes silent without erroring by @kylegordon in https://github.com/kylegordon/rmonitor/pull/50
+* fix(deploy): move SERVER_URL from up.sh default into .env by @kylegordon in https://github.com/kylegordon/rmonitor/pull/52
+* fix(server): tie state staleness to last data change, not last save by @kylegordon in https://github.com/kylegordon/rmonitor/pull/53
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.7...v0.1.8
+
+
 ## [0.1.7](https://github.com/kylegordon/rmonitor/compare/v0.1.6...v0.1.7) (2026-07-11)
 
 ## What's Changed
