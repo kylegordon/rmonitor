@@ -97,6 +97,7 @@ python -m relay
 | `WEB_PORT` | `8080` | Web server port |
 | `STATE_FILE` | `data/state.json` | Where to persist race state |
 | `SAVE_INTERVAL` | `10` | How often (seconds) to persist state |
+| `STATE_MAX_AGE` | `900` | Discard persisted state older than this (seconds) on startup |
 | `BROADCAST_INTERVAL` | `0.25` | WebSocket push interval (seconds) |
 
 ## Communication
