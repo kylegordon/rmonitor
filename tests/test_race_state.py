@@ -383,3 +383,46 @@ def test_session_mode_warm_up_with_race_info_is_practice(state):
         "laps": "1", "total_time": "00:01:30.000",
     })
     assert state.snapshot()["session_mode"] == "Practice"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: /api/ingest carries untrusted JSON from the network.
+# A non-string value in a field normally treated as a string must not crash
+# snapshot() (which is also called from the unsupervised periodic broadcast
+# loop, where an uncaught exception would silently kill live updates for
+# every connected client).
+# ---------------------------------------------------------------------------
+
+def test_snapshot_survives_non_string_flag(state):
+    state.process({
+        "type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+        "time_of_day": "14:00:00", "race_time": "00:50:00", "flag": 123,
+    })
+    snap = state.snapshot()
+    assert snap["flag"] == "123"
+
+
+def test_snapshot_survives_non_string_total_time(state):
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "1",
+        "laps": 3, "total_time": 12345,
+    })
+    snap = state.snapshot()
+    entry = snap["entries"][0]
+    assert entry["total_time"] == "12345"
+    assert entry["laps"] == "3"
+
+
+def test_snapshot_survives_non_string_best_lap_time(state):
+    state.process({
+        "type": "qual_info", "position": "1", "reg_number": "1",
+        "best_lap": 2, "best_lap_time": 61.5,
+    })
+    snap = state.snapshot()
+    assert snap["entries"][0]["best_lap_time"] == "61.5"
+
+
+def test_lap_time_seconds_ignores_non_string_input():
+    from server.race_state import _lap_time_seconds
+    assert _lap_time_seconds(12345) is None
+    assert _lap_time_seconds(["not", "a", "string"]) is None

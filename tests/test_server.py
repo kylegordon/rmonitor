@@ -166,6 +166,34 @@ async def test_ingest_updates_race_state(client, app):
 
 
 @pytest.mark.asyncio
+async def test_ingest_with_empty_relay_secret_allows_no_auth_header(race_state):
+    """RELAY_SECRET='' is a documented way to disable ingest auth entirely."""
+    app = create_app(race_state, relay_secret="")
+    async with test_utils.TestClient(test_utils.TestServer(app)) as client:
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+                  "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+        )
+        assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_ingest_with_empty_relay_secret_allows_any_auth_header(race_state):
+    """Confirms auth is truly bypassed when RELAY_SECRET is empty, not just
+    lenient about a missing header."""
+    app = create_app(race_state, relay_secret="")
+    async with test_utils.TestClient(test_utils.TestServer(app)) as client:
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "heartbeat", "laps_to_go": "5", "time_to_go": "00:05:00",
+                  "time_of_day": "14:00:00", "race_time": "00:05:00", "flag": "Green"},
+            headers={"Authorization": "garbage-value"},
+        )
+        assert resp.status == 200
+
+
+@pytest.mark.asyncio
 async def test_ingest_missing_type_returns_400(client):
     resp = await client.post(
         "/api/ingest",
@@ -247,8 +275,14 @@ async def test_no_feed_sent_immediately_on_connect_when_timed_out(app, client):
         assert app[feed_state_key]["feed_lost"] is True
 
 @pytest.mark.asyncio
-async def test_no_feed_watchdog_broadcasts_no_feed(app, client):
-    """Watchdog sends 'no_feed' event after the timeout threshold is exceeded."""
+async def test_no_feed_watchdog_broadcasts_no_feed(app, client, monkeypatch):
+    """Watchdog sends 'no_feed' event after the timeout threshold is exceeded.
+
+    Drives the real ``_feed_watchdog`` coroutine (rather than reimplementing
+    its condition inline) by patching its 30-second poll sleep so the first
+    iteration fires immediately and the second raises CancelledError, which
+    the watchdog's own try/except treats as a normal stop.
+    """
     async with client.ws_connect("/ws") as ws:
         await ws.receive_json()  # consume initial 'full'
 
@@ -257,12 +291,23 @@ async def test_no_feed_watchdog_broadcasts_no_feed(app, client):
         fs["last_ingest_at"] = time.monotonic() - 400  # 400 s ago > 300 s threshold
         fs["feed_lost"] = False
 
-        # Trigger the watchdog logic directly (avoid waiting 30 s)
-        from server.server import NO_FEED_TIMEOUT
-        last = fs["last_ingest_at"]
-        if last is not None and (time.monotonic() - last) > NO_FEED_TIMEOUT:
-            fs["feed_lost"] = True
-            await broadcast(app, "no_feed", {})
+        from server.server import _feed_watchdog
+
+        real_sleep = asyncio.sleep
+        sleep_calls = 0
+
+        async def fast_sleep(_delay):
+            # NB: this patches the shared `asyncio` module, so it must call
+            # the captured real sleep rather than asyncio.sleep to avoid
+            # recursing into itself.
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        monkeypatch.setattr("server.server.asyncio.sleep", fast_sleep)
+        await _feed_watchdog(app)
 
         msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
         assert msg["event"] == "no_feed"

@@ -30,6 +30,8 @@ SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8080")
 RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 POST_TIMEOUT = float(os.environ.get("POST_TIMEOUT", "5.0"))
 RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "1.0"))
+RETRY_MAX_DELAY = float(os.environ.get("RETRY_MAX_DELAY", "30.0"))
+RETRY_MAX_ATTEMPTS = int(os.environ.get("RETRY_MAX_ATTEMPTS", "30"))
 
 # HTTP status codes that indicate a transient failure worth retrying.
 _RETRIABLE = frozenset({429, 500, 502, 503, 504})
@@ -42,10 +44,16 @@ async def post_message(session: aiohttp.ClientSession, msg: dict) -> None:
     a poison message cannot stall the relay indefinitely. Connection-level
     failures (DNS, refused connections, timeouts) are not retried here –
     they exit the process so the container restart policy can recover.
+
+    Retriable HTTP failures (429/5xx) back off exponentially up to
+    RETRY_MAX_DELAY. After RETRY_MAX_ATTEMPTS the relay gives up and exits
+    the same way connection-level failures do, rather than blocking the
+    TCP reader forever on a server outage that never resolves.
     """
     url = f"{SERVER_URL.rstrip('/')}/api/ingest"
     headers = {"Authorization": f"Bearer {RELAY_SECRET}"}
     timeout = aiohttp.ClientTimeout(total=POST_TIMEOUT)
+    attempt = 0
     while True:
         try:
             async with session.post(
@@ -59,13 +67,27 @@ async def post_message(session: aiohttp.ClientSession, msg: dict) -> None:
                             msg.get("type"),
                         )
                     return
+                attempt += 1
+                if attempt >= RETRY_MAX_ATTEMPTS:
+                    log.error(
+                        "Server still returning %s after %d attempts – "
+                        "exiting so the container can restart",
+                        resp.status,
+                        attempt,
+                    )
+                    sys.exit(1)
+                delay = min(RETRY_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
                 log.warning(
-                    "Server returned %s – retrying in %ss", resp.status, RETRY_DELAY
+                    "Server returned %s – retrying in %.1fs (attempt %d/%d)",
+                    resp.status,
+                    delay,
+                    attempt,
+                    RETRY_MAX_ATTEMPTS,
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             log.error("POST failed: %s – exiting so the container can restart", exc)
             sys.exit(1)
-        await asyncio.sleep(RETRY_DELAY)
+        await asyncio.sleep(delay)
 
 
 async def main() -> None:

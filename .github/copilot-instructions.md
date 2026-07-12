@@ -78,7 +78,7 @@ docker-compose.yml      # Both services; optional `tunnel` profile adds cloudfla
                                                  [Browser clients]
 ```
 
-- **Relay** parses each TCP line → dict → POSTs to `/api/ingest` with `Authorization: Bearer <RELAY_SECRET>`. Retries on 5xx/429/network errors; drops on 4xx.
+- **Relay** parses each TCP line → dict → POSTs to `/api/ingest` with `Authorization: Bearer <RELAY_SECRET>`. Retries on 5xx/429 with capped exponential backoff, giving up after `RETRY_MAX_ATTEMPTS`; drops on other 4xx; exits immediately (for the container to restart) on connection-level/network errors.
 - **Server** applies messages to `RaceState` and broadcasts to WebSocket clients. Returns 401 on bad key, 400 on bad/missing payload.
 - **`StateStore`** (`server/state_store.py`) abstracts persistence: `JsonFileStateStore` for Docker, replaceable with DynamoDB/Redis for Lambda.
 - **`dirty` flag** on `RaceState` prevents redundant WebSocket broadcasts.
@@ -117,7 +117,9 @@ Adding a new message type: register a parser with `@_reg("$X")` in `relay/rmonit
 | `SERVER_URL`    | `http://localhost:8080` | Base URL of the server               |
 | `RELAY_SECRET`  | *(empty)*       | Shared key; warning logged if unset          |
 | `POST_TIMEOUT`  | `5.0`           | HTTP POST timeout (seconds)                  |
-| `RETRY_DELAY`   | `1.0`           | Delay between retries on transient failure   |
+| `RETRY_DELAY`   | `1.0`           | Initial delay between retries on transient failure |
+| `RETRY_MAX_DELAY` | `30.0`        | Cap on the exponential backoff retry delay   |
+| `RETRY_MAX_ATTEMPTS` | `30`       | Give up and exit after this many transient-failure retries |
 
 ### Server
 | Variable            | Default             | Description                              |
