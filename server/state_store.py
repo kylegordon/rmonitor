@@ -41,6 +41,14 @@ class JsonFileStateStore(StateStore):
     resumes cleanly, while a restart hours later (e.g. the next day, before a
     new race's ``$I`` init message arrives) doesn't merge stale competitors
     from the old race into the new one.
+
+    The timestamp reflects when *data* last actually changed (``data["last_updated"]``,
+    maintained by ``RaceState``), not when this method happened to run. ``save()``
+    is called unconditionally on a fixed interval regardless of whether the feed
+    is still producing new data, so stamping "now" on every write would keep
+    resetting the age of genuinely stale data (e.g. a race that ended hours ago
+    with the server left running) back to zero, defeating the staleness check
+    entirely.
     """
 
     def __init__(self, path: str | Path, max_age_seconds: float | None = None) -> None:
@@ -71,7 +79,7 @@ class JsonFileStateStore(StateStore):
     def save(self, data: dict) -> None:
         tmp = self._path.with_suffix(".tmp")
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"saved_at": time.time(), "data": data}
+        payload = {"saved_at": data.get("last_updated", time.time()), "data": data}
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(self._path)
         log.debug("State saved to %s", self._path)
