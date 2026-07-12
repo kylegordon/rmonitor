@@ -168,3 +168,72 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=server
           cache-to: type=gha,scope=server,mode=max
+
+  build-relay-binaries:
+    needs: publish-release
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install python3-tk (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk
+
+      - name: Install dependencies
+        run: pip install -r relay/requirements.txt -r relay/requirements-build.txt
+
+      - name: Generate relay/_version.py from VERSION
+        run: echo "CURRENT_VERSION = \"$(cat VERSION)\"" > relay/_version.py
+
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name rmonitor-relay-gui relay/gui.py
+
+      - name: Rename binary for release asset (Windows)
+        if: matrix.os == 'windows-latest'
+        run: mv dist/rmonitor-relay-gui.exe dist/rmonitor-relay-gui-windows-x64.exe
+
+      - name: Rename binary for release asset (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: mv dist/rmonitor-relay-gui dist/rmonitor-relay-gui-linux-x64
+
+      - name: Smoke-launch the built exe (Windows only)
+        # Confirms the freshly-built binary starts without a missing-DLL
+        # error (e.g. vcruntime140.dll) on this runner's image. This is a
+        # necessary but not sufficient proxy for "no prior installation
+        # dependencies" — windows-latest ships the VC++ Redistributable
+        # preinstalled, so it cannot prove the binary is dependency-free on
+        # an arbitrary clean machine. See the plan's Manual success criteria
+        # for the definitive clean-machine check.
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist/rmonitor-relay-gui-windows-x64.exe" -PassThru
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            Write-Error "rmonitor-relay-gui-windows-x64.exe exited immediately (exit code $($proc.ExitCode)) - likely a missing-DLL or startup error"
+            exit 1
+          }
+          Stop-Process -Id $proc.Id -Force
+
+      - name: Attach binary to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.publish-release.outputs.tag_name }}
+          files: |
+            dist/rmonitor-relay-gui-windows-x64.exe
+            dist/rmonitor-relay-gui-linux-x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

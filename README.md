@@ -81,6 +81,38 @@ export RELAY_SECRET=change-me
 python -m relay
 ```
 
+### Download a prebuilt binary (relay, no Docker/Python required)
+
+For trackside machines without Docker or a Python toolchain installed, the
+relay is also available as a standalone GUI application — a single
+downloadable file with no installation step, for **Windows x64** and
+**Linux x64**:
+
+1. Download `rmonitor-relay-gui-windows-x64.exe` (Windows) or
+   `rmonitor-relay-gui-linux-x64` (Linux) from the
+   [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases).
+2. Run it directly — no separate Python install, no Visual C++
+   Redistributable, nothing else to set up first.
+3. A small dialog opens with three fields: **feed IP** (default
+   `127.0.0.1`), **feed port** (default `50000`), and **relay secret**, plus
+   a **Save / Apply** button. Fill these in to match your `rMonitor` feed and
+   server, then click Save / Apply — the relay reconnects with the new
+   values immediately, without restarting the app.
+4. The dialog window stays open for as long as the relay should keep
+   running; closing it stops the relay.
+
+This binary is unsigned (no code-signing certificate) — your OS may show an
+"unknown publisher" warning on first launch.
+
+**Update notifications:** on startup, and again every 6 hours, the app
+checks whether a newer release is available. If so, a message with a link
+to the [Releases page](https://github.com/kylegordon/rmonitor/releases)
+appears in the dialog. This is notify-only — nothing is downloaded or
+installed automatically; you decide when to grab the new version.
+
+This is a second, GUI-based distribution method alongside Docker — Docker
+remains fully supported and unchanged for headless/server deployments.
+
 ## Configuration
 
 ### Relay
@@ -96,6 +128,18 @@ python -m relay
 | `RETRY_DELAY` | `1.0` | Initial delay between retries on transient (429/5xx) failure |
 | `RETRY_MAX_DELAY` | `30.0` | Cap on the exponential backoff delay between retries |
 | `RETRY_MAX_ATTEMPTS` | `30` | Give up and exit (for container restart) after this many transient-failure retries |
+
+The prebuilt GUI binary (see "Download a prebuilt binary" above) uses the
+same variable names, in the same `KEY=value` `.env` file format as
+`.env.example` at the repo root — the GUI dialog's Save/Apply only edits
+`RMONITOR_HOST`, `RMONITOR_PORT`, and `RELAY_SECRET`; the remaining values
+above keep their defaults unless you hand-edit the `.env` file yourself.
+The GUI build stores this file per-OS:
+
+| OS | `.env` location |
+|---|---|
+| Windows | `%APPDATA%\rmonitor-relay\.env` (Roaming AppData) |
+| Linux | `~/.config/rmonitor-relay/.env` (XDG config dir) |
 
 ### Server
 
@@ -179,7 +223,11 @@ python3 -m pytest tests/ -v
 ```
 relay/
 ├── rmonitor_client.py  # Async TCP client and protocol parser
-└── main.py             # Entry point — connects to feed, POSTs to server
+├── main.py             # Entry point — connects to feed, POSTs to server
+├── gui.py              # Standalone GUI entry point (PyInstaller build) — config dialog + update check
+├── env_config.py       # .env reader/writer for the GUI build's Save/Apply
+├── update_check.py     # Polls VERSION, compares against the running build
+└── _version.py         # Generated at build time from VERSION (gitignored, not committed)
 
 server/
 ├── race_state.py       # In-memory race state
