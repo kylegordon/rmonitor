@@ -41,9 +41,15 @@ async def _broadcast_loop() -> None:
     """Periodically push dirty state to WebSocket clients."""
     while True:
         await asyncio.sleep(BROADCAST_INTERVAL)
-        if race_state.dirty:
-            await broadcast(app, "update", race_state.snapshot())
-            race_state.mark_clean()
+        try:
+            if race_state.dirty:
+                # Clear the flag *before* awaiting the broadcast, not after,
+                # so a mutation that lands while the broadcast is in flight
+                # re-dirties the state instead of being silently discarded.
+                race_state.mark_clean()
+                await broadcast(app, "update", race_state.snapshot())
+        except Exception:
+            log.exception("Broadcast loop iteration failed")
 
 
 async def _save_loop() -> None:
@@ -51,8 +57,8 @@ async def _save_loop() -> None:
     while True:
         await asyncio.sleep(SAVE_INTERVAL)
         try:
-            store.save(race_state._to_dict())
-        except OSError as exc:
+            await asyncio.to_thread(store.save, race_state._to_dict())
+        except Exception as exc:
             log.warning("Failed to save state: %s", exc)
 
 
@@ -63,8 +69,8 @@ async def start_background_tasks(_app: web.Application) -> None:
 
 async def cleanup_background_tasks(_app: web.Application) -> None:
     try:
-        store.save(race_state._to_dict())
-    except OSError as exc:
+        await asyncio.to_thread(store.save, race_state._to_dict())
+    except Exception as exc:
         log.warning("Failed to save state on shutdown: %s", exc)
     for key in ("broadcast_task", "save_task"):
         task = _app.get(key)

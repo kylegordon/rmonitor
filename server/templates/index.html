@@ -310,6 +310,11 @@
     let rowMap = {};
     let knownServerInstanceId = null;
 
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function flagClass(flag) {
       const f = (flag || '').toLowerCase();
       if (f.includes('green')) return 'flag-green';
@@ -409,7 +414,7 @@
                        : e.position_change === 'down' ? ' <span class="arrow-down">▼</span>'
                        : ' <span class="arrow-none"></span>';
         const cellData = [
-          { html: posText + posArrow, cls: 'pos' },
+          { html: escapeHtml(String(posText)) + posArrow, cls: 'pos' },
           { text: e.number || e.reg_number, cls: 'number' },
           { text: name, title: vehicle },
           { text: cls },

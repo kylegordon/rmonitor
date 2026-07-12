@@ -1,6 +1,7 @@
 """aiohttp web server with WebSocket push for live race state."""
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -61,6 +62,17 @@ async def handle_api_state(request: web.Request) -> web.Response:
 
 
 async def handle_healthz(request: web.Request) -> web.Response:
+    for key in ("broadcast_task", "save_task"):
+        task = request.app.get(key)
+        if task is not None and task.done():
+            return web.json_response(
+                {"status": "error", "detail": f"{key} has stopped"}, status=503
+            )
+    watchdog = _feed_state(request.app).get("watchdog_task")
+    if watchdog is not None and watchdog.done():
+        return web.json_response(
+            {"status": "error", "detail": "watchdog_task has stopped"}, status=503
+        )
     return web.json_response({"status": "ok"})
 
 
@@ -101,7 +113,7 @@ async def handle_ingest(request: web.Request) -> web.Response:
     """Receive a parsed rMonitor message from the relay and apply it to state."""
     secret = request.app[relay_secret_key]
     auth = request.headers.get("Authorization", "")
-    if secret and auth != f"Bearer {secret}":
+    if secret and not hmac.compare_digest(auth, f"Bearer {secret}"):
         raise web.HTTPUnauthorized(reason="Invalid relay secret")
     try:
         msg = await request.json()

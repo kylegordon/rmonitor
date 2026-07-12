@@ -29,8 +29,24 @@ def _lap_time_seconds(t: str) -> float | None:
             s = float(rest)
             return int(m) * 60 + s
         return float(parts[0])
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, AttributeError, TypeError):
         return None
+
+
+def _coerce_scalars(msg: dict) -> dict:
+    """Coerce non-string/None scalar values in an ingest message to str.
+
+    Ingest messages arrive as untrusted JSON from the network. A malformed
+    or malicious payload could substitute e.g. an int or list for a field
+    the rest of this module treats as a string (flag, total_time, ...),
+    which would otherwise crash later in snapshot() rather than at the
+    point the bad value entered state. Real relay-sourced messages already
+    contain only strings, so this is a no-op for well-formed input.
+    """
+    return {
+        k: v if v is None or isinstance(v, (dict, list)) else str(v)
+        for k, v in msg.items()
+    }
 
 
 class RaceState:
@@ -70,7 +86,7 @@ class RaceState:
         should be notified, or *None* for silent updates."""
         handler = self._HANDLERS.get(msg.get("type"))
         if handler:
-            return handler(self, msg)
+            return handler(self, _coerce_scalars(msg))
         return None
 
     # ---- handlers ----
@@ -215,7 +231,7 @@ class RaceState:
 
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict."""
-        flag = self.flag.strip().lower()
+        flag = str(self.flag).strip().lower()
         if flag == "purple":
             sort_fn = _sort_key_purple
         elif self._is_qualifying:

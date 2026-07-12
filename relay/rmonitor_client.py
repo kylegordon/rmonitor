@@ -37,7 +37,7 @@ class RMonitorClient:
             except asyncio.CancelledError:
                 break
             finally:
-                self._close()
+                await self._close()
             await asyncio.sleep(reconnect_delay)
 
     async def _read_loop(self):
@@ -56,9 +56,13 @@ class RMonitorClient:
             except Exception:
                 log.exception("Error processing line: %s", line)
 
-    def _close(self):
+    async def _close(self):
         if self._writer and not self._writer.is_closing():
             self._writer.close()
+            try:
+                await self._writer.wait_closed()
+            except OSError:
+                pass
         self._writer = None
         self._reader = None
 

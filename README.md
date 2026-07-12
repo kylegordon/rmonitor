@@ -86,7 +86,9 @@ python -m relay
 | `SERVER_URL` | `http://localhost:8080` | Base URL of the server |
 | `RELAY_SECRET` | *(empty)* | Shared key sent as `Authorization: Bearer` header |
 | `POST_TIMEOUT` | `5.0` | HTTP POST timeout in seconds |
-| `RETRY_DELAY` | `1.0` | Delay between retries on transient failure |
+| `RETRY_DELAY` | `1.0` | Initial delay between retries on transient (429/5xx) failure |
+| `RETRY_MAX_DELAY` | `30.0` | Cap on the exponential backoff delay between retries |
+| `RETRY_MAX_ATTEMPTS` | `30` | Give up and exit (for container restart) after this many transient-failure retries |
 
 ### Server
 
