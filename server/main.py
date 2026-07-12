@@ -25,9 +25,10 @@ WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "data/state.json"))
 SAVE_INTERVAL = float(os.environ.get("SAVE_INTERVAL", "10"))
+STATE_MAX_AGE = float(os.environ.get("STATE_MAX_AGE", str(15 * 60)))
 RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 
-store = JsonFileStateStore(STATE_FILE)
+store = JsonFileStateStore(STATE_FILE, max_age_seconds=STATE_MAX_AGE)
 race_state = RaceState()
 saved = store.load()
 if saved:
