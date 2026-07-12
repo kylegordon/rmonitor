@@ -13,12 +13,21 @@ log = logging.getLogger(__name__)
 
 
 class RMonitorClient:
-    """Connect to an rMonitor TCP feed, parse messages, and call back."""
+    """Connect to an rMonitor TCP feed, parse messages, and call back.
 
-    def __init__(self, host: str, port: int, on_message):
+    Reconnects on a hard connection error, and also if the feed goes
+    silent for `read_timeout` seconds — a stalled/half-open TCP connection
+    (e.g. dropped by a NAT or firewall idle timeout) leaves `readline()`
+    blocked forever with no exception raised, so silence has to be treated
+    as a failure in its own right rather than relying on the socket to
+    error out.
+    """
+
+    def __init__(self, host: str, port: int, on_message, read_timeout: float = 30.0):
         self.host = host
         self.port = port
         self.on_message = on_message
+        self.read_timeout = read_timeout
         self._reader = None
         self._writer = None
 
@@ -42,7 +51,17 @@ class RMonitorClient:
 
     async def _read_loop(self):
         while True:
-            raw = await self._reader.readline()
+            try:
+                raw = await asyncio.wait_for(
+                    self._reader.readline(), timeout=self.read_timeout
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "No data received from feed for %.0fs – treating connection "
+                    "as dead and reconnecting",
+                    self.read_timeout,
+                )
+                return
             if not raw:
                 log.warning("Connection closed by remote end")
                 return

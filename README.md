@@ -89,6 +89,7 @@ python -m relay
 |---|---|---|
 | `RMONITOR_HOST` | `127.0.0.1` | rMonitor feed hostname or IP |
 | `RMONITOR_PORT` | `50000` | rMonitor feed TCP port |
+| `FEED_READ_TIMEOUT` | `30.0` | Reconnect if no data (not even a `$F` heartbeat) is received from the feed for this many seconds — guards against a stalled TCP connection that never errors out |
 | `SERVER_URL` | `http://localhost:8080` | Base URL of the server |
 | `RELAY_SECRET` | *(empty)* | Shared key sent as `Authorization: Bearer` header |
 | `POST_TIMEOUT` | `5.0` | HTTP POST timeout in seconds |
