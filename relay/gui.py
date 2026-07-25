@@ -1,8 +1,9 @@
 """GUI entry point for the relay's standalone (PyInstaller) build.
 
-Provides a small Tkinter dialog (feed IP, feed port, relay secret,
-Save/Apply) that persists to an `.env` file and reconfigures the relay's
-TCP-to-HTTP forwarding loop in-process, without relaunching the process.
+Provides a small Tkinter dialog (feed IP, feed port, server URL, relay
+secret, Save/Apply) that persists to an `.env` file and reconfigures the
+relay's TCP-to-HTTP forwarding loop in-process, without relaunching the
+process.
 Also polls the repo's `VERSION` file on startup and every 6 hours, showing
 a notification with a link to the GitHub Releases page when a newer
 version is available (notify-only, no auto-update).
@@ -43,6 +44,7 @@ log = logging.getLogger("relay.gui")
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = "50000"
+_DEFAULT_SERVER_URL = "http://localhost:8080"
 _UPDATE_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 
@@ -59,6 +61,7 @@ class RelayGuiApp:
         self.env_path = env_config.default_env_path()
         self.host_var = tk.StringVar()
         self.port_var = tk.StringVar()
+        self.server_url_var = tk.StringVar()
         self.secret_var = tk.StringVar()
         self.update_var = tk.StringVar(value="")
 
@@ -78,19 +81,22 @@ class RelayGuiApp:
         ttk.Label(frame, text="Feed port:").grid(row=1, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.port_var).grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(frame, text="Relay secret:").grid(row=2, column=0, sticky="w")
+        ttk.Label(frame, text="Server URL:").grid(row=2, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.server_url_var).grid(row=2, column=1, sticky="ew")
+
+        ttk.Label(frame, text="Relay secret:").grid(row=3, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.secret_var, show="*").grid(
-            row=2, column=1, sticky="ew"
+            row=3, column=1, sticky="ew"
         )
 
         ttk.Button(frame, text="Save / Apply", command=self._on_save).grid(
-            row=3, column=0, columnspan=2, pady=(8, 0)
+            row=4, column=0, columnspan=2, pady=(8, 0)
         )
 
         self.update_label = ttk.Label(
             frame, textvariable=self.update_var, foreground="blue", cursor="hand2"
         )
-        self.update_label.grid(row=4, column=0, columnspan=2, pady=(8, 0))
+        self.update_label.grid(row=5, column=0, columnspan=2, pady=(8, 0))
         self.update_label.bind("<Button-1>", lambda _event: webbrowser.open(update_check.RELEASES_URL))
         self.update_label.grid_remove()
 
@@ -100,6 +106,7 @@ class RelayGuiApp:
         values = env_config.load_env_file(self.env_path)
         self.host_var.set(values.get("RMONITOR_HOST", _DEFAULT_HOST))
         self.port_var.set(values.get("RMONITOR_PORT", _DEFAULT_PORT))
+        self.server_url_var.set(values.get("SERVER_URL", _DEFAULT_SERVER_URL))
         self.secret_var.set(values.get("RELAY_SECRET", ""))
 
     def _config_from_fields(self) -> RelayConfig:
@@ -107,6 +114,7 @@ class RelayGuiApp:
             RelayConfig.from_env(),
             host=self.host_var.get(),
             port=int(self.port_var.get()),
+            server_url=self.server_url_var.get(),
             relay_secret=self.secret_var.get(),
         )
 
@@ -121,6 +129,7 @@ class RelayGuiApp:
             {
                 "RMONITOR_HOST": self.host_var.get(),
                 "RMONITOR_PORT": self.port_var.get(),
+                "SERVER_URL": self.server_url_var.get(),
                 "RELAY_SECRET": self.secret_var.get(),
             },
         )
