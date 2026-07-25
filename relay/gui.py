@@ -47,6 +47,12 @@ _UPDATE_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 
 class RelayGuiApp:
+    """Tkinter config dialog: feed IP/port/secret fields backed by the
+    `.env` file at `env_config.default_env_path()`, wired to a `RelayRunner`
+    so Save/Apply reconfigures the running relay without relaunching, plus
+    a polled update-available notification.
+    """
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.runner = RelayRunner()
