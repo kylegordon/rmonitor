@@ -214,7 +214,7 @@ python rmonitor_send.py
 ## Running tests
 
 ```bash
-pip install pytest pytest-asyncio aiohttp
+pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
 python3 -m pytest tests/ -v
 ```
 

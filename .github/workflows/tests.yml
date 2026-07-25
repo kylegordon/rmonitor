@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install pytest pytest-asyncio aiohttp
+        run: pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
 
       - name: Run tests
         run: python -m pytest tests/ -v
