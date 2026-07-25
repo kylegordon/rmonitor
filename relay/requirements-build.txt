@@ -1,0 +1,2 @@
+pyinstaller>=6.21,<7
+platformdirs>=4.10,<5

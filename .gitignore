@@ -12,3 +12,5 @@ venv/
 captures/*.log
 data/
 docker-compose.override.yml
+relay/_version.py
+*.spec

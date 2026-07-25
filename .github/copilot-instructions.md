@@ -22,7 +22,7 @@ This applies to every change, no matter how small.
 
 - **Python 3.12** — all async/await patterns using `asyncio`
 - **aiohttp ≥ 3.9, < 4** — the only runtime dependency (HTTP client in relay; web server in server)
-- **pytest + pytest-asyncio** — for testing (`pip install pytest pytest-asyncio aiohttp`)
+- **pytest + pytest-asyncio** — for testing (`pip install -r requirements-dev.txt`), plus each component's own `requirements*.txt` (see Pitfall 11)
 - **Docker / Docker Compose** — for containerised deployment
 - No database, no ORM, no frontend build step
 
@@ -189,7 +189,7 @@ Point the tunnel public hostname to `http://server:8080`.
 ## Testing
 
 ```bash
-pip install pytest pytest-asyncio aiohttp
+pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
 python3 -m pytest tests/ -v
 
 # Run a single test file
@@ -246,4 +246,6 @@ python3 -m pytest tests/test_server.py::test_ingest_valid_auth_returns_ok -v
     **Purple flag overrides sort regardless of mode**: Under a purple flag, `snapshot()` uses `_sort_key_purple` (total_time ascending) regardless of `_is_qualifying`. Intended for formation/pace laps at race end where cars are on track in order of total time.
 
     **String matching is spelling-sensitive**: `_derive_session_mode()` handles `"familiarisation"` (British English) but will silently return `"Race"` for any unrecognised description (e.g. `"Free Practice"`, `"Shakedown"`, `"Warm-up"`). Always check `_derive_session_mode()` when a new session type is needed.
+
+11. **Dependencies belong in `requirements*.txt`, never hand-listed in a workflow's `pip install` line**: `.github/workflows/tests.yml` used to run `pip install pytest pytest-asyncio aiohttp` directly, so when `relay/gui.py`/`relay/env_config.py` started importing `platformdirs` (declared only in `relay/requirements-build.txt`), the test job's `pip install` step didn't pick it up and `tests/test_gui.py`/`tests/test_env_config.py` failed collection with `ModuleNotFoundError` — while `release.yml`/`publish.yml`, which already installed from `-r relay/requirements.txt -r relay/requirements-build.txt`, were unaffected. `tests.yml` now installs from `requirements-dev.txt` (pytest tooling) plus `relay/requirements.txt`, `relay/requirements-build.txt`, and `server/requirements.txt` — the same files the build/release workflows and local dev setup use. When adding a new import: add the package to the requirements file matching its scope (`relay/requirements.txt` for the headless runtime path, `relay/requirements-build.txt` for GUI/PyInstaller-only deps, `requirements-dev.txt` for test-only tooling) — don't add it to a workflow's inline `pip install` list, or the next workflow that doesn't happen to list it will silently drift out of sync.
 
