@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.11](https://github.com/kylegordon/rmonitor/compare/v0.1.10...v0.1.11) (2026-07-25)
+
+## What's Changed
+* feat(relay): prettify GUI with ttk styling and live connectivity indicators by @kylegordon in https://github.com/kylegordon/rmonitor/pull/63
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.10...v0.1.11
+
+
 ## [0.1.10](https://github.com/kylegordon/rmonitor/compare/v0.1.9...v0.1.10) (2026-07-25)
 
 ## What's Changed
