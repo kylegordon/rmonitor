@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.10](https://github.com/kylegordon/rmonitor/compare/v0.1.9...v0.1.10) (2026-07-25)
+
+## What's Changed
+* fix(relay): install binutils in CI, document RelayGuiApp by @kylegordon in https://github.com/kylegordon/rmonitor/pull/58
+* Create dependabot.yml by @kylegordon in https://github.com/kylegordon/rmonitor/pull/57
+* Revert "Create dependabot.yml" by @kylegordon in https://github.com/kylegordon/rmonitor/pull/60
+* Feature/cross platform relay gui app by @kylegordon in https://github.com/kylegordon/rmonitor/pull/61
+* feat(relay): surface Server URL as a GUI dialog field by @kylegordon in https://github.com/kylegordon/rmonitor/pull/62
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.9...v0.1.10
+
+
 ## [0.1.9](https://github.com/kylegordon/rmonitor/compare/v0.1.8...v0.1.9) (2026-07-25)
 
 ## What's Changed
