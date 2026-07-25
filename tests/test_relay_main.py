@@ -109,3 +109,13 @@ async def test_post_message_exits_after_max_retriable_attempts(monkeypatch):
         await relay_main.post_message(session, {"type": "heartbeat"})
     assert exc_info.value.code == 1
     assert session.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_post_message_calls_on_attempt_once_per_post_including_retries():
+    calls = []
+    session = FakeSession([503, 200])
+    await relay_main.post_message(
+        session, {"type": "heartbeat"}, on_attempt=lambda: calls.append(1)
+    )
+    assert len(calls) == 2

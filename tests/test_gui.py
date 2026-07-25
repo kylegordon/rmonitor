@@ -5,6 +5,7 @@ update-poll scheduling (no real background-loop dependency), so this only
 exercises widget construction, default values, and notification visibility.
 """
 
+import time
 import tkinter as tk
 
 import pytest
@@ -13,7 +14,7 @@ from relay import env_config, gui
 
 
 class FakeRunner:
-    def __init__(self):
+    def __init__(self, **_callbacks):
         self.started_with = None
         self.restarted_with = None
 
@@ -110,3 +111,41 @@ def test_on_save_with_invalid_port_does_not_write_or_restart(app):
 
     assert env_config.load_env_file(app.env_path) == {}
     assert app.runner.restarted_with is None
+
+
+def test_set_feed_connected_toggles_dot_color(app):
+    app._set_feed_connected(True)
+    assert str(app.feed_dot.cget("foreground")) == gui._CONNECTED_COLOR
+
+    app._set_feed_connected(False)
+    assert str(app.feed_dot.cget("foreground")) == gui._DISCONNECTED_COLOR
+
+
+def test_set_server_connected_toggles_dot_color(app):
+    app._set_server_connected(True)
+    assert str(app.server_dot.cget("foreground")) == gui._CONNECTED_COLOR
+
+    app._set_server_connected(False)
+    assert str(app.server_dot.cget("foreground")) == gui._DISCONNECTED_COLOR
+
+
+def test_pulse_sets_active_then_reverts_to_idle(app):
+    app._pulse(app.feed_heart)
+    app.root.update_idletasks()
+    assert str(app.feed_heart.cget("foreground")) == gui._HEARTBEAT_ACTIVE_COLOR
+
+    time.sleep((gui._HEARTBEAT_PULSE_MS / 1000) + 0.2)
+    app.root.update()
+    assert str(app.feed_heart.cget("foreground")) == gui._HEARTBEAT_IDLE_COLOR
+
+
+def test_save_confirmation_shows_then_hides_after_save(app):
+    assert not app.save_confirmation.winfo_ismapped()
+
+    app._on_save()
+    app.root.update_idletasks()
+    assert app.save_confirmation.winfo_ismapped()
+
+    time.sleep((gui._SAVE_CONFIRMATION_MS / 1000) + 0.2)
+    app.root.update()
+    assert not app.save_confirmation.winfo_ismapped()

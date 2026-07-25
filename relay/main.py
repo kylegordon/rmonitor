@@ -77,7 +77,11 @@ _RETRIABLE = frozenset({429, 500, 502, 503, 504})
 
 
 async def post_message(
-    session: aiohttp.ClientSession, msg: dict, config: RelayConfig | None = None
+    session: aiohttp.ClientSession,
+    msg: dict,
+    config: RelayConfig | None = None,
+    *,
+    on_attempt=None,
 ) -> None:
     """POST a parsed message to the server, retrying on transient HTTP failures.
 
@@ -96,11 +100,13 @@ async def post_message(
     monkeypatch the module globals above still take effect.
     """
     cfg = config if config is not None else RelayConfig.from_env()
+    on_attempt = on_attempt if on_attempt is not None else lambda: None
     url = f"{cfg.server_url.rstrip('/')}/api/ingest"
     headers = {"Authorization": f"Bearer {cfg.relay_secret}"}
     timeout = aiohttp.ClientTimeout(total=cfg.post_timeout)
     attempt = 0
     while True:
+        on_attempt()
         try:
             async with session.post(
                 url, json=msg, headers=headers, timeout=timeout
@@ -138,12 +144,22 @@ async def post_message(
         await asyncio.sleep(delay)
 
 
-async def main(config: RelayConfig | None = None) -> None:
+async def main(
+    config: RelayConfig | None = None,
+    *,
+    on_feed_connect=None,
+    on_feed_disconnect=None,
+    on_feed_line=None,
+    on_server_attempt=None,
+) -> None:
     """Run the relay loop: connect to the feed, POST each message to the server.
 
     `config` defaults to `RelayConfig.from_env()` when omitted (the headless
     Docker/console path, unchanged); a caller that restarts the relay
     in-process (e.g. the GUI build's Save/Apply) passes an explicit config.
+
+    The `on_*` callbacks are optional GUI-facing status hooks (default
+    no-ops); the headless path never passes them.
     """
     cfg = config if config is not None else RelayConfig.from_env()
     if not cfg.relay_secret:
@@ -158,10 +174,16 @@ async def main(config: RelayConfig | None = None) -> None:
     )
     async with aiohttp.ClientSession() as http:
         async def on_message(msg: dict) -> None:
-            await post_message(http, msg, cfg)
+            await post_message(http, msg, cfg, on_attempt=on_server_attempt)
 
         client = RMonitorClient(
-            cfg.host, cfg.port, on_message, read_timeout=cfg.feed_read_timeout
+            cfg.host,
+            cfg.port,
+            on_message,
+            read_timeout=cfg.feed_read_timeout,
+            on_connect=on_feed_connect,
+            on_disconnect=on_feed_disconnect,
+            on_raw_line=on_feed_line,
         )
         await client.run()
 
@@ -176,10 +198,33 @@ class RelayRunner:
     main thread.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        on_feed_connect=None,
+        on_feed_disconnect=None,
+        on_feed_line=None,
+        on_server_attempt=None,
+        on_server_connect=None,
+        on_server_disconnect=None,
+    ) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._task: asyncio.Task | None = None
+        self._on_feed_connect = on_feed_connect if on_feed_connect is not None else lambda: None
+        self._on_feed_disconnect = (
+            on_feed_disconnect if on_feed_disconnect is not None else lambda: None
+        )
+        self._on_feed_line = on_feed_line if on_feed_line is not None else lambda: None
+        self._on_server_attempt = (
+            on_server_attempt if on_server_attempt is not None else lambda: None
+        )
+        self._on_server_connect = (
+            on_server_connect if on_server_connect is not None else lambda: None
+        )
+        self._on_server_disconnect = (
+            on_server_disconnect if on_server_disconnect is not None else lambda: None
+        )
 
     def start(self, config: RelayConfig) -> None:
         if self._thread is not None:
@@ -242,7 +287,35 @@ class RelayRunner:
                 pass
             except Exception:
                 log.exception("Previous relay task ended while reconfiguring")
-        self._task = asyncio.ensure_future(main(config))
+        self._task = asyncio.ensure_future(self._run_with_respawn(config))
+
+    async def _run_with_respawn(self, config: RelayConfig) -> None:
+        """Run `main(config)`, respawning it after any unhandled exception
+        (including the `SystemExit` `post_message` raises on a hard server
+        failure) instead of letting the background thread's task die
+        silently. Catching inside this coroutine's own `try/except` keeps
+        the exception from ever reaching `asyncio.tasks.Task.__step`'s
+        `SystemExit`/`KeyboardInterrupt` special-case handling, which can
+        otherwise unwind the loop before a done-callback observes it.
+        """
+        self._on_server_connect()
+        while True:
+            try:
+                await main(
+                    config,
+                    on_feed_connect=self._on_feed_connect,
+                    on_feed_disconnect=self._on_feed_disconnect,
+                    on_feed_line=self._on_feed_line,
+                    on_server_attempt=self._on_server_attempt,
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                log.exception("Relay task ended unexpectedly – respawning")
+                self._on_server_disconnect()
+                await asyncio.sleep(config.retry_delay)
+                self._on_server_connect()
 
     async def _cancel_task(self) -> None:
         if self._task is not None and not self._task.done():

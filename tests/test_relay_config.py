@@ -7,6 +7,7 @@ lifecycle can be exercised in isolation.
 
 import asyncio
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -62,7 +63,7 @@ def fake_main(monkeypatch):
     recording start/cancel events with the config it was given."""
     events = []
 
-    async def _fake_main(config):
+    async def _fake_main(config, **_callbacks):
         events.append(("start", config))
         try:
             await asyncio.Event().wait()
@@ -71,6 +72,27 @@ def fake_main(monkeypatch):
             raise
 
     monkeypatch.setattr(relay_main, "main", _fake_main)
+    return events
+
+
+@pytest.fixture
+def flaky_main(monkeypatch):
+    """Replace relay.main.main with a coroutine that raises SystemExit on its
+    first call (simulating post_message's hard-failure exit), then hangs on
+    every subsequent call so a second respawn attempt can be observed
+    without looping forever."""
+    events = []
+    call_count = 0
+
+    async def _flaky_main(config, **_callbacks):
+        nonlocal call_count
+        call_count += 1
+        events.append(("start", call_count))
+        if call_count == 1:
+            raise SystemExit(1)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(relay_main, "main", _flaky_main)
     return events
 
 
@@ -147,3 +169,23 @@ def test_stop_cancels_running_task_and_joins_thread(fake_main):
 
     assert runner._thread is None
     assert any(kind == "cancelled" for kind, _ in fake_main)
+
+
+def test_respawns_after_system_exit_without_killing_thread(flaky_main, monkeypatch):
+    monkeypatch.setattr(relay_main.asyncio, "sleep", AsyncMock(return_value=None))
+
+    server_connects = []
+    server_disconnects = []
+    runner = RelayRunner(
+        on_server_connect=lambda: server_connects.append(1),
+        on_server_disconnect=lambda: server_disconnects.append(1),
+    )
+    runner.start(_config())
+    try:
+        assert _wait_until(lambda: len(flaky_main) >= 2)
+        assert [kind for kind, _ in flaky_main][:2] == ["start", "start"]
+        assert len(server_disconnects) == 1
+        assert len(server_connects) == 2
+        assert runner._thread.is_alive()
+    finally:
+        runner.stop()
