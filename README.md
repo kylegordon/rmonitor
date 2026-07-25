@@ -93,11 +93,12 @@ downloadable file with no installation step, for **Windows x64** and
    [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases).
 2. Run it directly — no separate Python install, no Visual C++
    Redistributable, nothing else to set up first.
-3. A small dialog opens with three fields: **feed IP** (default
-   `127.0.0.1`), **feed port** (default `50000`), and **relay secret**, plus
-   a **Save / Apply** button. Fill these in to match your `rMonitor` feed and
-   server, then click Save / Apply — the relay reconnects with the new
-   values immediately, without restarting the app.
+3. A small dialog opens with four fields: **feed IP** (default
+   `127.0.0.1`), **feed port** (default `50000`), **Server URL** (default
+   `http://localhost:8080`), and **relay secret**, plus a **Save / Apply**
+   button. Fill these in to match your `rMonitor` feed and server, then click
+   Save / Apply — the relay reconnects with the new values immediately,
+   without restarting the app.
 4. The dialog window stays open for as long as the relay should keep
    running; closing it stops the relay.
 
@@ -131,9 +132,10 @@ remains fully supported and unchanged for headless/server deployments.
 
 The prebuilt GUI binary (see "Download a prebuilt binary" above) uses the
 same variable names, in the same `KEY=value` `.env` file format as
-`.env.example` at the repo root — the GUI dialog's Save/Apply only edits
-`RMONITOR_HOST`, `RMONITOR_PORT`, and `RELAY_SECRET`; the remaining values
-above keep their defaults unless you hand-edit the `.env` file yourself.
+`.env.example` at the repo root — the GUI dialog's Save/Apply edits
+`RMONITOR_HOST`, `RMONITOR_PORT`, `SERVER_URL`, and `RELAY_SECRET`; the
+remaining values above keep their defaults unless you hand-edit the `.env`
+file yourself.
 The GUI build stores this file per-OS:
 
 | OS | `.env` location |

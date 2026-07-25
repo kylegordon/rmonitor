@@ -49,6 +49,7 @@ def app(monkeypatch, tmp_path):
 def test_fields_show_documented_defaults_when_no_env_file(app):
     assert app.host_var.get() == "127.0.0.1"
     assert app.port_var.get() == "50000"
+    assert app.server_url_var.get() == "http://localhost:8080"
     assert app.secret_var.get() == ""
 
 
@@ -85,6 +86,7 @@ def test_update_notification_stays_hidden_when_not_newer(app, monkeypatch):
 def test_on_save_persists_fields_and_restarts_runner_with_matching_config(app):
     app.host_var.set("10.0.0.5")
     app.port_var.set("12345")
+    app.server_url_var.set("https://example.com")
     app.secret_var.set("s3cr3t")
 
     app._on_save()
@@ -92,10 +94,12 @@ def test_on_save_persists_fields_and_restarts_runner_with_matching_config(app):
     saved = env_config.load_env_file(app.env_path)
     assert saved["RMONITOR_HOST"] == "10.0.0.5"
     assert saved["RMONITOR_PORT"] == "12345"
+    assert saved["SERVER_URL"] == "https://example.com"
     assert saved["RELAY_SECRET"] == "s3cr3t"
 
     assert app.runner.restarted_with.host == "10.0.0.5"
     assert app.runner.restarted_with.port == 12345
+    assert app.runner.restarted_with.server_url == "https://example.com"
     assert app.runner.restarted_with.relay_secret == "s3cr3t"
 
 
