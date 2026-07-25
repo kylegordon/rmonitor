@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.9](https://github.com/kylegordon/rmonitor/compare/v0.1.8...v0.1.9) (2026-07-25)
+
+## What's Changed
+* docs: note Orbits' Refresh Scoreboard Feed button for missing names/classes by @kylegordon in https://github.com/kylegordon/rmonitor/pull/54
+* feat(relay): standalone cross-platform GUI build (Windows/Linux) by @kylegordon in https://github.com/kylegordon/rmonitor/pull/56
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.8...v0.1.9
+
+
 ## [0.1.8](https://github.com/kylegordon/rmonitor/compare/v0.1.7...v0.1.8) (2026-07-12)
 
 ## What's Changed
