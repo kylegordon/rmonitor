@@ -186,11 +186,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install python3-tk (Linux only)
+      - name: Install python3-tk and binutils (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-tk
+          sudo apt-get install -y -qq python3-tk binutils
 
       - name: Install dependencies
         run: pip install -r relay/requirements.txt -r relay/requirements-build.txt
