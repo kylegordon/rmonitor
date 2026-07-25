@@ -64,3 +64,124 @@ async def test_read_loop_returns_immediately_on_remote_close():
     await asyncio.wait_for(client._read_loop(), timeout=1.0)
 
     assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_on_connect_fires_once_after_successful_connect(monkeypatch):
+    from relay import rmonitor_client
+
+    connects = []
+
+    async def fake_open_connection(host, port):
+        return HangingReader(), None
+
+    monkeypatch.setattr(rmonitor_client.asyncio, "open_connection", fake_open_connection)
+
+    client = RMonitorClient(
+        "host", 1234, lambda msg: None, on_connect=lambda: connects.append(1)
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.05), timeout=1.0)
+        assert connects == [1]
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_fires_once_when_read_loop_returns_on_idle_timeout(monkeypatch):
+    from relay import rmonitor_client
+
+    disconnects = []
+
+    async def fake_open_connection(host, port):
+        return HangingReader(), None
+
+    monkeypatch.setattr(rmonitor_client.asyncio, "open_connection", fake_open_connection)
+
+    client = RMonitorClient(
+        "host", 1234, lambda msg: None, read_timeout=0.05,
+        on_disconnect=lambda: disconnects.append(1),
+    )
+    task = asyncio.ensure_future(client.run(reconnect_delay=100))
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.15), timeout=2.0)
+        assert disconnects == [1]
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_fires_once_per_remote_close(monkeypatch):
+    from relay import rmonitor_client
+
+    disconnects = []
+
+    async def fake_open_connection(host, port):
+        return QueuedReader([b""]), None
+
+    monkeypatch.setattr(rmonitor_client.asyncio, "open_connection", fake_open_connection)
+
+    client = RMonitorClient(
+        "host", 1234, lambda msg: None,
+        on_disconnect=lambda: disconnects.append(1),
+    )
+    task = asyncio.ensure_future(client.run(reconnect_delay=100))
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.05), timeout=2.0)
+        assert disconnects == [1]
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_fires_once_on_cancellation(monkeypatch):
+    from relay import rmonitor_client
+
+    disconnects = []
+
+    async def fake_open_connection(host, port):
+        return HangingReader(), None
+
+    monkeypatch.setattr(rmonitor_client.asyncio, "open_connection", fake_open_connection)
+
+    client = RMonitorClient(
+        "host", 1234, lambda msg: None,
+        on_disconnect=lambda: disconnects.append(1),
+    )
+    task = asyncio.ensure_future(client.run())
+    await asyncio.wait_for(asyncio.sleep(0.05), timeout=1.0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert disconnects == [1]
+
+
+@pytest.mark.asyncio
+async def test_on_raw_line_fires_once_per_raw_line_including_unrecognized():
+    messages = []
+    raw_line_count = [0]
+    client = RMonitorClient(
+        "host", 1234, messages.append, read_timeout=0.05,
+        on_raw_line=lambda: raw_line_count.__setitem__(0, raw_line_count[0] + 1),
+    )
+    client._reader = QueuedReader([b"$UNKNOWN,1\r\n", b'$B,31,"Practice"\r\n'])
+
+    await asyncio.wait_for(client._read_loop(), timeout=1.0)
+
+    assert raw_line_count[0] == 2
+    assert messages == [{"type": "run", "unique_number": "31", "description": "Practice"}]

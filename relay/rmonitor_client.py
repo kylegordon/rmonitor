@@ -23,11 +23,24 @@ class RMonitorClient:
     error out.
     """
 
-    def __init__(self, host: str, port: int, on_message, read_timeout: float = 30.0):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        on_message,
+        read_timeout: float = 30.0,
+        *,
+        on_connect=None,
+        on_disconnect=None,
+        on_raw_line=None,
+    ):
         self.host = host
         self.port = port
         self.on_message = on_message
         self.read_timeout = read_timeout
+        self.on_connect = on_connect if on_connect is not None else lambda: None
+        self.on_disconnect = on_disconnect if on_disconnect is not None else lambda: None
+        self.on_raw_line = on_raw_line if on_raw_line is not None else lambda: None
         self._reader = None
         self._writer = None
 
@@ -40,12 +53,14 @@ class RMonitorClient:
                     self.host, self.port
                 )
                 log.info("Connected to rMonitor feed")
+                self.on_connect()
                 await self._read_loop()
             except (ConnectionError, OSError) as exc:
                 log.warning("Connection error: %s – retrying in %ss", exc, reconnect_delay)
             except asyncio.CancelledError:
                 break
             finally:
+                self.on_disconnect()
                 await self._close()
             await asyncio.sleep(reconnect_delay)
 
@@ -65,6 +80,7 @@ class RMonitorClient:
             if not raw:
                 log.warning("Connection closed by remote end")
                 return
+            self.on_raw_line()
             line = raw.decode("utf-8", errors="replace").strip("\r\n")
             if not line:
                 continue
