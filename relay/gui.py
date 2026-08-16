@@ -55,6 +55,7 @@ _DISCONNECTED_STYLE = "danger"
 _PULSE_STYLE = "info"
 _HEARTBEAT_PULSE_MS = 400
 _SAVE_CONFIRMATION_MS = 1500
+_CLOSING_NOTICE_MS = 1000
 
 
 class RelayGuiApp:
@@ -155,6 +156,10 @@ class RelayGuiApp:
         self.save_confirmation = ttk.Label(frame, text="Saved", foreground="green")
         self.save_confirmation.grid(row=4, column=0, columnspan=2, pady=(4, 0))
         self.save_confirmation.grid_remove()
+
+        self.closing_notice = ttk.Label(frame, text="Closing…", foreground="green")
+        self.closing_notice.grid(row=4, column=0, columnspan=2, pady=(4, 0))
+        self.closing_notice.grid_remove()
 
         self.update_label = ttk.Label(
             frame, textvariable=self.update_var, foreground="blue", cursor="hand2"
@@ -270,6 +275,10 @@ class RelayGuiApp:
             self.update_label.grid_remove()
 
     def on_close(self) -> None:
+        self.closing_notice.grid()
+        self.root.after(_CLOSING_NOTICE_MS, self._finish_close)
+
+    def _finish_close(self) -> None:
         # RelayRunner.stop() waits on a deadline for the background task to
         # finish cancelling and raises TimeoutError if a graceful shutdown
         # (e.g. an in-flight HTTPS POST) runs long. The runner thread is a
@@ -288,7 +297,7 @@ def main_gui() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     root = tk.Tk()
-    root.title("rMonitor Relay")
+    root.title(f"rMonitor Relay v{CURRENT_VERSION}")
     app = RelayGuiApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
