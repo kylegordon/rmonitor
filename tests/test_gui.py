@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 
 import pytest
+import ttkbootstrap as ttb
 
 from relay import env_config, gui
 
@@ -36,6 +37,11 @@ def app(monkeypatch, tmp_path):
     monkeypatch.setattr(gui.env_config, "default_env_path", lambda: tmp_path / ".env")
     monkeypatch.setattr(gui, "RelayRunner", FakeRunner)
     monkeypatch.setattr(gui.RelayGuiApp, "_poll_update", lambda self: None)
+
+    # ttkbootstrap.Style is a process-wide singleton; without resetting it,
+    # the second test in a session would reuse a Style bound to the previous
+    # test's already-destroyed Tk root.
+    monkeypatch.setattr(ttb.Style, "instance", None)
 
     try:
         root = tk.Tk()
@@ -84,6 +90,20 @@ def test_update_notification_stays_hidden_when_not_newer(app, monkeypatch):
     assert not app.update_label.winfo_ismapped()
 
 
+def test_runner_start_is_deferred_until_mainloop_processes_events(app):
+    # RelayRunner.start() spins up a background thread that touches Tkinter
+    # almost immediately (on_server_connect). Calling it synchronously from
+    # __init__, before root.mainloop() is running, races that thread against
+    # the main thread and can crash with "main thread is not in main loop".
+    # __init__ must only *schedule* the start via after(0, ...), not call it
+    # directly, so it can't run until the event loop is confirmed pumping.
+    assert app.runner.started_with is None
+
+    app.root.update()
+
+    assert app.runner.started_with is not None
+
+
 def test_on_save_persists_fields_and_restarts_runner_with_matching_config(app):
     app.host_var.set("10.0.0.5")
     app.port_var.set("12345")
@@ -113,30 +133,39 @@ def test_on_save_with_invalid_port_does_not_write_or_restart(app):
     assert app.runner.restarted_with is None
 
 
-def test_set_feed_connected_toggles_dot_color(app):
+def _bootstyle_of(widget) -> str:
+    # ttkbootstrap widgets don't expose the bootstyle keyword back via cget;
+    # the applied color lives in the composed ttk style name instead
+    # (e.g. "success.TButton").
+    return str(widget.cget("style")).split(".")[0]
+
+
+def test_set_feed_connected_toggles_status_button_style(app):
     app._set_feed_connected(True)
-    assert str(app.feed_dot.cget("foreground")) == gui._CONNECTED_COLOR
+    assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
 
     app._set_feed_connected(False)
-    assert str(app.feed_dot.cget("foreground")) == gui._DISCONNECTED_COLOR
+    assert _bootstyle_of(app.feed_status) == gui._DISCONNECTED_STYLE
 
 
-def test_set_server_connected_toggles_dot_color(app):
+def test_set_server_connected_toggles_status_button_style(app):
     app._set_server_connected(True)
-    assert str(app.server_dot.cget("foreground")) == gui._CONNECTED_COLOR
+    assert _bootstyle_of(app.server_status) == gui._CONNECTED_STYLE
 
     app._set_server_connected(False)
-    assert str(app.server_dot.cget("foreground")) == gui._DISCONNECTED_COLOR
+    assert _bootstyle_of(app.server_status) == gui._DISCONNECTED_STYLE
 
 
-def test_pulse_sets_active_then_reverts_to_idle(app):
-    app._pulse(app.feed_heart)
+def test_pulse_sets_active_then_reverts_to_current_state(app):
+    app._set_feed_connected(True)
+
+    app._pulse_feed()
     app.root.update_idletasks()
-    assert str(app.feed_heart.cget("foreground")) == gui._HEARTBEAT_ACTIVE_COLOR
+    assert _bootstyle_of(app.feed_status) == gui._PULSE_STYLE
 
     time.sleep((gui._HEARTBEAT_PULSE_MS / 1000) + 0.2)
     app.root.update()
-    assert str(app.feed_heart.cget("foreground")) == gui._HEARTBEAT_IDLE_COLOR
+    assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
 
 
 def test_save_confirmation_shows_then_hides_after_save(app):
@@ -149,3 +178,16 @@ def test_save_confirmation_shows_then_hides_after_save(app):
     time.sleep((gui._SAVE_CONFIRMATION_MS / 1000) + 0.2)
     app.root.update()
     assert not app.save_confirmation.winfo_ismapped()
+
+
+def test_on_close_destroys_window_even_if_runner_stop_times_out(app, monkeypatch):
+    def raise_timeout(timeout=5.0):
+        raise TimeoutError("did not stop in time")
+
+    monkeypatch.setattr(app.runner, "stop", raise_timeout)
+    destroyed = []
+    monkeypatch.setattr(app.root, "destroy", lambda: destroyed.append(True))
+
+    app.on_close()
+
+    assert destroyed == [True]
