@@ -21,6 +21,8 @@ import tkinter as tk
 import webbrowser
 from tkinter import ttk
 
+import ttkbootstrap as ttb
+
 # The `.env` file must be merged into os.environ *before* relay.main is
 # imported, since RelayConfig.from_env() reads module globals that
 # relay.main fixes at import time from os.environ. This is how advanced
@@ -47,10 +49,10 @@ _DEFAULT_PORT = "50000"
 _DEFAULT_SERVER_URL = "http://localhost:8080"
 _UPDATE_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-_CONNECTED_COLOR = "green"
-_DISCONNECTED_COLOR = "red"
-_HEARTBEAT_IDLE_COLOR = "gray"
-_HEARTBEAT_ACTIVE_COLOR = "red"
+_THEME = "bootstrap-light"
+_CONNECTED_STYLE = "success"
+_DISCONNECTED_STYLE = "danger"
+_PULSE_STYLE = "info"
 _HEARTBEAT_PULSE_MS = 400
 _SAVE_CONFIRMATION_MS = 1500
 
@@ -70,6 +72,8 @@ class RelayGuiApp:
         self.server_url_var = tk.StringVar()
         self.secret_var = tk.StringVar()
         self.update_var = tk.StringVar(value="")
+        self._feed_connected = False
+        self._server_connected = False
 
         self._configure_style()
         self._build_widgets()
@@ -83,85 +87,112 @@ class RelayGuiApp:
             on_server_connect=self._on_server_connect,
             on_server_disconnect=self._on_server_disconnect,
         )
+        # Deferred via `after(0, ...)` rather than called directly: start()
+        # spins up the runner's background thread, which calls
+        # on_server_connect() (touching Tkinter via root.after()) almost
+        # immediately – before any real network I/O. If that races ahead of
+        # this constructor returning to main_gui()'s root.mainloop() call,
+        # Tkinter raises "main thread is not in main loop" from the
+        # background thread, which isn't caught anywhere in
+        # RelayRunner._run_with_respawn and silently kills the relay task
+        # before it ever attempts the feed connection. Scheduling start()
+        # through after(0, ...) guarantees mainloop is already pumping
+        # events by the time it (and the thread it spawns) runs.
+        self.root.after(0, self._start_runner)
+
+    def _start_runner(self) -> None:
         self.runner.start(self._config_from_fields())
         self._poll_update()
 
     def _configure_style(self) -> None:
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure("TLabelframe", padding=8)
-        style.configure("TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
-        style.configure("TButton", padding=6)
-        style.configure("TEntry", padding=2)
+        self.style = ttb.Style(theme=_THEME)
+        self.style.configure("TLabelframe", padding=8)
+        self.style.configure("TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+        self.style.configure("TEntry", padding=2)
 
     def _build_widgets(self) -> None:
         frame = ttk.Frame(self.root, padding=12)
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+
+        self.feed_status = ttb.Button(
+            frame, text="RMonitor Source", bootstyle=self._feed_style()
+        )
+        self.feed_status.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
+
+        self.server_status = ttb.Button(
+            frame, text="Feed Destination", bootstyle=self._server_style()
+        )
+        self.server_status.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
 
         feed_frame = ttk.LabelFrame(frame, text="Feed")
-        feed_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        feed_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         feed_frame.columnconfigure(1, weight=1)
 
         ttk.Label(feed_frame, text="Feed IP:").grid(row=0, column=0, sticky="w")
         ttk.Entry(feed_frame, textvariable=self.host_var).grid(row=0, column=1, sticky="ew")
-        self.feed_dot = ttk.Label(feed_frame, text="●", foreground=_DISCONNECTED_COLOR)
-        self.feed_dot.grid(row=0, column=2, padx=(6, 0))
-        self.feed_heart = ttk.Label(feed_frame, text="♥", foreground=_HEARTBEAT_IDLE_COLOR)
-        self.feed_heart.grid(row=0, column=3, padx=(4, 0))
 
         ttk.Label(feed_frame, text="Feed port:").grid(row=1, column=0, sticky="w")
         ttk.Entry(feed_frame, textvariable=self.port_var).grid(row=1, column=1, sticky="ew")
 
         server_frame = ttk.LabelFrame(frame, text="Server")
-        server_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        server_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         server_frame.columnconfigure(1, weight=1)
 
         ttk.Label(server_frame, text="Server URL:").grid(row=0, column=0, sticky="w")
         ttk.Entry(server_frame, textvariable=self.server_url_var).grid(row=0, column=1, sticky="ew")
-        self.server_dot = ttk.Label(server_frame, text="●", foreground=_DISCONNECTED_COLOR)
-        self.server_dot.grid(row=0, column=2, padx=(6, 0))
-        self.server_heart = ttk.Label(server_frame, text="♥", foreground=_HEARTBEAT_IDLE_COLOR)
-        self.server_heart.grid(row=0, column=3, padx=(4, 0))
 
         ttk.Label(server_frame, text="Relay secret:").grid(row=1, column=0, sticky="w")
         ttk.Entry(server_frame, textvariable=self.secret_var, show="*").grid(
             row=1, column=1, sticky="ew"
         )
 
-        ttk.Button(frame, text="Save / Apply", command=self._on_save).grid(
-            row=2, column=0, pady=(8, 0)
+        ttb.Button(frame, text="Save / Apply", bootstyle="primary", command=self._on_save).grid(
+            row=3, column=0, columnspan=2, pady=(8, 0)
         )
 
         self.save_confirmation = ttk.Label(frame, text="Saved", foreground="green")
-        self.save_confirmation.grid(row=3, column=0, pady=(4, 0))
+        self.save_confirmation.grid(row=4, column=0, columnspan=2, pady=(4, 0))
         self.save_confirmation.grid_remove()
 
         self.update_label = ttk.Label(
             frame, textvariable=self.update_var, foreground="blue", cursor="hand2"
         )
-        self.update_label.grid(row=4, column=0, pady=(8, 0))
+        self.update_label.grid(row=5, column=0, columnspan=2, pady=(8, 0))
         self.update_label.bind("<Button-1>", lambda _event: webbrowser.open(update_check.RELEASES_URL))
         self.update_label.grid_remove()
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.root.minsize(360, 260)
+        self.root.minsize(380, 300)
+
+    def _feed_style(self) -> str:
+        return _CONNECTED_STYLE if self._feed_connected else _DISCONNECTED_STYLE
+
+    def _server_style(self) -> str:
+        return _CONNECTED_STYLE if self._server_connected else _DISCONNECTED_STYLE
 
     def _set_feed_connected(self, connected: bool) -> None:
-        self.feed_dot.configure(
-            foreground=_CONNECTED_COLOR if connected else _DISCONNECTED_COLOR
-        )
+        self._feed_connected = connected
+        self.feed_status.configure(bootstyle=self._feed_style())
 
     def _set_server_connected(self, connected: bool) -> None:
-        self.server_dot.configure(
-            foreground=_CONNECTED_COLOR if connected else _DISCONNECTED_COLOR
+        self._server_connected = connected
+        self.server_status.configure(bootstyle=self._server_style())
+
+    def _pulse_feed(self) -> None:
+        self.feed_status.configure(bootstyle=_PULSE_STYLE)
+        self.root.after(
+            _HEARTBEAT_PULSE_MS,
+            lambda: self.feed_status.configure(bootstyle=self._feed_style()),
         )
 
-    def _pulse(self, label: ttk.Label) -> None:
-        label.configure(foreground=_HEARTBEAT_ACTIVE_COLOR)
+    def _pulse_server(self) -> None:
+        self.server_status.configure(bootstyle=_PULSE_STYLE)
         self.root.after(
-            _HEARTBEAT_PULSE_MS, lambda: label.configure(foreground=_HEARTBEAT_IDLE_COLOR)
+            _HEARTBEAT_PULSE_MS,
+            lambda: self.server_status.configure(bootstyle=self._server_style()),
         )
 
     def _on_feed_connect(self) -> None:
@@ -171,10 +202,10 @@ class RelayGuiApp:
         self.root.after(0, self._set_feed_connected, False)
 
     def _on_feed_line(self) -> None:
-        self.root.after(0, self._pulse, self.feed_heart)
+        self.root.after(0, self._pulse_feed)
 
     def _on_server_attempt(self) -> None:
-        self.root.after(0, self._pulse, self.server_heart)
+        self.root.after(0, self._pulse_server)
 
     def _on_server_connect(self) -> None:
         self.root.after(0, self._set_server_connected, True)
@@ -239,7 +270,15 @@ class RelayGuiApp:
             self.update_label.grid_remove()
 
     def on_close(self) -> None:
-        self.runner.stop()
+        # RelayRunner.stop() waits on a deadline for the background task to
+        # finish cancelling and raises TimeoutError if a graceful shutdown
+        # (e.g. an in-flight HTTPS POST) runs long. The runner thread is a
+        # daemon, so it's torn down with the process regardless – the
+        # window closing shouldn't be held hostage by that wait.
+        try:
+            self.runner.stop()
+        except TimeoutError:
+            log.warning("Relay runner did not stop cleanly within its timeout")
         self.root.destroy()
 
 

@@ -116,7 +116,17 @@ jobs:
         run: echo "CURRENT_VERSION = \"${{ github.event.inputs.tag }}\"" > relay/_version.py
 
       - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name rmonitor-relay-gui relay/gui.py
+        # --hidden-import: PIL.ImageTk locates PIL._tkinter_finder at runtime
+        # (never a static import PyInstaller's analysis can trace) to bind
+        # Pillow's image buffers to the running Tcl/Tk install; without it
+        # the built binary crashes on startup building ttkbootstrap's styles.
+        # --collect-data: ttkbootstrap ships its widget images/icon font as
+        # package data rather than Python modules.
+        run: >-
+          pyinstaller --onefile --windowed --name rmonitor-relay-gui
+          --hidden-import PIL._tkinter_finder
+          --collect-data ttkbootstrap
+          relay/gui.py
 
       - name: Rename binary (Windows)
         if: matrix.os == 'windows-latest'
