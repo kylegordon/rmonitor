@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.12](https://github.com/kylegordon/rmonitor/compare/v0.1.11...v0.1.12) (2026-08-16)
+
+## What's Changed
+* feat(relay): switch GUI theming to ttkbootstrap, fix startup race by @kylegordon in https://github.com/kylegordon/rmonitor/pull/65
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.11...v0.1.12
+
+
 ## [0.1.11](https://github.com/kylegordon/rmonitor/compare/v0.1.10...v0.1.11) (2026-07-25)
 
 ## What's Changed
