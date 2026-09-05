@@ -8,6 +8,7 @@ window-geometry persistence, and the close/teardown path.
 
 import re
 import importlib
+import os
 import time
 import tkinter as tk
 
@@ -39,6 +40,19 @@ class FakeRunner:
         pass
 
 
+def _new_root() -> tk.Tk:
+    # CI promises a display (see .github/workflows/tests.yml, which starts
+    # Xvfb and sets REQUIRE_DISPLAY=1), so a missing one there means a broken
+    # runner, not a reason to skip. Locally the skip stands, so a headless
+    # run of the full suite still works.
+    try:
+        return tk.Tk()
+    except tk.TclError as exc:
+        if os.environ.get("REQUIRE_DISPLAY") == "1":
+            pytest.fail(f"REQUIRE_DISPLAY=1 but no display available: {exc}")
+        pytest.skip(f"no display available: {exc}")
+
+
 @pytest.fixture
 def app(monkeypatch, tmp_path):
     monkeypatch.setattr(gui.env_config, "default_env_path", lambda: tmp_path / ".env")
@@ -50,10 +64,7 @@ def app(monkeypatch, tmp_path):
     # test's already-destroyed Tk root.
     monkeypatch.setattr(ttb.Style, "instance", None)
 
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"no display available: {exc}")
+    root = _new_root()
 
     application = gui.RelayGuiApp(root)
     yield application
@@ -223,10 +234,7 @@ def _launch_app(monkeypatch, tmp_path):
     monkeypatch.setattr(gui.RelayGuiApp, "_poll_update", lambda self: None)
     monkeypatch.setattr(ttb.Style, "instance", None)
 
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"no display available: {exc}")
+    root = _new_root()
 
     return gui.RelayGuiApp(root)
 
