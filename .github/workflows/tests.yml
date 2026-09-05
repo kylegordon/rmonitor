@@ -22,8 +22,33 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # setup-python ships its own prebuilt _tkinter.so; it needs the Tcl/Tk
+      # shared libraries, not python3-tk (which is tkinter for the distro's
+      # python3 and only works here by pulling libtk8.6 in transitively).
+      - name: Install Tk runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libtk8.6
+
+      # xvfb is preinstalled on the runner image. Started manually rather than
+      # via xvfb-run, which this repo has seen hang on its wait-for-display poll.
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x1024x24 &
+          for _ in $(seq 1 50); do
+            [ -S /tmp/.X11-unix/X99 ] && break
+            sleep 0.2
+          done
+          if [ ! -S /tmp/.X11-unix/X99 ]; then
+            echo "::error::Xvfb failed to start on :99" >&2
+            exit 1
+          fi
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
 
       - name: Run tests
+        env:
+          REQUIRE_DISPLAY: "1"
         run: python -m pytest tests/ -v
