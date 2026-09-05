@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.14](https://github.com/kylegordon/rmonitor/compare/v0.1.13...v0.1.14) (2026-09-05)
+
+## What's Changed
+* fix(relay): resolve the Windows config path to Roaming AppData by @kylegordon in https://github.com/kylegordon/rmonitor/pull/71
+* feat(release): put the released version in relay asset filenames by @kylegordon in https://github.com/kylegordon/rmonitor/pull/73
+* feat(relay): persist GUI window geometry, harden the close path by @kylegordon in https://github.com/kylegordon/rmonitor/pull/70
+* fix(server): centre empty-state message on mobile portrait by @kylegordon in https://github.com/kylegordon/rmonitor/pull/74
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.13...v0.1.14
+
+
 ## [0.1.13](https://github.com/kylegordon/rmonitor/compare/v0.1.12...v0.1.13) (2026-08-16)
 
 ## What's Changed
