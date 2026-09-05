@@ -213,11 +213,11 @@ jobs:
 
       - name: Rename binary for release asset (Windows)
         if: matrix.os == 'windows-latest'
-        run: mv dist/rmonitor-relay-gui.exe dist/rmonitor-relay-gui-windows-x64.exe
+        run: mv dist/rmonitor-relay-gui.exe dist/rmonitor-relay-gui-${{ needs.publish-release.outputs.tag_name }}-windows-x64.exe
 
       - name: Rename binary for release asset (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: mv dist/rmonitor-relay-gui dist/rmonitor-relay-gui-linux-x64
+        run: mv dist/rmonitor-relay-gui dist/rmonitor-relay-gui-${{ needs.publish-release.outputs.tag_name }}-linux-x64
 
       - name: Smoke-launch the built exe (Windows only)
         # Confirms the freshly-built binary starts without a missing-DLL
@@ -230,10 +230,11 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $proc = Start-Process -FilePath "dist/rmonitor-relay-gui-windows-x64.exe" -PassThru
+          $exe = "dist/rmonitor-relay-gui-${{ needs.publish-release.outputs.tag_name }}-windows-x64.exe"
+          $proc = Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 5
           if ($proc.HasExited) {
-            Write-Error "rmonitor-relay-gui-windows-x64.exe exited immediately (exit code $($proc.ExitCode)) - likely a missing-DLL or startup error"
+            Write-Error "$exe exited immediately (exit code $($proc.ExitCode)) - likely a missing-DLL or startup error"
             exit 1
           }
           Stop-Process -Id $proc.Id -Force
@@ -243,7 +244,7 @@ jobs:
         with:
           tag_name: ${{ needs.publish-release.outputs.tag_name }}
           files: |
-            dist/rmonitor-relay-gui-windows-x64.exe
-            dist/rmonitor-relay-gui-linux-x64
+            dist/rmonitor-relay-gui-${{ needs.publish-release.outputs.tag_name }}-windows-x64.exe
+            dist/rmonitor-relay-gui-${{ needs.publish-release.outputs.tag_name }}-linux-x64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
