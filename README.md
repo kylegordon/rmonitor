@@ -88,9 +88,10 @@ relay is also available as a standalone GUI application — a single
 downloadable file with no installation step, for **Windows x64** and
 **Linux x64**:
 
-1. Download `rmonitor-relay-gui-windows-x64.exe` (Windows) or
-   `rmonitor-relay-gui-linux-x64` (Linux) from the
-   [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases).
+1. Download `rmonitor-relay-gui-v<version>-windows-x64.exe` (Windows) or
+   `rmonitor-relay-gui-v<version>-linux-x64` (Linux) from the
+   [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases) — for
+   example, `rmonitor-relay-gui-v0.1.13-windows-x64.exe`.
 2. Run it directly — no separate Python install, no Visual C++
    Redistributable, nothing else to set up first.
 3. A small dialog opens with four fields: **feed IP** (default
