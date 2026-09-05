@@ -2,9 +2,11 @@
 
 Stubs RelayRunner (no real relay thread/TCP connection) and the
 update-poll scheduling (no real background-loop dependency), so this only
-exercises widget construction, default values, and notification visibility.
+exercises widget construction, default values, notification visibility,
+window-geometry persistence, and the close/teardown path.
 """
 
+import re
 import importlib
 import time
 import tkinter as tk
@@ -13,6 +15,10 @@ import pytest
 import ttkbootstrap as ttb
 
 from relay import env_config, gui
+
+# Tk's "WxH+X+Y" geometry string; the offsets may be negative, and Tk
+# spells a negative one as either "-10" or "+-10" depending on platform.
+_GEOMETRY_RE = r"\d+x\d+[+-]-?\d+[+-]-?\d+"
 
 
 class FakeRunner:
@@ -51,7 +57,10 @@ def app(monkeypatch, tmp_path):
 
     application = gui.RelayGuiApp(root)
     yield application
-    application.root.destroy()
+    try:
+        application.root.destroy()
+    except tk.TclError:
+        pass  # a test (e.g. one exercising on_close()) may have already destroyed it
 
 
 def test_fields_show_documented_defaults_when_no_env_file(app):
@@ -187,11 +196,133 @@ def test_on_close_destroys_window_even_if_runner_stop_times_out(app, monkeypatch
 
     monkeypatch.setattr(app.runner, "stop", raise_timeout)
     destroyed = []
-    monkeypatch.setattr(app.root, "destroy", lambda: destroyed.append(True))
+    real_destroy = app.root.destroy
+
+    def fake_destroy():
+        destroyed.append(True)
+        real_destroy()
+
+    monkeypatch.setattr(app.root, "destroy", fake_destroy)
+
+    app.on_close()
+    # _finish_close (and the real destroy() above) only runs once the
+    # closing notice's after() timer fires – pump the loop past it rather
+    # than asserting immediately.
+    time.sleep((gui._CLOSING_NOTICE_MS / 1000) + 0.2)
+    app.root.update()
+
+    assert destroyed == [True]
+
+
+def _launch_app(monkeypatch, tmp_path):
+    """Build a RelayGuiApp against `tmp_path/.env` the way the `app` fixture
+    does, but callable *after* a test has seeded that file – which the
+    fixture, which constructs the app up front, can't offer."""
+    monkeypatch.setattr(gui.env_config, "default_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(gui, "RelayRunner", FakeRunner)
+    monkeypatch.setattr(gui.RelayGuiApp, "_poll_update", lambda self: None)
+    monkeypatch.setattr(ttb.Style, "instance", None)
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"no display available: {exc}")
+
+    return gui.RelayGuiApp(root)
+
+
+def test_on_close_saves_current_window_geometry(app):
+    app.root.update_idletasks()
+    geometry = app.root.geometry()
 
     app.on_close()
 
-    assert destroyed == [True]
+    saved = env_config.load_env_file(app.env_path)
+    assert saved["GUI_WINDOW_GEOMETRY"] == geometry
+
+
+def test_saved_window_geometry_is_restored_on_next_launch(monkeypatch, tmp_path):
+    env_config.save_env_file(
+        tmp_path / ".env", {"GUI_WINDOW_GEOMETRY": "500x400+123+45"}
+    )
+
+    application = _launch_app(monkeypatch, tmp_path)
+    application.root.update_idletasks()
+
+    # Size only: a window manager is free to override a requested +x+y
+    # placement, so asserting the full geometry string would be flaky
+    # anywhere but the bare Xvfb server CI runs under.
+    assert application.root.geometry().startswith("500x400")
+
+    application.root.destroy()
+
+
+def test_malformed_saved_geometry_is_ignored_rather_than_fatal(monkeypatch, tmp_path):
+    # A hand-edited or truncated .env shouldn't stop the GUI coming up.
+    env_config.save_env_file(
+        tmp_path / ".env", {"GUI_WINDOW_GEOMETRY": "not-a-geometry"}
+    )
+
+    application = _launch_app(monkeypatch, tmp_path)
+    application.root.update_idletasks()
+
+    assert application.root.winfo_exists()
+    assert re.fullmatch(_GEOMETRY_RE, application.root.geometry())
+
+    application.root.destroy()
+
+
+def test_missing_saved_geometry_leaves_tk_default_placement(app):
+    # No GUI_WINDOW_GEOMETRY in the env file (the `app` fixture's tmp_path
+    # starts empty) – tk should have sized and placed the window itself.
+    app.root.update_idletasks()
+
+    assert env_config.load_env_file(app.env_path).get("GUI_WINDOW_GEOMETRY") is None
+    assert re.fullmatch(_GEOMETRY_RE, app.root.geometry())
+
+
+def _pending_after_timers(root) -> set[str]:
+    return set(root.tk.splitlist(root.tk.call("after", "info")))
+
+
+def test_repeated_close_clicks_schedule_only_one_teardown(app, monkeypatch):
+    # Clicking the window's X again during the closing notice used to redo
+    # the geometry save and schedule a second _finish_close. That second
+    # timer comes due after the first has destroyed the root, so Tk can't
+    # dispatch it and dumps `invalid command name ...` to stderr on exit.
+    saves = []
+    real_save = gui.env_config.save_env_file
+
+    def counting_save(path, updates):
+        saves.append(updates)
+        real_save(path, updates)
+
+    monkeypatch.setattr(gui.env_config, "save_env_file", counting_save)
+    before = _pending_after_timers(app.root)
+
+    app.on_close()
+    scheduled_by_first = _pending_after_timers(app.root) - before
+
+    app.on_close()
+    scheduled_by_both = _pending_after_timers(app.root) - before
+
+    assert len(scheduled_by_first) == 1
+    assert scheduled_by_both == scheduled_by_first
+    assert len(saves) == 1
+
+
+def test_unwritable_config_dir_does_not_block_window_close(app, monkeypatch):
+    def raise_oserror(path, updates):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(gui.env_config, "save_env_file", raise_oserror)
+
+    app.on_close()
+    app.root.update_idletasks()
+
+    # The close sequence carried on past the failed geometry save rather
+    # than letting the OSError escape the WM_DELETE_WINDOW handler.
+    assert app.closing_notice.winfo_ismapped()
 
 
 def test_import_migrates_the_legacy_env_file_before_reading_it(monkeypatch):

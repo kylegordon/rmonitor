@@ -136,7 +136,9 @@ same variable names, in the same `KEY=value` `.env` file format as
 `.env.example` at the repo root — the GUI dialog's Save/Apply edits
 `RMONITOR_HOST`, `RMONITOR_PORT`, `SERVER_URL`, and `RELAY_SECRET`; the
 remaining values above keep their defaults unless you hand-edit the `.env`
-file yourself.
+file yourself. The GUI additionally writes `GUI_WINDOW_GEOMETRY` (a Tk
+`WxH+X+Y` string) when the window closes, so it reopens where you left it —
+delete the line to get the default placement back.
 The GUI build stores this file per-OS:
 
 | OS | `.env` location |
