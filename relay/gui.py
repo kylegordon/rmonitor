@@ -30,6 +30,11 @@ import ttkbootstrap as ttb
 # dedicated dialog field.
 from relay import env_config
 
+# Releases up to 0.1.13 resolved the Windows config dir with platformdirs'
+# defaults, landing the file under Local AppData instead of the documented
+# Roaming path. Move it across before the read below, so upgrading keeps
+# the operator's settings rather than silently reverting to defaults.
+env_config.migrate_legacy_env_file()
 os.environ.update(env_config.load_env_file(env_config.default_env_path()))
 
 from dataclasses import replace  # noqa: E402 – after the os.environ merge above

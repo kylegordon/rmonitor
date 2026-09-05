@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.13](https://github.com/kylegordon/rmonitor/compare/v0.1.12...v0.1.13) (2026-08-16)
+
+## What's Changed
+* feat(relay): closing notice on window close + version in title by @kylegordon in https://github.com/kylegordon/rmonitor/pull/67
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.12...v0.1.13
+
+
 ## [0.1.12](https://github.com/kylegordon/rmonitor/compare/v0.1.11...v0.1.12) (2026-08-16)
 
 ## What's Changed

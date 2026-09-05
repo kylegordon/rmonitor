@@ -7,6 +7,7 @@ window-geometry persistence, and the close/teardown path.
 """
 
 import re
+import importlib
 import time
 import tkinter as tk
 
@@ -322,3 +323,26 @@ def test_unwritable_config_dir_does_not_block_window_close(app, monkeypatch):
     # The close sequence carried on past the failed geometry save rather
     # than letting the OSError escape the WM_DELETE_WINDOW handler.
     assert app.closing_notice.winfo_ismapped()
+
+
+def test_import_migrates_the_legacy_env_file_before_reading_it(monkeypatch):
+    # gui.py merges the `.env` into os.environ at import time, before
+    # relay.main is imported. The migration has to land ahead of that read,
+    # or an upgraded Windows install reads defaults from the new path while
+    # the operator's real settings sit at the old one.
+    calls = []
+    real_load = env_config.load_env_file
+
+    monkeypatch.setattr(
+        env_config, "migrate_legacy_env_file", lambda: calls.append("migrate")
+    )
+
+    def recording_load(path):
+        calls.append("load")
+        return real_load(path)
+
+    monkeypatch.setattr(env_config, "load_env_file", recording_load)
+
+    importlib.reload(gui)
+
+    assert calls[:2] == ["migrate", "load"]

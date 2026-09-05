@@ -88,9 +88,10 @@ relay is also available as a standalone GUI application — a single
 downloadable file with no installation step, for **Windows x64** and
 **Linux x64**:
 
-1. Download `rmonitor-relay-gui-windows-x64.exe` (Windows) or
-   `rmonitor-relay-gui-linux-x64` (Linux) from the
-   [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases).
+1. Download `rmonitor-relay-gui-v<version>-windows-x64.exe` (Windows) or
+   `rmonitor-relay-gui-v<version>-linux-x64` (Linux) from the
+   [GitHub Releases page](https://github.com/kylegordon/rmonitor/releases) — for
+   example, `rmonitor-relay-gui-v0.1.13-windows-x64.exe`.
 2. Run it directly — no separate Python install, no Visual C++
    Redistributable, nothing else to set up first.
 3. A small dialog opens with four fields: **feed IP** (default
@@ -144,6 +145,12 @@ The GUI build stores this file per-OS:
 |---|---|
 | Windows | `%APPDATA%\rmonitor-relay\.env` (Roaming AppData) |
 | Linux | `~/.config/rmonitor-relay/.env` (XDG config dir) |
+
+Releases up to 0.1.13 resolved the Windows path incorrectly and wrote to
+`%LOCALAPPDATA%\rmonitor-relay\rmonitor-relay\.env` instead. On first
+launch after upgrading, the GUI moves that file to the documented Roaming
+location above, so your settings carry over; nothing is left behind. Linux
+is unaffected — the path was already correct there.
 
 ### Server
 
