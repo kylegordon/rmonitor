@@ -56,6 +56,7 @@ _PULSE_STYLE = "info"
 _HEARTBEAT_PULSE_MS = 400
 _SAVE_CONFIRMATION_MS = 1500
 _CLOSING_NOTICE_MS = 1000
+_WINDOW_GEOMETRY_KEY = "GUI_WINDOW_GEOMETRY"
 
 
 class RelayGuiApp:
@@ -75,6 +76,7 @@ class RelayGuiApp:
         self.update_var = tk.StringVar(value="")
         self._feed_connected = False
         self._server_connected = False
+        self._closing = False
 
         self._configure_style()
         self._build_widgets()
@@ -225,6 +227,13 @@ class RelayGuiApp:
         self.server_url_var.set(values.get("SERVER_URL", _DEFAULT_SERVER_URL))
         self.secret_var.set(values.get("RELAY_SECRET", ""))
 
+        geometry = values.get(_WINDOW_GEOMETRY_KEY)
+        if geometry:
+            try:
+                self.root.geometry(geometry)
+            except tk.TclError:
+                log.warning("Invalid saved window geometry %r – ignoring", geometry)
+
     def _config_from_fields(self) -> RelayConfig:
         return replace(
             RelayConfig.from_env(),
@@ -275,8 +284,26 @@ class RelayGuiApp:
             self.update_label.grid_remove()
 
     def on_close(self) -> None:
+        # A second click on the window's X during the closing notice's
+        # _CLOSING_NOTICE_MS window would redo the geometry save and
+        # schedule a second _finish_close. By the time that timer comes due
+        # the first has already destroyed the root, so Tk can no longer
+        # dispatch it and dumps `invalid command name ...` to stderr.
+        if self._closing:
+            return
+        self._closing = True
+        self._save_window_geometry()
         self.closing_notice.grid()
         self.root.after(_CLOSING_NOTICE_MS, self._finish_close)
+
+    def _save_window_geometry(self) -> None:
+        try:
+            env_config.save_env_file(
+                self.env_path, {_WINDOW_GEOMETRY_KEY: self.root.geometry()}
+            )
+        except OSError as exc:
+            # An unwritable config dir must not leave the window unclosable.
+            log.warning("Could not save window geometry: %s", exc)
 
     def _finish_close(self) -> None:
         # RelayRunner.stop() waits on a deadline for the background task to
