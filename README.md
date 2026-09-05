@@ -143,6 +143,12 @@ The GUI build stores this file per-OS:
 | Windows | `%APPDATA%\rmonitor-relay\.env` (Roaming AppData) |
 | Linux | `~/.config/rmonitor-relay/.env` (XDG config dir) |
 
+Releases up to 0.1.13 resolved the Windows path incorrectly and wrote to
+`%LOCALAPPDATA%\rmonitor-relay\rmonitor-relay\.env` instead. On first
+launch after upgrading, the GUI moves that file to the documented Roaming
+location above, so your settings carry over; nothing is left behind. Linux
+is unaffected — the path was already correct there.
+
 ### Server
 
 | Variable | Default | Description |
