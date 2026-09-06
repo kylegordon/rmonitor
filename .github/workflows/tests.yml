@@ -52,3 +52,22 @@ jobs:
         env:
           REQUIRE_DISPLAY: "1"
         run: python -m pytest tests/ -v
+
+  # Deliberately a sibling of `test` rather than a step inside it: this check needs
+  # neither the 3.12/3.13 matrix (it would run twice for one answer), nor libtk8.6,
+  # nor Xvfb, nor the four-file pip install. The script is stdlib-only, so there is
+  # nothing to install.
+  agents-md:
+    name: Instruction files
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check AGENTS.md, CLAUDE.md and the Copilot pointer
+        run: python .github/scripts/check_agents_md.py
