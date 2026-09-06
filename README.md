@@ -224,10 +224,16 @@ python rmonitor_send.py
 
 ## Running tests
 
+Tests run in the container defined by `tests/Dockerfile` — the same image CI builds.
+Nothing is installed on the host.
+
 ```bash
-pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
-python3 -m pytest tests/ -v
+./test.sh                                                            # whole suite
+./test.sh tests/test_gui.py -v                                       # one file
+./test.sh tests/test_gui.py::test_update_notification_hidden_by_default -v  # one test
 ```
+
+`PYTHON_VERSION=3.13 ./test.sh` runs the other interpreter CI gates.
 
 ## Architecture
 

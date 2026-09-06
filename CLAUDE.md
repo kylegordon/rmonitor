@@ -8,8 +8,8 @@ Claude-specific; it adds to those rules and never overrides them.
 ## Everything runs in Docker
 
 Never pip-install, run the test suite, or start the app on the host. `AGENTS.md`
-§Commands carries the container invocation — use it for scoped runs too, swapping the
-final pytest line.
+§Commands carries the container invocation — `./test.sh`, which forwards any arguments
+you append straight to pytest, so use it for scoped runs too.
 
 ## RPI phase workflow
 

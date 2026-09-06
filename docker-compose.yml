@@ -41,3 +41,22 @@ services:
       - server
     restart: unless-stopped
 
+  # The test suite. Not part of a plain `docker compose up` — the `test` profile
+  # keeps it out. The repo is bind-mounted rather than COPYed because
+  # tests/test_integration.py resolves examples/ from __file__. Normally invoked
+  # through ./test.sh, which adds the uid mapping and the --build flag.
+  #
+  # `image:` is set explicitly with the version in the tag: Compose would otherwise
+  # name the build <project>-tests, so a 3.12 and a 3.13 run would overwrite one
+  # another's cached image and each rebuild from the apt layer.
+  tests:
+    image: rmonitor-test:${PYTHON_VERSION:-3.12}
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+    volumes:
+      - .:/opt/app
