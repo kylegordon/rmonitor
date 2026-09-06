@@ -10,4 +10,7 @@ instructions here would be the one configuration with genuinely undefined behavi
 and the two copies would drift apart, which is exactly what happened to the 251 lines
 this file used to hold.
 
-Add and edit rules in `AGENTS.md`.
+Rules that apply to one directory live in that directory's own `AGENTS.md` —
+`server/AGENTS.md`, `tests/AGENTS.md` — and add to the root file rather than replacing it.
+
+Add and edit rules in `AGENTS.md`. Never here.

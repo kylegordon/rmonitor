@@ -7,8 +7,9 @@ instruction file had drifted from the code in four measurable ways.  Three of th
 were mechanically detectable, and this script detects them: it asserts that every
 repo-relative path and every environment variable named in the instruction files is
 real, that the ``@AGENTS.md`` import the no-duplication design rests on is intact,
-that the Copilot pointer has not regrown into a second full copy, and that
-``AGENTS.md`` stays inside its length budget.
+that the Copilot pointer has not regrown into a second full copy, that every scoped
+``AGENTS.md`` has the ``CLAUDE.md`` shim that makes Claude Code see it, and that the
+instruction set an agent carries on every task stays inside its length budget.
 
 Stdlib only, deliberately.  Adding a dependency for a documentation check would break
 the very rule this file exists to protect (``AGENTS.md`` pitfall 11).
@@ -26,13 +27,27 @@ import re
 import sys
 from pathlib import Path
 
-#: Files whose references are checked.  All three are read by at least one agent.
-INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md")
+#: Instruction files at the repo root.  Scoped ones are discovered, not listed; see
+#: ``instruction_files``.
+ROOT_INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md")
 
-#: ``AGENTS.md`` length budget.  https://code.claude.com/docs/en/memory targets "under
-#: 200 lines"; the surveyed consensus is that a long file with every possible rule is
-#: worse than a short one with the rules that matter.
-MAX_AGENTS_LINES = 200
+#: Budget for the *eagerly loaded* set — ``CLAUDE.md`` plus everything it reaches
+#: through ``@`` imports, which Claude Code resolves up front.  Budgeting the root
+#: ``AGENTS.md`` alone was gameable: moving a section behind an ``@`` import satisfies a
+#: per-file limit while costing an agent exactly as much context as before.
+#: https://code.claude.com/docs/en/memory targets "under 200 lines"; that number is a
+#: proxy for an attention budget, so it has to be measured over everything actually in
+#: front of the agent on every task, not over one file.
+MAX_EAGER_LINES = 200
+
+#: Budget for one scoped ``AGENTS.md``, loaded only when an agent works in that
+#: directory.  Smaller than the eager budget on purpose: a scoped file needing more
+#: than this is describing a subsystem, and the subsystem's own docstrings are where
+#: that belongs.
+MAX_SCOPED_LINES = 80
+
+#: Maximum depth Claude Code follows ``@`` imports.
+MAX_IMPORT_DEPTH = 5
 
 #: The Copilot pointer must stay a pointer.  Copilot reads it *and* ``AGENTS.md`` with
 #: no defined precedence, so a second full copy is genuinely undefined behaviour.
@@ -162,10 +177,81 @@ def looks_like_path(token: str, root: Path) -> str | None:
     return None
 
 
+def instruction_files(root: Path) -> list[str]:
+    """Return every instruction file in the repo, root and scoped alike.
+
+    Scoped files are discovered rather than listed, so a new ``server/AGENTS.md`` is
+    checked for stale paths from the moment it is committed and nobody has to remember
+    to register it here.
+    """
+    names = list(ROOT_INSTRUCTION_FILES)
+    for path in sorted(root.rglob("AGENTS.md")) + sorted(root.rglob("CLAUDE.md")):
+        rel = path.relative_to(root)
+        if len(rel.parts) == 1 or set(rel.parts) & _SKIP_DIRS:
+            continue
+        names.append(rel.as_posix())
+    return names
+
+
+def strip_drift_region(text: str) -> str:
+    """Return *text* with the drift-report region removed.
+
+    ``--annotate`` writes that region and it can run to dozens of lines.  Counting it
+    would let a drift report push ``AGENTS.md`` past its budget and manufacture a
+    second finding on top of the real one — the audit reporting a fault it created.
+    """
+    if DRIFT_START not in text or DRIFT_END not in text:
+        return text
+    start = text.index(DRIFT_START)
+    end = text.index(DRIFT_END) + len(DRIFT_END)
+    return text[:start] + text[end:]
+
+
+def eager_set(root: Path) -> list[tuple[str, int]]:
+    """Return ``(path, line count)`` for every file Claude Code loads up front.
+
+    That is ``CLAUDE.md`` and, recursively, every file it pulls in with a line-start
+    ``@`` import.  Fences are stripped first for the reason given in
+    ``check_claude_import``: an ``@`` inside a fence is displayed, not imported.
+    """
+    # Both sides resolved: an import is written relative to the importing file, and on
+    # a symlinked root (a macOS /tmp, say) an unresolved comparison would place every
+    # imported file outside the repo and silently count nothing.
+    base = root.resolve()
+    seen: set[Path] = set()
+    found: list[tuple[str, int]] = []
+
+    def walk(path: Path, depth: int) -> None:
+        if depth > MAX_IMPORT_DEPTH or not path.is_file():
+            return
+        resolved = path.resolve()
+        if resolved in seen or not resolved.is_relative_to(base):
+            return
+        seen.add(resolved)
+        text = strip_drift_region(path.read_text(encoding="utf-8"))
+        found.append((resolved.relative_to(base).as_posix(), len(text.splitlines())))
+        prose, _ = split_fences(text)
+        for line in prose.splitlines():
+            if line.startswith("@"):
+                walk(path.parent / line[1:].strip(), depth + 1)
+
+    walk(root / "CLAUDE.md", 0)
+    return found
+
+
+def scoped_agents_files(root: Path) -> list[str]:
+    """Return every non-root ``AGENTS.md``, repo-relative."""
+    return [
+        name
+        for name in instruction_files(root)
+        if name.endswith("AGENTS.md") and "/" in name
+    ]
+
+
 def check_paths(root: Path) -> list[str]:
     """Assert every repo-relative path named in the instruction files exists."""
     findings: list[str] = []
-    for name in INSTRUCTION_FILES:
+    for name in instruction_files(root):
         path = root / name
         if not path.is_file():
             findings.append(f"{name}: missing — the instruction file itself is gone")
@@ -205,7 +291,7 @@ def check_env_names(root: Path) -> list[str]:
     """Assert every environment variable named in the instruction files is real."""
     known = code_env_names(root) | set(ALLOWED_ENV_NAMES)
     findings: list[str] = []
-    for name in INSTRUCTION_FILES:
+    for name in instruction_files(root):
         path = root / name
         if not path.is_file():
             continue  # already reported by check_paths
@@ -271,18 +357,63 @@ def check_copilot_pointer(root: Path) -> list[str]:
     return findings
 
 
-def check_agents_length(root: Path) -> list[str]:
-    """Assert ``AGENTS.md`` stays inside its length budget."""
-    path = root / "AGENTS.md"
-    if not path.is_file():
+def check_eager_budget(root: Path) -> list[str]:
+    """Assert the eagerly loaded instruction set stays inside its budget."""
+    files = eager_set(root)
+    if not files:
         return []  # already reported by check_claude_import
-    count = len(path.read_text(encoding="utf-8").splitlines())
-    if count >= MAX_AGENTS_LINES:
-        return [
-            f"AGENTS.md: {count} lines, at or over the {MAX_AGENTS_LINES}-line budget — "
-            "trim derivable content and pointers, never the pitfalls"
-        ]
-    return []
+    total = sum(count for _, count in files)
+    if total < MAX_EAGER_LINES:
+        return []
+    breakdown = ", ".join(f"{name} {count}" for name, count in files)
+    return [
+        f"eagerly loaded instruction set: {total} lines, at or over the "
+        f"{MAX_EAGER_LINES}-line budget ({breakdown}). Move a directory-specific rule "
+        "to that directory's AGENTS.md, push a detail down into the docstring of the "
+        "function it describes, or retire a pitfall the test suite now covers. Moving "
+        "lines behind an `@` import does not help — the import is eager and is counted "
+        "here."
+    ]
+
+
+def check_scoped_budgets(root: Path) -> list[str]:
+    """Assert each scoped ``AGENTS.md`` stays inside the smaller scoped budget."""
+    findings: list[str] = []
+    for name in scoped_agents_files(root):
+        count = len((root / name).read_text(encoding="utf-8").splitlines())
+        if count >= MAX_SCOPED_LINES:
+            findings.append(
+                f"{name}: {count} lines, at or over the {MAX_SCOPED_LINES}-line scoped "
+                "budget — that much detail belongs in the subsystem's own docstrings"
+            )
+    return findings
+
+
+def check_nested_shims(root: Path) -> list[str]:
+    """Assert every scoped ``AGENTS.md`` has its ``CLAUDE.md`` shim beside it.
+
+    Copilot finds a nested ``AGENTS.md`` by itself.  Claude Code never reads a file by
+    that name and reaches it only through an import, so without the one-line sibling
+    shim the two agents silently obey different rules in the same directory — the exact
+    failure this repository's no-duplication design exists to prevent.
+    """
+    findings: list[str] = []
+    for name in scoped_agents_files(root):
+        rel = name.replace("AGENTS.md", "CLAUDE.md")
+        shim = root / rel
+        if not shim.is_file():
+            findings.append(
+                f"{rel}: missing — {name} exists, so Claude Code needs the one-line "
+                "`@AGENTS.md` shim beside it or it never sees those rules"
+            )
+            continue
+        prose, _ = split_fences(shim.read_text(encoding="utf-8"))
+        if "@AGENTS.md" not in prose.splitlines():
+            findings.append(
+                f"{rel}: no line-start `@AGENTS.md` import, so {name} reaches Copilot "
+                "but not Claude Code"
+            )
+    return findings
 
 
 def run_checks(root: Path) -> list[str]:
@@ -291,7 +422,9 @@ def run_checks(root: Path) -> list[str]:
     for check in (
         check_claude_import,
         check_copilot_pointer,
-        check_agents_length,
+        check_nested_shims,
+        check_eager_budget,
+        check_scoped_budgets,
         check_paths,
         check_env_names,
     ):

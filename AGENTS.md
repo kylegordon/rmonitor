@@ -71,14 +71,6 @@ hints on public functions, reST markup in docstrings, keyword-only parameters af
 (`relay/rmonitor_client.py`). `relay/main.py`'s *named* logger is an inconsistency, not the model
 to copy.
 
-## Testing practices
-
-- There is **no `conftest.py`** anywhere and no global `asyncio_mode`, so every async test carries
-  an explicit `pytest.mark.asyncio` (`tests/test_server.py`).
-- Mocking is `unittest.mock.AsyncMock` applied via `monkeypatch.setattr` (`tests/test_relay_main.py`).
-- `tests/test_gui.py` stubs the relay runner and the update poll; `REQUIRE_DISPLAY` turns its
-  missing-display case from a skip into a failure.
-
 ## Dependencies
 
 Add a new import's package to the scope-matching `requirements*.txt` — `relay/requirements.txt`
@@ -102,6 +94,19 @@ this file in the same PR**, and an agent that hits a non-obvious failure **adds 
 list in the same PR** — the only way this memory grows. A CI check validates the mechanical half
 (referenced paths and environment variables are real); the prose half is on you.
 
+This file has a hard length budget, because it is loaded in full on every task whatever the task
+is. So it holds only what applies to every task. A rule that applies to one directory goes in that
+directory's `AGENTS.md` — `server/AGENTS.md`, `tests/AGENTS.md` — beside a one-line `CLAUDE.md`
+shim that imports it, which is the only way Claude Code sees a file by that name; CI fails if a
+scoped `AGENTS.md` is missing its shim. A detail that belongs to one function goes in that
+function's docstring and is not repeated anywhere. **Nothing is ever copied.** Two divergent
+copies is the one genuinely undefined configuration, and `.github/instructions/*.instructions.md`
+is deliberately unused for the same reason: a second mechanism Copilot reads alongside this one,
+with no defined precedence between them, is that trap wearing a different hat.
+
+Moving a section behind an `@` import is not a way to meet the budget. Claude Code resolves those
+imports up front, so the check measures the whole eagerly loaded set and an import buys nothing.
+
 ## Common pitfalls and workarounds
 
 Every entry here is a fact you need *before* you know which file to open. Where a detail belongs
@@ -118,26 +123,7 @@ to one function it lives in that function's docstring and is deliberately not re
 3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real
    output from some Orbits setups, and `_tokenize` strips quotes *and* whitespace because flag
    strings such as `"Green "` arrive padded. Trust `relay/rmonitor_client.py` over the spec.
-4. **aiohttp: never reassign `AppKey` values after app startup.** `app[some_key] = new_value` in a
-   request handler or background task triggers `DeprecationWarning: Changing state of started or
-   joined application is deprecated`. Store a mutable container under the key at creation and
-   mutate it:
-   ```python
-   # At app creation (fine):
-   app[my_key] = {"value": None, "flag": False}
-   # In a handler (fine — mutating the dict, not the key):
-   app[my_key]["value"] = time.monotonic()
-   # BAD — reassigning the key after startup:
-   app[my_key] = time.monotonic()
-   ```
-5. **Server-side stateful features: initialise timestamps at startup, not lazily.** If a watchdog
-   or timeout compares `time.monotonic() - last_seen`, initialise `last_seen` to `time.monotonic()`
-   in the app startup hook, not to `None` — an `if last is not None` guard never fires on a fresh
-   server that has never received data. Similarly, when a new WebSocket client connects,
-   `handle_ws` must immediately reflect the *current* server state: if the feed is already known
-   lost or timed out, send `no_feed` right after the initial `full` message, so the client does not
-   show stale persisted data until the next watchdog poll.
-6. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
+4. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
    `tests/Dockerfile` installs from all four and is the only place that list exists; why each file
    is copied with its path preserved is commented there. Adding a package to one workflow's inline
    list only ever fixes that workflow, and the next one silently drifts out of sync — which is how
