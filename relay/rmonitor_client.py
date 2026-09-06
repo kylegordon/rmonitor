@@ -111,7 +111,12 @@ class RMonitorClient:
 # ---------------------------------------------------------------------------
 
 def _tokenize(line: str) -> list[str]:
-    """Split a protocol line on commas, stripping quotes and whitespace."""
+    """Split a protocol line on commas, stripping quotes and whitespace.
+
+    Both are load-bearing: every double-quote is removed from every token, and
+    the ``strip()`` is what turns a ``$F`` flag of ``"Green "`` — real output
+    from some setups — into ``"Green"``.
+    """
     return [tok.replace('"', "").strip() for tok in line.split(",")]
 
 
@@ -276,6 +281,11 @@ def _parse_passing(t: list[str]) -> dict:
 # -- $SP/$SR  Lap information (undocumented) --------------------------------
 # $SP/$SR,position,"reg_number",lap_number,"lap_time"
 def _parse_lap_info(t: list[str]) -> dict:
+    """Parse a ``$SP``/``$SR`` line into a ``lap_info`` dict.
+
+    Neither message appears in the protocol documentation; both are real output
+    from some Orbits setups, carrying per-lap position and time.
+    """
     return {
         "type": "lap_info",
         "position": t[1],
