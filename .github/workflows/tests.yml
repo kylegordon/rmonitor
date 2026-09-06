@@ -17,46 +17,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # The same image ./test.sh builds locally. libtk8.6, Xvfb and
+      # REQUIRE_DISPLAY=1 are all baked into it, so there is no apt step, no Xvfb
+      # step and no pip install here — one definition of the test environment.
+      #
+      # load: true is mandatory. Without it (and with no push) the image stays in
+      # the buildx cache only, and the run step fails to find it locally.
+      #
+      # The layer cache is scoped per interpreter: both matrix legs build from the
+      # same Dockerfile, so a shared scope would have them overwrite each other's
+      # layers on every run — a permanently cold cache.
+      - name: Build test image for Python ${{ matrix.python-version }}
+        uses: docker/build-push-action@v6
         with:
-          python-version: ${{ matrix.python-version }}
-
-      # setup-python ships its own prebuilt _tkinter.so; it needs the Tcl/Tk
-      # shared libraries, not python3-tk (which is tkinter for the distro's
-      # python3 and only works here by pulling libtk8.6 in transitively).
-      - name: Install Tk runtime libraries
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libtk8.6
-
-      # xvfb is preinstalled on the runner image. Started manually rather than
-      # via xvfb-run, which this repo has seen hang on its wait-for-display poll.
-      - name: Start Xvfb
-        run: |
-          Xvfb :99 -screen 0 1280x1024x24 &
-          for _ in $(seq 1 50); do
-            [ -S /tmp/.X11-unix/X99 ] && break
-            sleep 0.2
-          done
-          if [ ! -S /tmp/.X11-unix/X99 ]; then
-            echo "::error::Xvfb failed to start on :99" >&2
-            exit 1
-          fi
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
-
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
+          context: .
+          file: tests/Dockerfile
+          build-args: PYTHON_VERSION=${{ matrix.python-version }}
+          tags: rmonitor-test:${{ matrix.python-version }}
+          load: true
+          cache-from: type=gha,scope=test-${{ matrix.python-version }}
+          cache-to: type=gha,scope=test-${{ matrix.python-version }},mode=max
 
       - name: Run tests
-        env:
-          REQUIRE_DISPLAY: "1"
-        run: python -m pytest tests/ -v
+        run: docker run --rm -v "$PWD":/opt/app rmonitor-test:${{ matrix.python-version }} tests/ -v
 
-  # Deliberately a sibling of `test` rather than a step inside it: this check needs
-  # neither the 3.12/3.13 matrix (it would run twice for one answer), nor libtk8.6,
-  # nor Xvfb, nor the four-file pip install. The script is stdlib-only, so there is
-  # nothing to install.
+  # Deliberately a sibling of `test` rather than a step inside it: the script is
+  # stdlib-only, so it needs neither the container build nor anything installed,
+  # and inside the 3.12/3.13 matrix it would run twice for one answer.
   agents-md:
     name: Instruction files
     runs-on: ubuntu-latest

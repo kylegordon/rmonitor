@@ -1,2 +1,2 @@
-pytest
-pytest-asyncio
+pytest>=9,<10
+pytest-asyncio>=1,<2

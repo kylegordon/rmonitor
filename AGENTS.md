@@ -31,34 +31,28 @@ This applies to every change, no matter how small. Never hand-write a commit who
 
 ## Commands — the full test suite, required before opening any PR
 
-Everything runs in a throwaway Docker container — never pip-install or run tests on the host.
+Everything runs in a container built from `tests/Dockerfile` — never pip-install or run
+tests on the host.
 
 ```sh
-docker run --rm -v "$PWD":/app -w /app -e REQUIRE_DISPLAY=1 python:3.12 sh -c '
-set -e
-apt-get update -qq
-apt-get install -y -qq xvfb
-pip install -q -r requirements-dev.txt -r relay/requirements.txt -r relay/requirements-build.txt -r server/requirements.txt
-Xvfb :99 -screen 0 1280x1024x24 &
-for _ in $(seq 1 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
-[ -S /tmp/.X11-unix/X99 ] || { echo "Xvfb failed to start on :99" >&2; exit 1; }
-export DISPLAY=:99
-python -m pytest tests/ -v
-'
+./test.sh                                    # whole suite
+./test.sh tests/test_gui.py -v               # one file
+./test.sh tests/test_gui.py::<test name> -v  # one test
+PYTHON_VERSION=3.13 ./test.sh                # the other interpreter CI gates
 ```
 
-Swap the last line to scope a run, e.g. `python -m pytest tests/test_gui.py -v`. Three details:
+`test.sh` rebuilds the image (warm rebuild ~0.25s), maps your uid/gid on Linux so nothing
+comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 
-- **Xvfb is started directly, never via the `xvfb-run` wrapper**, whose wait-for-display poll this
-  repo has twice seen hang indefinitely. CI's "Start Xvfb" step does the same, so the two match.
-- **`REQUIRE_DISPLAY=1` is mandatory.** Without it `tests/test_gui.py` *skips* rather than fails
-  when there is no display, and you get a green local run against a red CI run.
-- **The container is Python 3.12 only**, while CI gates 3.12 *and* 3.13, and provisions Tk
-  differently. A local pass is necessary, not sufficient; the environments are not equivalent.
+- **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
+  wait-for-display poll this repo has twice seen hang indefinitely.
+- **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
+  than skips when a display is missing. A local run is the same 163 tests CI runs.
+- **Both interpreters are reachable locally** — the fence's last line switches to the
+  3.13 matrix leg, so it is reproducible here rather than CI-only.
 
-`.github/workflows/tests.yml` does the same four-file install on the runner host and runs
-`python -m pytest tests/ -v` with `REQUIRE_DISPLAY` set, across a 3.12/3.13 matrix. To run the app,
-see `README.md` §Quick start.
+`.github/workflows/tests.yml` builds and runs this same image across both matrix legs —
+one definition of the test environment. To run the app, see `README.md` §Quick start.
 
 ## Project structure and configuration
 
@@ -190,9 +184,15 @@ list in the same PR** — the only way this memory grows. A CI check validates t
     `relay/requirements-build.txt`), the test job's install step did not pick it up and
     `tests/test_gui.py` and `tests/test_env_config.py` failed collection with `ModuleNotFoundError`
     — while the release and publish workflows, which already installed with `-r` from those files,
-    were unaffected. It now installs from the same four files the build/release workflows and local
-    dev use. Adding a package to one workflow's inline list only fixes that workflow; the next
-    silently drifts out of sync.
+    were unaffected. `tests/Dockerfile` now installs from all four. Adding a package to one
+    workflow's inline list only fixes that workflow; the next silently drifts out of sync.
+
+12. **The four requirements files must be copied with their paths preserved.**
+    `relay/requirements.txt` and `server/requirements.txt` share a basename, so a Docker
+    copy naming all four into one flat destination directory lands **three** files, not
+    four — silently, with no build error. Harmless only while the two stay byte-identical
+    (both `aiohttp>=3.9,<4` today). `tests/Dockerfile` puts each in its own directory for
+    that reason; keep it that way.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

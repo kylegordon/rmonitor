@@ -1,0 +1,27 @@
+# One root file governs all three images: relay, server and tests all build from
+# the repo root, so there is nowhere else for this to live. tests/ is deliberately
+# NOT excluded — tests/Dockerfile copies tests/entrypoint.sh, and excluding the
+# directory breaks that build with a missing-source error.
+
+.git
+.github
+.claude
+.rpi-tracking
+
+__pycache__
+*.py[cod]
+.pytest_cache
+
+.venv
+venv
+
+build
+dist
+*.spec
+
+captures
+data
+docs
+
+.env
+docker-compose.override.yml
