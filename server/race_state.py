@@ -34,6 +34,49 @@ def _lap_time_seconds(t: str) -> float | None:
         return None
 
 
+# Some Orbits setups emit this in place of an empty cumulative time: it appears
+# 37 times in the ``$G`` lines of ``examples/2009 Sebring Test ALMS Session 4 -
+# 0800-1000.txt`` as a "no time set" marker rather than a real elapsed time.
+# Read as elapsed seconds it would put a car an hour behind the leader.
+_NO_TIME_SENTINEL = "00:59:59.999"
+
+
+def _elapsed_seconds(total_time: str) -> float | None:
+    """Convert a cumulative ``total_time`` to seconds, or *None* if unusable.
+
+    :param total_time: cumulative time as the feed sends it, ``"00:14:33.950"``.
+    :returns: elapsed seconds, or *None* for an empty value, for the
+        ``_NO_TIME_SENTINEL`` marker, for anything :func:`_lap_time_seconds`
+        cannot parse, and for a non-positive result.
+
+    The zero guard mirrors the rule :func:`_sort_key` already applies: a zero
+    ``total_time`` means the competitor has not crossed the timing line, not
+    that they crossed it at time zero.
+    """
+    if not total_time:
+        return None
+    if str(total_time).strip() == _NO_TIME_SENTINEL:
+        return None
+    secs = _lap_time_seconds(total_time)
+    if secs is None or secs <= 0:
+        return None
+    return secs
+
+
+def _lap_number(laps: str) -> int | None:
+    """Convert a ``laps`` field to a completed-lap count, or *None*.
+
+    :param laps: a competitor's completed-lap count as the feed sends it.
+    :returns: the lap number, or *None* when the field is empty, non-numeric or
+        non-positive — zero completed laps gives nothing to compare against.
+    """
+    try:
+        n = int(laps)
+    except (ValueError, TypeError):
+        return None
+    return n if n > 0 else None
+
+
 def _coerce_scalars(msg: dict) -> dict:
     """Coerce non-string/None scalar values in an ingest message to str.
 
@@ -59,6 +102,7 @@ class RaceState:
     def reset(self):
         self.competitors: dict[str, dict] = {}  # keyed by reg_number
         self.classes: dict[str, str] = {}  # class_number -> description
+        self.leader_time_at_lap: dict[int, float] = {}
         self.track_name: str = ""
         self.track_length_miles: float | None = None
         self.run_description: str = ""
@@ -172,6 +216,7 @@ class RaceState:
             c["laps"] = msg["laps"]
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
+        self._record_leader_time(msg.get("laps", ""), msg.get("total_time", ""))
         self._is_qualifying = False
         self._seen_race_info = True
         self._dirty = True
@@ -213,6 +258,56 @@ class RaceState:
             )
         else:
             competitor["last_lap_speed_mph"] = None
+
+    def _record_leader_time(self, laps: str, total_time: str) -> None:
+        """Record the earliest elapsed time seen at *laps* completed laps.
+
+        The earliest time at which *any* competitor completed a given lap is by
+        definition the leader-on-the-road's time at that lap, which is the
+        baseline :meth:`_time_behind_leader` measures every competitor against.
+
+        Two things the code cannot show:
+
+        - Refresh bursts repeat an identical ``(position, reg, lap, time)``
+          triple — ``$G,1,"15",8,"00:09:14.151"`` arrives three times in
+          ``captures/capture_20260517T134241.log`` — so keeping the minimum is
+          what makes recording idempotent, and a slower car reaching the same
+          lap later cannot raise the time already recorded for it.
+        - ``$G`` is deliberately the sole feed for this index. ``$J``
+          (:meth:`_passing`) carries no lap number, so the only lap available
+          there is the competitor's ``laps`` field, which ``$J`` does not
+          advance; recording against it would seed a lap key with a too-late
+          time whenever ``$J`` arrived before the matching ``$G``, silently
+          understating every gap at that lap.
+        """
+        lap = _lap_number(laps)
+        secs = _elapsed_seconds(total_time)
+        if lap is None or secs is None:
+            return
+        best = self.leader_time_at_lap.get(lap)
+        if best is None or secs < best:
+            self.leader_time_at_lap[lap] = secs
+
+    def _time_behind_leader(self, competitor: dict) -> float | None:
+        """Seconds *competitor* is behind the leader at its own lap, or *None*.
+
+        Measuring against the leader's time at the competitor's **own** lap is
+        what makes two cars on different lap counts comparable at all.
+        Subtracting two ``total_time`` values from one snapshot does not: the
+        two cars have completed different numbers of laps, so that subtraction
+        reports a car that is behind as being ahead.
+
+        *None* whenever the lap or the time is unusable, or the lap has not been
+        recorded in ``leader_time_at_lap`` yet.
+        """
+        lap = _lap_number(competitor.get("laps", ""))
+        secs = _elapsed_seconds(competitor.get("total_time", ""))
+        if lap is None or secs is None:
+            return None
+        leader_secs = self.leader_time_at_lap.get(lap)
+        if leader_secs is None:
+            return None
+        return secs - leader_secs
 
     def _passing(self, msg: dict) -> str:
         reg = msg["reg_number"]
@@ -280,6 +375,7 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
+        self._apply_intervals(entries, purple=(flag == "purple"))
         return {
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
@@ -293,11 +389,91 @@ class RaceState:
             "entries": entries,
         }
 
+    def _apply_intervals(self, entries: list[dict], *, purple: bool) -> None:
+        """Write the ``Gap`` and ``Diff`` intervals onto every entry.
+
+        *entries* must already be in display order: ``Gap`` reads the entry one
+        position ahead and ``Diff`` the first-placed entry, so both are
+        whole-state derivations belonging to the :meth:`snapshot` pass rather
+        than to a message-time helper.
+
+        Four fields are written on every entry, and only ever one half of each
+        pair is non-*None*: ``gap_ahead_seconds``/``gap_ahead_laps`` and
+        ``diff_leader_seconds``/``diff_leader_laps``.  The first-placed entry
+        keeps all four *None* — it has nobody ahead and is its own reference, so
+        both columns render an em-dash rather than ``0.000``.
+
+        Two choices the code cannot explain:
+
+        - **The lap-deficit threshold is 2, not 1.**  A one-lap difference is
+          the *normal* state — the car ahead has crossed the line for this lap
+          and you have not — so a threshold of 1 would flicker between ``+1 L``
+          and a time roughly once per lap.
+        - **Seconds are rounded to 3 dp**, matching the feed's millisecond
+          resolution.  That is what keeps each ``Diff`` exactly equal to the
+          running sum of the ``Gap`` values above it rather than float-noisy.
+        """
+        for e in entries:
+            e["gap_ahead_seconds"] = None
+            e["gap_ahead_laps"] = None
+            e["diff_leader_seconds"] = None
+            e["diff_leader_laps"] = None
+        # Under a purple flag :meth:`snapshot` sorts by ``total_time`` whatever
+        # the session mode says, so the row above is the car that crossed the
+        # timing loop just before — not the car ahead on track.  Purple marks
+        # formation and pace laps, where an interval carries no meaning, and a
+        # blank column is honest where a plausible-looking wrong number is not.
+        if purple or not entries:
+            return
+        values: list[float | None]
+        laps: list[int | None]
+        if self._is_qualifying:
+            # ``$H`` carries no cumulative time, so both columns derive from
+            # best laps, and no lap deficit applies.
+            values = []
+            for e in entries:
+                secs = _lap_time_seconds(e.get("best_lap_time", ""))
+                values.append(secs if secs is not None and secs > 0 else None)
+            laps = [None] * len(entries)
+        else:
+            values = [self._time_behind_leader(e) for e in entries]
+            laps = [_lap_number(e.get("laps", "")) for e in entries]
+        # Normalise against the first-placed entry rather than assuming its own
+        # value is zero: early in a session the feed's positions can briefly
+        # disagree with the on-road order.  With no reference point at all,
+        # neither column is defined and both stay *None*.
+        base = values[0]
+        if base is None:
+            return
+        diffs = [None if v is None else v - base for v in values]
+        leader_max_laps = max((n for n in laps if n is not None), default=None)
+        for i in range(1, len(entries)):
+            e = entries[i]
+            own_laps = laps[i]
+            ahead_laps = laps[i - 1]
+            if (
+                leader_max_laps is not None
+                and own_laps is not None
+                and leader_max_laps - own_laps >= 2
+            ):
+                e["diff_leader_laps"] = leader_max_laps - own_laps
+            elif diffs[i] is not None:
+                e["diff_leader_seconds"] = round(diffs[i], 3)
+            if (
+                ahead_laps is not None
+                and own_laps is not None
+                and ahead_laps - own_laps >= 2
+            ):
+                e["gap_ahead_laps"] = ahead_laps - own_laps
+            elif diffs[i] is not None and diffs[i - 1] is not None:
+                e["gap_ahead_seconds"] = round(diffs[i] - diffs[i - 1], 3)
+
     def _to_dict(self) -> dict:
         """Serialise state for a :class:`~server.state_store.StateStore`."""
         return {
             "competitors": self.competitors,
             "classes": self.classes,
+            "leader_time_at_lap": self.leader_time_at_lap,
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
@@ -312,9 +488,26 @@ class RaceState:
         }
 
     def _load_dict(self, data: dict) -> None:
-        """Restore state from a dict returned by a StateStore."""
+        """Restore state from a dict returned by a StateStore.
+
+        ``leader_time_at_lap`` is rebuilt with explicit ``int`` keys because
+        :class:`~server.state_store.JsonFileStateStore` round-trips through
+        ``json``, whose object keys are always strings.  A restored
+        ``{"13": 873.95}`` would miss every lookup in
+        :meth:`_time_behind_leader`, and both derived columns would go silently
+        blank after a restart until the feed re-populated the index.  A
+        hand-edited or truncated store degrades to an empty index rather than
+        failing startup.
+        """
         self.competitors = data.get("competitors", {})
         self.classes = data.get("classes", {})
+        try:
+            self.leader_time_at_lap = {
+                int(k): float(v)
+                for k, v in (data.get("leader_time_at_lap") or {}).items()
+            }
+        except (AttributeError, TypeError, ValueError):
+            self.leader_time_at_lap = {}
         self.track_name = data.get("track_name", "")
         self.track_length_miles = data.get("track_length_miles")
         self.run_description = data.get("run_description", "")
@@ -391,6 +584,12 @@ def _empty_competitor(reg: str) -> dict:
         "last_lap_speed_mph": None,
         "best_lap_time": "",
         "best_lap": "",
+        # Derived in RaceState._apply_intervals during snapshot(); each field
+        # names its own reference because this change ships two kinds of gap.
+        "gap_ahead_seconds": None,
+        "gap_ahead_laps": None,
+        "diff_leader_seconds": None,
+        "diff_leader_laps": None,
     }
 
 

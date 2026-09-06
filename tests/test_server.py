@@ -386,3 +386,24 @@ async def test_ingest_records_last_ingest_at(app, client):
     )
     assert resp.status == 200
     assert app[feed_state_key]["last_ingest_at"] >= before
+
+
+@pytest.mark.asyncio
+async def test_api_state_includes_gap_and_diff_fields(client):
+    """The derived interval fields reach the browser.
+
+    ``snapshot`` emits competitor dicts whole with no per-field allowlist, so
+    this asserts the payload contract the page actually receives.  The fixture
+    has a single competitor, which is P1 and therefore has no interval, so this
+    asserts presence rather than truthiness.
+    """
+    resp = await client.get("/api/state")
+    assert resp.status == 200
+    data = await resp.json()
+    entry = data["entries"][0]
+    for field in (
+        "gap_ahead_seconds", "gap_ahead_laps",
+        "diff_leader_seconds", "diff_leader_laps",
+    ):
+        assert field in entry
+        assert entry[field] is None
