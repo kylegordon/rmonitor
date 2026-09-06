@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.15](https://github.com/kylegordon/rmonitor/compare/v0.1.14...v0.1.15) (2026-09-06)
+
+## What's Changed
+* ci: run the relay GUI tests instead of skipping them by @kylegordon in https://github.com/kylegordon/rmonitor/pull/75
+* docs(agents): add AGENTS.md and CLAUDE.md by @kylegordon in https://github.com/kylegordon/rmonitor/pull/77
+* ci(agents): validate AGENTS.md freshness on PR and on a schedule by @kylegordon in https://github.com/kylegordon/rmonitor/pull/78
+* ci(agents): run tests from one committed container definition by @kylegordon in https://github.com/kylegordon/rmonitor/pull/79
+* docs(agents): move derivable pitfall prose to the code it describes by @kylegordon in https://github.com/kylegordon/rmonitor/pull/80
+* docs(agents): scope rules by directory and budget what is actually loaded by @kylegordon in https://github.com/kylegordon/rmonitor/pull/81
+* docs(agents): give the pitfalls list a drain, and a test under every entry by @kylegordon in https://github.com/kylegordon/rmonitor/pull/82
+* feat(server): show gap and diff columns on the leaderboard by @kylegordon in https://github.com/kylegordon/rmonitor/pull/84
+* fix(server): derive gap and diff from a lap-consistent pair by @kylegordon in https://github.com/kylegordon/rmonitor/pull/85
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.14...v0.1.15
+
+
 ## [0.1.14](https://github.com/kylegordon/rmonitor/compare/v0.1.13...v0.1.14) (2026-09-05)
 
 ## What's Changed
