@@ -457,13 +457,14 @@ def test_lap_time_seconds_ignores_non_string_input():
     assert _lap_time_seconds(["not", "a", "string"]) is None
 
 
-def _feed_capture_sequence(state):
-    """Feed the three-car ``$G`` sequence taken from a real capture.
+def _feed_three_cars_on_lap_13(state):
+    """Feed the settled three-car state, all on lap 13.
 
     Verbatim from ``captures/capture_20260517T134241.log``: leader 15 completes
-    lap 13 at 873.950 s, cars 64 and 88 follow it round on lap 13, then 15
-    completes lap 14.  That leaves the leader one lap ahead of both, which is
-    the ordinary mid-race state and the one a naive gap gets wrong.
+    lap 13 at 873.950 s and cars 64 and 88 follow it round on the same lap.
+    Separate from :func:`_feed_capture_sequence` because the interval
+    reproductions in this module start here, with every car's stamped pair on
+    lap 13 and no ``$G`` in flight.
     """
     state.process({
         "type": "race_info", "position": "1", "reg_number": "15",
@@ -477,6 +478,17 @@ def _feed_capture_sequence(state):
         "type": "race_info", "position": "3", "reg_number": "88",
         "laps": "13", "total_time": "00:15:48.743",
     })
+
+
+def _feed_capture_sequence(state):
+    """Feed the three-car ``$G`` sequence taken from a real capture.
+
+    Verbatim from ``captures/capture_20260517T134241.log``: leader 15 completes
+    lap 13 at 873.950 s, cars 64 and 88 follow it round on lap 13, then 15
+    completes lap 14.  That leaves the leader one lap ahead of both, which is
+    the ordinary mid-race state and the one a naive gap gets wrong.
+    """
+    _feed_three_cars_on_lap_13(state)
     state.process({
         "type": "race_info", "position": "1", "reg_number": "15",
         "laps": "14", "total_time": "00:15:38.661",
@@ -772,3 +784,211 @@ def test_init_clears_leader_time_at_lap(state):
     assert state.leader_time_at_lap
     state.process({"type": "init"})
     assert state.leader_time_at_lap == {}
+
+
+_INTERVAL_FIELDS = (
+    "gap_ahead_seconds",
+    "gap_ahead_laps",
+    "diff_leader_seconds",
+    "diff_leader_laps",
+)
+
+
+def _intervals(snap):
+    """Copy every entry's four interval fields out of *snap*.
+
+    ``snapshot()`` returns the live competitor dicts rather than copies, so a
+    value held across a later ``process()`` call silently compares against
+    itself.  Every test below that snapshots more than once compares through
+    this helper.
+    """
+    return {
+        e["reg_number"]: {name: e[name] for name in _INTERVAL_FIELDS}
+        for e in snap["entries"]
+    }
+
+
+def test_no_negative_interval_in_the_window_between_a_passing_and_its_race_info(state):
+    """A ``$J`` landing before its ``$G`` must not push the whole field negative.
+
+    ``captures/capture_20260517T134241.log`` lines 1777-1778 are one
+    millisecond apart::
+
+        $J,"15","00:01:04.711","00:15:38.661"
+        $G,1,"15",14,"00:15:38.661"
+
+    ``$J`` carries no lap number at all, so the leader's ``total_time``
+    advanced to lap 14 while its ``laps`` stayed on 13, and the interval was
+    taken by subtracting lap 13's baseline from lap 14's time.  The leader is
+    the normalisation base, so the whole field shifted by its spurious
+    +64.711: car 64 measured -11.605, and ``intervalText`` keeps the sign
+    deliberately, so the page rendered it.  Broadcasting every 0.25 s against a
+    ~1 ms window makes this rare per crossing and certain over a session — and
+    it lands on every row at once.
+    """
+    _feed_three_cars_on_lap_13(state)
+    settled = _intervals(state.snapshot())
+    assert settled["64"]["diff_leader_seconds"] == pytest.approx(53.106, abs=1e-3)
+    assert settled["88"]["diff_leader_seconds"] == pytest.approx(74.793, abs=1e-3)
+
+    state.process({
+        "type": "passing", "reg_number": "15",
+        "lap_time": "00:01:04.711", "total_time": "00:15:38.661",
+    })
+    in_window = _intervals(state.snapshot())
+    for reg, fields in in_window.items():
+        for name, value in fields.items():
+            assert value is None or value >= 0, f"{reg} {name} = {value}"
+    assert in_window == settled
+
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "15",
+        "laps": "14", "total_time": "00:15:38.661",
+    })
+    assert _intervals(state.snapshot()) == settled
+
+
+def test_lap_info_advancing_a_lap_without_a_time_does_not_blank_the_table(state):
+    """``$SP``/``$SR`` advance ``laps`` and write no cumulative time at all.
+
+    Taking the lap from the live field, the leader moved to lap 14 with its
+    ``total_time`` still on lap 13, so the lookup hit a lap the index had never
+    recorded: the baseline was *None* and the interval pass returned early,
+    blanking the entire table for a whole lap.  Worse, if a rival reached that
+    lap first, every row rescaled against the leader's stale deficit —
+    measured on these three cars as *None*, then 117.817 and 192.610.
+
+    ``$SP``/``$SR`` appear in none of the eleven sample files, so this route is
+    guarded on principle: root ``AGENTS.md`` pitfall 3 records them as real
+    output from some Orbits setups that appears in no published spec.
+    """
+    _feed_three_cars_on_lap_13(state)
+    settled = _intervals(state.snapshot())
+
+    state.process({
+        "type": "lap_info", "position": "1", "reg_number": "15",
+        "lap_number": "14", "lap_time": "00:01:04.711",
+    })
+    after = _intervals(state.snapshot())
+    assert after["64"]["diff_leader_seconds"] == pytest.approx(53.106, abs=1e-3)
+    assert after["88"]["diff_leader_seconds"] == pytest.approx(74.793, abs=1e-3)
+    assert after == settled
+
+
+def test_lap_deficit_is_measured_from_the_stamped_pair_not_the_live_lap_count(state):
+    """Both halves of a column are read from the same instant.
+
+    With the ``+N L`` deficit taken from the live ``laps`` and the seconds from
+    the stamped pair, a ``$SP`` lap advance drops a two-lap-down car to a
+    one-lap deficit, which falls below the two-lap threshold and reports a
+    seconds value describing the *earlier* lap.  The two halves of one column
+    would then describe different instants.
+    """
+    _feed_lapped_field(state)
+    entries = _by_reg(state.snapshot())
+    assert entries["101"]["diff_leader_laps"] == 2
+    assert entries["101"]["diff_leader_seconds"] is None
+
+    state.process({
+        "type": "lap_info", "reg_number": "101", "lap_number": "7",
+    })
+    entries = _by_reg(state.snapshot())
+    assert entries["101"]["laps"] == "7"
+    assert entries["101"]["diff_leader_laps"] == 2
+    assert entries["101"]["diff_leader_seconds"] is None
+
+
+def test_a_stale_race_info_replay_does_not_move_the_stamped_pair_backwards(state):
+    """A stale ``$G`` replay leaves the stamped pair on the later lap.
+
+    ``$G`` lap numbers do regress within a session, rarely: counting per file
+    and clearing at each ``$I`` exactly as ``_init`` does, once across the
+    eight captures (``captures/capture_20260419T090018.log``) and 11 / 1 / 1
+    across the three ``examples/*.txt``.  Every one inspected is a stale replay
+    of a *still-consistent* pair — ``examples/2009 Sebring Test ALMS Session 4
+    - 0800-1000.txt`` line 4500 sends ``$G,6,"44",15,"00:51:28.997"`` after
+    line 4499 sent lap 16, which is lap 15 carrying lap 15's own time — so a
+    plain last-write would already report a correct interval, one lap old, for
+    one snapshot.  The guard buys stability, not correctness.
+
+    The stamped field is asserted directly because it is the only observable
+    here: in this capture car 15's lap-13 time *is* the index minimum at lap
+    13, so a pair moved backwards yields an identical interval.
+    """
+    _feed_capture_sequence(state)
+    entries = _by_reg(state.snapshot())
+    assert entries["15"]["timed_lap"] == 14
+    assert entries["15"]["timed_lap_seconds"] == pytest.approx(938.661, abs=1e-3)
+
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "15",
+        "laps": "13", "total_time": "00:14:33.950",
+    })
+    entries = _by_reg(state.snapshot())
+    assert entries["15"]["timed_lap"] == 14
+    assert entries["15"]["timed_lap_seconds"] == pytest.approx(938.661, abs=1e-3)
+    # snapshot() has no field allowlist, so both reach the broadcast payload.
+    assert entries["64"]["timed_lap"] == 13
+    assert entries["88"]["timed_lap"] == 13
+
+
+def test_qualifying_sentinel_best_lap_yields_no_gap_or_diff(state):
+    """``00:59:59.999`` is a "no time set" marker, not a 3599.999 s lap.
+
+    The race branch has always rejected it through the shared input guard,
+    while the qualifying branch checked only that the parsed value was
+    positive, so a sentinel best lap rendered ``+58:19.999``.  It matters more
+    in qualifying than in a race: across the three ``examples/*.txt`` the
+    sentinel appears 72 / 1581 / 712 times in ``$H`` against 37 / 162 / 625 in
+    ``$G``, and ``examples/2009 Sebring Test ALMS Session 4 - 0800-1000.txt``
+    *opens* with ``$H,1,"21",0,"00:59:59.999"`` — position 1 holding the
+    sentinel, so at session start the whole field normalises against it and
+    every row reads ``+0.000`` rather than ``—``.
+    """
+    for position, reg, best_lap_time in [
+        ("1", "15", "00:01:40.000"),
+        ("2", "64", "00:01:41.500"),
+        ("3", "99", "00:59:59.999"),
+        ("4", "77", ""),
+    ]:
+        state.process({
+            "type": "qual_info", "position": position,
+            "reg_number": reg, "best_lap_time": best_lap_time,
+        })
+    entries = _by_reg(state.snapshot())
+    assert entries["64"]["diff_leader_seconds"] == pytest.approx(1.5, abs=1e-3)
+    assert entries["64"]["gap_ahead_seconds"] == pytest.approx(1.5, abs=1e-3)
+    for reg in ("15", "99", "77"):
+        for name in _INTERVAL_FIELDS:
+            assert entries[reg][name] is None, f"{reg} {name}"
+
+
+def test_a_state_file_without_the_stamped_pair_restores_and_self_heals(state):
+    """A store written before the pair existed restores blank, then repairs.
+
+    ``_to_dict`` stores ``competitors`` wholesale and ``_load_dict`` restores
+    them verbatim, so the pair persists with no serialisation code of its own —
+    and a ``data/state.json`` from the previous release simply lacks both keys.
+    Read with ``.get()`` they come back *None* and both columns render ``—``;
+    the first ``$G`` per competitor repairs it.  Self-healing within a lap, so
+    there is no migration to run before deploying.
+    """
+    import json
+
+    _feed_capture_sequence(state)
+    payload = json.loads(json.dumps(state._to_dict()))
+    for competitor in payload["competitors"].values():
+        del competitor["timed_lap"]
+        del competitor["timed_lap_seconds"]
+
+    restored = RaceState()
+    restored._load_dict(payload)
+    entries = _by_reg(restored.snapshot())
+    for reg in ("15", "64", "88"):
+        for name in _INTERVAL_FIELDS:
+            assert entries[reg][name] is None, f"{reg} {name}"
+
+    _feed_capture_sequence(restored)
+    entries = _by_reg(restored.snapshot())
+    assert entries["64"]["diff_leader_seconds"] == pytest.approx(53.106, abs=1e-3)
+    assert entries["88"]["diff_leader_seconds"] == pytest.approx(74.793, abs=1e-3)
