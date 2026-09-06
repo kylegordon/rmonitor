@@ -112,6 +112,16 @@ class RaceState:
         return None
 
     def _competitor(self, msg: dict) -> str:
+        """Merge competitor fields from ``$A``/``$COMP`` into one entry.
+
+        Two details that are easy to get wrong:
+
+        - Entries are keyed by ``reg_number``, the internal registration key
+          (e.g. ``"21"``), never by ``number``, the *displayed* car number, which
+          may carry letters (``"12X"``).
+        - A field is written only when the incoming value is non-empty, so a
+          later message carrying blanks cannot blank data an earlier one gave.
+        """
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if msg.get("first_name"):
@@ -168,6 +178,13 @@ class RaceState:
         return "race_info"
 
     def _qual_info(self, msg: dict) -> str:
+        """Apply a ``$H`` (qualifying information) message.
+
+        Some Orbits setups send ``$H`` *during a race* for best-lap tracking, so
+        position and ``_is_qualifying`` are touched only while
+        ``_seen_race_info`` is still False — otherwise qualifying positions would
+        overwrite the ``$G`` race order.  Best-lap fields update either way.
+        """
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if not self._seen_race_info and msg.get("position"):
@@ -182,7 +199,12 @@ class RaceState:
         return "qual_info"
 
     def _update_lap_speed(self, competitor: dict, lap_time: str) -> None:
-        """Update last lap time and computed speed on *competitor*."""
+        """Update last lap time and computed speed on *competitor*.
+
+        ``last_lap_speed_mph`` needs both ``track_length_miles`` (from
+        ``$E TRACKLENGTH``) and a positive lap time; a zero or missing value on
+        either side yields *None* rather than a computed figure.
+        """
         competitor["last_lap_time"] = lap_time
         secs = _lap_time_seconds(lap_time)
         if secs and secs > 0 and self.track_length_miles:
@@ -235,7 +257,14 @@ class RaceState:
     # ---- serialisation ----
 
     def snapshot(self) -> dict:
-        """Return the full state as a JSON-serialisable dict."""
+        """Return the full state as a JSON-serialisable dict.
+
+        Sort order follows the session: ``best_lap_time`` ascending while
+        ``_is_qualifying``, numeric ``position`` otherwise.  A purple flag
+        overrides both with ``total_time`` ascending whatever the mode says —
+        intended for formation and pace laps at race end, where cars are on
+        track in the order they crossed the timing loop.
+        """
         flag = str(self.flag).strip().lower()
         if flag == "purple":
             sort_fn = _sort_key_purple
@@ -300,7 +329,20 @@ class RaceState:
         self._dirty = True
 
     def _derive_session_mode(self) -> str:
-        """Derive a short session mode label from the run description."""
+        """Derive a short session mode label from the run description.
+
+        Session detection runs on two independent signals, and they are not
+        interchangeable.  ``_is_qualifying`` is set by *message type* — True on a
+        ``$H`` arriving before any ``$G``, cleared by any ``$G`` — and is what
+        ``snapshot`` sorts on; it takes priority here, returning ``"Qualifying"``
+        without reading the description at all.  The label below is derived
+        separately, by substring match on ``run_description`` (from ``$B``).
+
+        Matching is spelling-sensitive and the fallthrough is silent: a
+        description matching no keyword is reported as ``"Race"``, so "Free
+        Practice" and "Shakedown" both read as a race today.  Extend the keyword
+        lists when a new session type appears rather than leaning on that.
+        """
         if self._is_qualifying:
             return "Qualifying"
         desc = self.run_description.lower()

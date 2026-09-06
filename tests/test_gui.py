@@ -1,4 +1,4 @@
-"""Headless smoke test for relay/gui.py, run under xvfb-run.
+"""Headless smoke test for relay/gui.py, run against the display tests/entrypoint.sh starts.
 
 Stubs RelayRunner (no real relay thread/TCP connection) and the
 update-poll scheduling (no real background-loop dependency), so this only

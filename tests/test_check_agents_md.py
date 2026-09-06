@@ -114,13 +114,102 @@ def test_copilot_pointer_that_stops_pointing_is_reported(tmp_path: Path) -> None
     assert any("does not name AGENTS.md" in f for f in findings)
 
 
-def test_overlong_agents_md_is_reported(tmp_path: Path) -> None:
+def test_overlong_instruction_set_is_reported(tmp_path: Path) -> None:
     root = make_repo(tmp_path)
     (root / "AGENTS.md").write_text(
-        AGENTS_BODY + "filler\n" * check_agents_md.MAX_AGENTS_LINES, encoding="utf-8"
+        AGENTS_BODY + "filler\n" * check_agents_md.MAX_EAGER_LINES, encoding="utf-8"
     )
     findings = check_agents_md.run_checks(root)
     assert any("line budget" in f for f in findings)
+
+
+def test_lines_moved_behind_an_import_still_count(tmp_path: Path) -> None:
+    """The budget is on the eagerly loaded set, so an import is not an escape hatch.
+
+    Claude Code resolves ``@`` imports up front.  A split that satisfies a per-file
+    limit while leaving the same text in front of the agent has to keep failing, or the
+    check measures filing rather than attention.
+    """
+    root = make_repo(tmp_path)
+    filler = "filler\n" * check_agents_md.MAX_EAGER_LINES
+    (root / "overflow.md").write_text(filler, encoding="utf-8")
+    (root / "AGENTS.md").write_text(AGENTS_BODY + "\n@overflow.md\n", encoding="utf-8")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("line budget" in f for f in findings)
+    assert any("overflow.md" in f for f in findings), "the breakdown must name the file"
+
+
+def test_drift_report_region_is_not_counted_against_the_budget(tmp_path: Path) -> None:
+    """A drift report must not manufacture a length finding on top of the real one."""
+    root = make_repo(tmp_path)
+    report = ["- " + "x" * 40] * check_agents_md.MAX_EAGER_LINES
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY.replace(
+            check_agents_md.DRIFT_START,
+            check_agents_md.DRIFT_START + "\n" + "\n".join(report),
+        ),
+        encoding="utf-8",
+    )
+
+    assert not any("line budget" in f for f in check_agents_md.run_checks(root))
+
+
+def _add_scoped(root: Path, *, shim: str | None = "# CLAUDE.md — server/\n\n@AGENTS.md\n") -> Path:
+    """Give *root* a ``server/AGENTS.md``, optionally with its ``CLAUDE.md`` shim."""
+    (root / "server").mkdir(parents=True, exist_ok=True)
+    (root / "server" / "AGENTS.md").write_text(
+        "# server/AGENTS.md\n\nSee `relay/main.py` for the environment idiom.\n",
+        encoding="utf-8",
+    )
+    if shim is not None:
+        (root / "server" / "CLAUDE.md").write_text(shim, encoding="utf-8")
+    return root
+
+
+def test_scoped_agents_md_with_its_shim_is_clean(tmp_path: Path) -> None:
+    assert check_agents_md.run_checks(_add_scoped(make_repo(tmp_path))) == []
+
+
+def test_scoped_agents_md_without_a_shim_is_reported(tmp_path: Path) -> None:
+    """Without the shim, Copilot obeys the scoped rules and Claude Code never sees them."""
+    root = _add_scoped(make_repo(tmp_path), shim=None)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("server/CLAUDE.md" in f and "missing" in f for f in findings)
+
+
+def test_scoped_shim_that_does_not_import_is_reported(tmp_path: Path) -> None:
+    root = _add_scoped(make_repo(tmp_path), shim="# CLAUDE.md — server/\n\nNotes.\n")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("server/CLAUDE.md" in f and "import" in f for f in findings)
+
+
+def test_overlong_scoped_agents_md_is_reported(tmp_path: Path) -> None:
+    root = _add_scoped(make_repo(tmp_path))
+    (root / "server" / "AGENTS.md").write_text(
+        "filler\n" * check_agents_md.MAX_SCOPED_LINES, encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("server/AGENTS.md" in f and "scoped budget" in f for f in findings)
+
+
+def test_stale_path_in_a_scoped_file_is_reported(tmp_path: Path) -> None:
+    """Scoped files are discovered, so they are checked without being registered."""
+    root = _add_scoped(make_repo(tmp_path))
+    (root / "server" / "AGENTS.md").write_text(
+        "# server/AGENTS.md\n\nSee `server/does_not_exist.py`.\n", encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("server/does_not_exist.py" in f for f in findings)
 
 
 def test_git_refs_and_protocol_fields_are_not_mistaken_for_references(tmp_path: Path) -> None:
