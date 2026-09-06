@@ -193,3 +193,6 @@ list in the same PR** — the only way this memory grows. A CI check validates t
     were unaffected. It now installs from the same four files the build/release workflows and local
     dev use. Adding a package to one workflow's inline list only fixes that workflow; the next
     silently drifts out of sync.
+
+<!-- drift-report:start -->
+<!-- drift-report:end -->

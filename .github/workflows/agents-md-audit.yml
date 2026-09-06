@@ -1,0 +1,56 @@
+name: AGENTS.md audit
+
+# The PR-time check in tests.yml only fires on a push or a pull request, and the
+# procedural rule in AGENTS.md depends on the authoring agent remembering. This
+# catches what neither can: drift that is already sitting on master. It opens a PR
+# and never merges it, so a human still reviews every change to the instruction
+# files.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  audit:
+    name: Audit instruction files
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `|| true` on purpose: a non-zero exit here is the finding, not an error, and
+      # aborting the job would mean never opening the PR that reports it.
+      - name: Record drift in AGENTS.md
+        run: python .github/scripts/check_agents_md.py --annotate || true
+
+      # No-ops when the drift region came back empty, so a clean week opens nothing.
+      - name: Open a PR with the drift report
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs(agents): refresh AGENTS.md"
+          branch: chore/agents-md-audit
+          title: "docs(agents): AGENTS.md has drifted from the code"
+          body: |
+            The scheduled audit found references in the agent instruction files that
+            no longer match the repository. The findings are recorded in the
+            `drift-report` region of `AGENTS.md` in this PR's diff.
+
+            Fix the underlying staleness on this branch — correct the path, drop the
+            reference, or update the prose — rather than editing the report.
+
+            **This PR is expected to be red while the drift is unfixed.** The
+            `agents-md` job from `tests.yml` runs here too and reports the same
+            findings; that is the check working, not a fault in it. Do not exempt
+            this branch from the check to make it green. It goes green when the
+            drift is actually fixed.
+          labels: documentation
