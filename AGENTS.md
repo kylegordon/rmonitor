@@ -49,8 +49,8 @@ python -m pytest tests/ -v
 
 Swap the last line to scope a run, e.g. `python -m pytest tests/test_gui.py -v`. Three details:
 
-- **Xvfb is started by hand, not through `xvfb-run`**, which this repo has twice seen hang
-  indefinitely on its wait-for-display poll (see the comment in `.github/workflows/tests.yml`).
+- **Xvfb is started directly, never via the `xvfb-run` wrapper**, whose wait-for-display poll this
+  repo has twice seen hang indefinitely. CI's "Start Xvfb" step does the same, so the two match.
 - **`REQUIRE_DISPLAY=1` is mandatory.** Without it `tests/test_gui.py` *skips* rather than fails
   when there is no display, and you get a green local run against a red CI run.
 - **The container is Python 3.12 only**, while CI gates 3.12 *and* 3.13, and provisions Tk
