@@ -37,3 +37,12 @@ values out of one snapshot. Two cars are almost always on different lap counts, 
 subtraction reports a car that is behind as being ahead, and the sign flips every time
 the leader crosses the line. Guarded by
 `test_gap_is_positive_when_the_leader_is_a_lap_ahead` in `tests/test_race_state.py`.
+
+The **read** side obeys the same `$G`-only rule the index's write side does: both halves
+of both columns — the seconds and the `+N L` deficit — come from the
+`(timed_lap, timed_lap_seconds)` pair stamped in `RaceState._race_info`, never from the
+live `laps` and `total_time` fields. Those two are written by three handlers
+independently and are not a pair, so reading them together makes the whole field flash
+negative or blank for a lap. Guarded by
+`test_no_negative_interval_in_the_window_between_a_passing_and_its_race_info` in
+`tests/test_race_state.py`.

@@ -41,11 +41,17 @@ def _lap_time_seconds(t: str) -> float | None:
 _NO_TIME_SENTINEL = "00:59:59.999"
 
 
-def _elapsed_seconds(total_time: str) -> float | None:
-    """Convert a cumulative ``total_time`` to seconds, or *None* if unusable.
+def _interval_seconds(value: str) -> float | None:
+    """Convert a feed time field to seconds, or *None* if unusable.
 
-    :param total_time: cumulative time as the feed sends it, ``"00:14:33.950"``.
-    :returns: elapsed seconds, or *None* for an empty value, for the
+    The single input guard for both session modes.  In a race
+    :meth:`RaceState._race_info` passes a cumulative ``total_time``; in
+    qualifying :meth:`RaceState._apply_intervals` passes a ``best_lap_time``.
+    Both want the same four checks and differ only in which field they read, so
+    neither branch may reach the interval derivation by another route.
+
+    :param value: a time field as the feed sends it, ``"00:14:33.950"``.
+    :returns: seconds, or *None* for an empty value, for the
         ``_NO_TIME_SENTINEL`` marker, for anything :func:`_lap_time_seconds`
         cannot parse, and for a non-positive result.
 
@@ -53,11 +59,11 @@ def _elapsed_seconds(total_time: str) -> float | None:
     ``total_time`` means the competitor has not crossed the timing line, not
     that they crossed it at time zero.
     """
-    if not total_time:
+    if not value:
         return None
-    if str(total_time).strip() == _NO_TIME_SENTINEL:
+    if str(value).strip() == _NO_TIME_SENTINEL:
         return None
-    secs = _lap_time_seconds(total_time)
+    secs = _lap_time_seconds(value)
     if secs is None or secs <= 0:
         return None
     return secs
@@ -209,6 +215,23 @@ class RaceState:
         return None
 
     def _race_info(self, msg: dict) -> str:
+        """Apply a ``$G`` (race information) message.
+
+        ``$G`` is the only message carrying a competitor's lap number and its
+        cumulative time together — ``$J`` (:meth:`_passing`) has no lap field
+        at all and ``$SP``/``$SR`` (:meth:`_lap_info`) no cumulative time — so
+        this is the only point at which a lap-consistent
+        ``(timed_lap, timed_lap_seconds)`` pair can be captured.  Both interval
+        columns read that pair rather than the live ``laps`` and ``total_time``
+        fields, which three handlers write independently of one another.
+
+        The ``>=`` guard on the stamp is **stability, not correctness**: a lap
+        regression in this feed is a stale replay of a *still-consistent* pair,
+        so a plain last-write would already report a correct interval — one lap
+        old, for one snapshot.  Refusing the backward write stops the displayed
+        value stepping backwards at all, for the same reason
+        :meth:`_record_leader_time` keeps the minimum.
+        """
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         _update_position(c, msg["position"])
@@ -216,7 +239,16 @@ class RaceState:
             c["laps"] = msg["laps"]
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
-        self._record_leader_time(msg.get("laps", ""), msg.get("total_time", ""))
+        lap = _lap_number(msg.get("laps", ""))
+        secs = _interval_seconds(msg.get("total_time", ""))
+        self._record_leader_time(lap, secs)
+        if lap is not None and secs is not None:
+            # .get(): _load_dict restores competitor dicts verbatim, so a store
+            # written before this pair existed has neither key.
+            stamped = c.get("timed_lap")
+            if stamped is None or lap >= stamped:
+                c["timed_lap"] = lap
+                c["timed_lap_seconds"] = secs
         self._is_qualifying = False
         self._seen_race_info = True
         self._dirty = True
@@ -259,8 +291,15 @@ class RaceState:
         else:
             competitor["last_lap_speed_mph"] = None
 
-    def _record_leader_time(self, laps: str, total_time: str) -> None:
-        """Record the earliest elapsed time seen at *laps* completed laps.
+    def _record_leader_time(self, lap: int | None, secs: float | None) -> None:
+        """Record the earliest elapsed time seen at *lap* completed laps.
+
+        :param lap: a lap number already validated by :func:`_lap_number`, or
+            *None* if the ``$G`` carried no usable one.
+        :param secs: the matching elapsed time already validated by
+            :func:`_interval_seconds`, or *None*.  The caller validates both
+            once and uses the same pair for this index and for the
+            competitor's own stamp, so the two writes cannot diverge.
 
         The earliest time at which *any* competitor completed a given lap is by
         definition the leader-on-the-road's time at that lap, which is the
@@ -280,8 +319,6 @@ class RaceState:
           time whenever ``$J`` arrived before the matching ``$G``, silently
           understating every gap at that lap.
         """
-        lap = _lap_number(laps)
-        secs = _elapsed_seconds(total_time)
         if lap is None or secs is None:
             return
         best = self.leader_time_at_lap.get(lap)
@@ -289,7 +326,7 @@ class RaceState:
             self.leader_time_at_lap[lap] = secs
 
     def _time_behind_leader(self, competitor: dict) -> float | None:
-        """Seconds *competitor* is behind the leader at its own lap, or *None*.
+        """Seconds *competitor* is behind the leader at its own timed lap.
 
         Measuring against the leader's time at the competitor's **own** lap is
         what makes two cars on different lap counts comparable at all.
@@ -297,11 +334,25 @@ class RaceState:
         two cars have completed different numbers of laps, so that subtraction
         reports a car that is behind as being ahead.
 
-        *None* whenever the lap or the time is unusable, or the lap has not been
-        recorded in ``leader_time_at_lap`` yet.
+        Both halves come from the ``(timed_lap, timed_lap_seconds)`` pair
+        :meth:`_race_info` stamps, never from the live ``laps`` and
+        ``total_time``.  Those two are written by three handlers independently,
+        so they are not a pair: a ``$J`` landing a millisecond before its
+        matching ``$G`` advances the time without the lap, and because the
+        leader's value is the normalisation base that pushes *every* row
+        negative for that snapshot.
+
+        A competitor between crossings therefore holds its **previous lap's**
+        interval rather than blanking, which is how a real timing screen
+        behaves — a gap only moves when a car crosses the line.  That is the
+        intended steady state, not a stale cell.
+
+        *None* whenever the pair is missing — a competitor with no ``$G`` yet,
+        or a ``data/state.json`` written before the pair existed — or when the
+        lap has not been recorded in ``leader_time_at_lap`` yet.
         """
-        lap = _lap_number(competitor.get("laps", ""))
-        secs = _elapsed_seconds(competitor.get("total_time", ""))
+        lap = competitor.get("timed_lap")
+        secs = competitor.get("timed_lap_seconds")
         if lap is None or secs is None:
             return None
         leader_secs = self.leader_time_at_lap.get(lap)
@@ -430,14 +481,13 @@ class RaceState:
         if self._is_qualifying:
             # ``$H`` carries no cumulative time, so both columns derive from
             # best laps, and no lap deficit applies.
-            values = []
-            for e in entries:
-                secs = _lap_time_seconds(e.get("best_lap_time", ""))
-                values.append(secs if secs is not None and secs > 0 else None)
+            values = [
+                _interval_seconds(e.get("best_lap_time", "")) for e in entries
+            ]
             laps = [None] * len(entries)
         else:
             values = [self._time_behind_leader(e) for e in entries]
-            laps = [_lap_number(e.get("laps", "")) for e in entries]
+            laps = [e.get("timed_lap") for e in entries]
         # Normalise against the first-placed entry rather than assuming its own
         # value is zero: early in a session the feed's positions can briefly
         # disagree with the on-road order.  With no reference point at all,
@@ -590,6 +640,12 @@ def _empty_competitor(reg: str) -> dict:
         "gap_ahead_laps": None,
         "diff_leader_seconds": None,
         "diff_leader_laps": None,
+        # Stamped as a pair by RaceState._race_info, the only handler whose
+        # message carries a lap number and a cumulative time together; read as
+        # a pair by _time_behind_leader and _apply_intervals.  Either alone is
+        # meaningless, which is why they are named and commented as one thing.
+        "timed_lap": None,
+        "timed_lap_seconds": None,
     }
 
 
