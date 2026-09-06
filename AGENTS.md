@@ -94,6 +94,14 @@ this file in the same PR**, and an agent that hits a non-obvious failure **adds 
 list in the same PR** — the only way this memory grows. A CI check validates the mechanical half
 (referenced paths and environment variables are real); the prose half is on you.
 
+Growth needs a matching drain, or any budget is only a deferred failure. So **every pitfall entry
+names the test that guards it**. Prose cannot fail; a rule with no test is a rule an agent breaks
+silently while CI stays green, which in a repository nobody hand-writes is the same as no rule at
+all. Write that test in the same PR — `tests/test_repo_invariants.py` is where the ones about the
+repository's shape live. What an entry then keeps is only what a test cannot tell you: that the
+rule exists, and why. The history of how it was discovered belongs in the test's docstring, and is
+deleted from here once it lives there.
+
 This file has a hard length budget, because it is loaded in full on every task whatever the task
 is. So it holds only what applies to every task. A rule that applies to one directory goes in that
 directory's `AGENTS.md` — `server/AGENTS.md`, `tests/AGENTS.md` — beside a one-line `CLAUDE.md`
@@ -115,19 +123,25 @@ to one function it lives in that function's docstring and is deliberately not re
 1. **`reg_number` vs `number`**: `reg_number` is the internal registration key (e.g. `"21"`);
    `number` is the displayed car number, possibly with letters (`"12X"`). Always key competitor
    dicts by `reg_number`. `RaceState._competitor` also skips empty incoming values rather than
-   blanking a field an earlier `$A`/`$COMP` filled.
+   blanking a field an earlier `$A`/`$COMP` filled. Guarded by
+   `test_competitor_keyed_by_reg_number_not_displayed_number` and
+   `test_competitor_name_not_blanked_by_empty_update` in `tests/test_race_state.py`.
 2. **Session mode runs on two independent signals that disagree by design** — `_is_qualifying`,
    set by message type and driving sort order, and the `session_mode` label, derived by substring
    match on `run_description`. Read `RaceState._derive_session_mode`, `_qual_info` and `snapshot`
-   together before touching any of them.
+   together before touching any of them. Guarded by
+   `test_qual_info_during_a_race_does_not_overwrite_race_positions` and the `session_mode` and
+   sort-order tests in `tests/test_race_state.py`.
 3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real
    output from some Orbits setups, and `_tokenize` strips quotes *and* whitespace because flag
    strings such as `"Green "` arrive padded. Trust `relay/rmonitor_client.py` over the spec.
+   Guarded by `test_heartbeat_flag_trim`, `test_lap_info_sp` and `test_lap_info_sr` in
+   `tests/test_parser.py`.
 4. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
    `tests/Dockerfile` installs from all four and is the only place that list exists; why each file
    is copied with its path preserved is commented there. Adding a package to one workflow's inline
-   list only ever fixes that workflow, and the next one silently drifts out of sync — which is how
-   `platformdirs` once broke `tests/test_gui.py` collection while release and publish stayed green.
+   list only ever fixes that workflow, and the next one silently drifts out of sync. Guarded by
+   `tests/test_repo_invariants.py`, which also asserts the `xvfb-run` and `conftest.py` rules.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

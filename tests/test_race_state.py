@@ -165,6 +165,35 @@ def test_snapshot_qualifying_no_lap_time_sorted_last(state):
     assert numbers == ["A", "B"]  # timed entry first, untimed last
 
 
+def test_competitor_keyed_by_reg_number_not_displayed_number(state):
+    """Guards AGENTS.md pitfall 1: the two are different keys and can disagree."""
+    state.process({
+        "type": "competitor",
+        "reg_number": "21",
+        "number": "12X",
+        "first_name": "John",
+        "last_name": "Smith",
+        "nationality": "USA",
+        "class_number": "1",
+    })
+    assert "21" in state.competitors
+    assert "12X" not in state.competitors
+    assert state.competitors["21"]["number"] == "12X"
+
+
+def test_qual_info_during_a_race_does_not_overwrite_race_positions(state):
+    """Guards AGENTS.md pitfall 2: some Orbits setups send $H during a race.
+
+    Best-lap fields must still update, or the guard would cost the feature the
+    out-of-session $H exists to provide.
+    """
+    state.process({"type": "race_info", "position": "1", "reg_number": "A", "laps": "5", "total_time": "00:10:00.000"})
+    state.process({"type": "qual_info", "position": "9", "reg_number": "A", "best_lap": "3", "best_lap_time": "00:01:45.000"})
+    assert state.is_qualifying is False
+    assert state.competitors["A"]["position"] == "1"
+    assert state.competitors["A"]["best_lap_time"] == "00:01:45.000"
+
+
 def test_is_qualifying_cleared_by_race_info(state):
     state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:45.000"})
     assert state.is_qualifying is True
