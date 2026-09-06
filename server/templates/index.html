@@ -192,7 +192,6 @@
       width: 4rem;
       text-align: center;
     }
-    td.speed { color: var(--green); }
 
     .empty-state {
       text-align: center;
@@ -279,12 +278,12 @@
           <th>Pos</th>
           <th>#</th>
           <th>Name</th>
+          <th>Gap</th>
+          <th>Diff</th>
           <th>Class</th>
           <th>Laps</th>
           <th>Last Lap</th>
-          <th>Speed (mph)</th>
           <th>Best Lap</th>
-          <th>Total Time</th>
         </tr>
       </thead>
       <tbody id="entries">
@@ -333,6 +332,21 @@
       if (m === 'practice') return 'mode-practice';
       if (m === 'qualifying') return 'mode-qualifying';
       return '';
+    }
+
+    // Format a derived Gap/Diff interval. A lap deficit wins over a time, and
+    // a missing value renders the page's em-dash. A negative value keeps its
+    // sign rather than being clamped, so a genuine ordering anomaly stays
+    // visible instead of being disguised as a small positive interval.
+    function intervalText(seconds, laps) {
+      if (laps != null) return '+' + laps + ' L';
+      if (seconds == null) return '—';
+      const sign = seconds < 0 ? '-' : '+';
+      const abs = Math.abs(seconds);
+      if (abs < 60) return sign + abs.toFixed(3);
+      const mins = Math.floor(abs / 60);
+      const secs = abs - mins * 60;
+      return sign + mins + ':' + secs.toFixed(3).padStart(6, '0');
     }
 
     function showNoFeedModal() {
@@ -410,7 +424,6 @@
           return cc + 'cc' + (suffix ? ' ' + suffix : '');
         }) : '';
         const vehicle = [e.nationality, extra].filter(Boolean).join(' — ');
-        const speed = e.last_lap_speed_mph != null ? e.last_lap_speed_mph.toFixed(1) : '—';
         const cls = e.class_description || '—';
         const posText = e.position || '—';
         const posArrow = e.position_change === 'up' ? ' <span class="arrow-up">▲</span>'
@@ -420,12 +433,12 @@
           { html: escapeHtml(String(posText)) + posArrow, cls: 'pos' },
           { text: e.number || e.reg_number, cls: 'number' },
           { text: name, title: vehicle },
+          { text: intervalText(e.gap_ahead_seconds, e.gap_ahead_laps) },
+          { text: intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
           { text: cls },
           { text: e.laps || '—' },
           { text: e.last_lap_time || '—' },
-          { text: speed, cls: 'speed' },
           { text: e.best_lap_time || '—' },
-          { text: e.total_time || '—' },
         ];
 
         let tr = rowMap[e.reg_number];

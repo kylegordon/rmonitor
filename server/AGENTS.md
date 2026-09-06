@@ -28,3 +28,12 @@ The same reasoning applies to a newly connected client: `handle_ws` must reflect
 server state immediately, so if the feed is already known lost or timed out it sends `no_feed`
 right after the initial `full` message. Otherwise the client shows stale persisted data until the
 next watchdog poll.
+
+## An interval between competitors is measured at each car's own lap
+
+`Gap` and `Diff` are derived against the leader's time **at each competitor's own lap**,
+via the `RaceState.leader_time_at_lap` index — never by subtracting two `total_time`
+values out of one snapshot. Two cars are almost always on different lap counts, so that
+subtraction reports a car that is behind as being ahead, and the sign flips every time
+the leader crosses the line. Guarded by
+`test_gap_is_positive_when_the_leader_is_a_lap_ahead` in `tests/test_race_state.py`.
