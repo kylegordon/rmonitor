@@ -1,9 +1,9 @@
-# rMonitor capture (excerpt) started at 2026-09-12T14:10:03.522Z
-# Feed: 192.168.10.28:50000
-# CONNECTED 192.168.10.28:50000 at 2026-09-12T14:10:03.526Z
-# EXCERPT: lines 2690-3120 of capture_20260912T141003.log, the only flag round
-# trip on record — green, 109s of yellow, green again. Trimmed for size; the
-# parent capture is 24MB and gitignored. Force-added past `captures/*.log`.
+# rMonitor capture EXCERPT — lines 2690-3120 of a capture that began at
+# 2026-09-12T14:10:03.522Z against the feed at 192.168.10.28:50000.
+# This window runs 14:32:33-14:34:58 and holds the only flag round trip on
+# record: green, 109s of yellow, green again. Trimmed because the parent
+# capture is 24MB; force-added past the `captures/*.log` ignore rule so the
+# observation is verifiable from the repository.
 2026-09-12T14:32:33.102Z $F,10,"00:00:00","15:32:33","00:00:45","Green "
 2026-09-12T14:32:34.096Z $F,10,"00:00:00","15:32:34","00:00:46","Green "
 2026-09-12T14:32:35.091Z $F,10,"00:00:00","15:32:35","00:00:47","Green "

@@ -26,6 +26,16 @@ FIXTURE_FILES = [
 ]
 
 
+#: $F,laps_to_go,"time_to_go","time_of_day","race_time","flag" — the flag field
+#: raw, before :func:`_tokenize` strips it.
+_F_FLAG_FIELD = re.compile(r'\$F,[^,]*,"[^"]*","[^"]*","[^"]*","([^"]*)"')
+#: $B,unique_number,"description" — the run number, 95 being the end sentinel.
+_B_RUN_NUMBER = re.compile(r'\$B,([^,]*),"')
+_B_RUN_RECORD = re.compile(r'\$B,([^,]*),"([^"]*)"')
+
+
+# -- The committed corpus ---------------------------------------------------
+
 def test_every_named_fixture_is_present():
     """The corpus the derived tests measure is committed and complete.
 
@@ -34,13 +44,6 @@ def test_every_named_fixture_is_present():
     """
     missing = [p.name for p in FIXTURE_FILES if not p.is_file()]
     assert not missing, f"committed fixtures missing: {missing}"
-
-# $F,laps_to_go,"time_to_go","time_of_day","race_time","flag" — the flag field
-# raw, before :func:`_tokenize` strips it.
-_F_FLAG_FIELD = re.compile(r'\$F,[^,]*,"[^"]*","[^"]*","[^"]*","([^"]*)"')
-# $B,unique_number,"description" — the run number, 95 being the end sentinel.
-_B_RUN_NUMBER = re.compile(r'\$B,([^,]*),"')
-_B_RUN_RECORD = re.compile(r'\$B,([^,]*),"([^"]*)"')
 
 
 # -- $F Heartbeat -----------------------------------------------------------
