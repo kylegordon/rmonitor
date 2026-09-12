@@ -21,6 +21,8 @@ FIXTURE_FILES = sorted((_REPO_ROOT / "examples").glob("*.txt")) + sorted(
 # $F,laps_to_go,"time_to_go","time_of_day","race_time","flag" — the flag field
 # raw, before :func:`_tokenize` strips it.
 _F_FLAG_FIELD = re.compile(r'\$F,[^,]*,"[^"]*","[^"]*","[^"]*","([^"]*)"')
+# $B,unique_number,"description" — the run number, 95 being the end sentinel.
+_B_RUN_NUMBER = re.compile(r'\$B,([^,]*),"')
 
 
 # -- $F Heartbeat -----------------------------------------------------------
@@ -143,6 +145,44 @@ def test_run_95_is_the_session_end_sentinel():
     assert start["description"] == end["description"]
     assert start["unique_number"] == "27"
     assert end["unique_number"] == "95"
+
+
+def test_captured_run_records_repeat_so_a_boundary_is_an_edge():
+    """``$B`` numbers recur, measured over the committed samples.
+
+    The pitfall rests on two facts, derived here rather than asserted from
+    memory.  ``95`` appears in the 2009 Sebring reference exports *and* in the
+    Orbits capture, so the sentinel is not one installation's habit.  And run
+    numbers recur — a live session re-sends its own record up to 264 times in
+    one Sebring session, and even ``95`` repeats — so acting on every arrival
+    would reopen a session already running; only the change of
+    ``unique_number`` is a boundary.
+
+    Note what is deliberately *not* asserted: that every sample closes with a
+    ``$B,95``.  A capture stopped mid-session has no closing record for it
+    (``capture_20260517T134241.log`` ends during "Final"), so the absence of a
+    sentinel says nothing — which is itself why only the transition can be
+    acted on.  See :meth:`server.race_state.RaceState._init`.
+    """
+    per_dir: dict[str, dict[str, int]] = {}
+    for path in FIXTURE_FILES:
+        counts = per_dir.setdefault(path.parent.name, {})
+        for line in path.read_text(errors="replace").splitlines():
+            m = _B_RUN_NUMBER.search(line)
+            if m:
+                counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+
+    assert per_dir, "fixtures missing: nothing was measured"
+    without_sentinel = [d for d, counts in per_dir.items() if "95" not in counts]
+    assert not without_sentinel, f"no $B,95 in the samples under: {without_sentinel}"
+
+    all_counts: dict[str, int] = {}
+    for counts in per_dir.values():
+        for number, count in counts.items():
+            all_counts[number] = all_counts.get(number, 0) + count
+    assert any(n != "95" and c > 1 for n, c in all_counts.items()), \
+        "no active run record repeats; is $B unique after all?"
+    assert all_counts["95"] > 1, "the sentinel never repeats; is 95 an edge after all?"
 
 
 # -- $C Class information ---------------------------------------------------

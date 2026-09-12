@@ -154,10 +154,11 @@ def _reg(cmd: str):
 def _parse_heartbeat(t: list[str]) -> dict:
     """Parse a ``$F`` line into a ``heartbeat`` dict.
 
-    The flag is a **fixed-width six-character field**, space-padded — every
-    value observed on a live feed is exactly six characters: ``"Green "``,
-    ``"Yellow"``, ``"Finish"`` and six spaces for "no flag".  :func:`_tokenize`
-    strips the padding, so a caller sees ``"Green"``.
+    The flag is a **fixed-width six-character field**, space-padded — every one
+    of the 33,020 ``$F`` records in the committed samples is exactly six
+    characters: ``"Green "``, ``"Yellow"``, ``"Finish"``, ``"Red   "`` and six
+    spaces for "no flag".  :func:`_tokenize` strips the padding, so a caller
+    sees ``"Green"``.
 
     Fixed width, not merely padded, is the load-bearing distinction: a flag
     name longer than six characters is **truncated** rather than padded, so a
@@ -235,16 +236,18 @@ def _parse_comp(t: list[str]) -> dict:
 def _parse_run(t: list[str]) -> dict:
     """Parse a ``$B`` line into a ``run`` dict.
 
-    ``unique_number`` **95 is a session-end sentinel**, not a run: every
-    session observed on a live feed closes with a ``$B,95`` carrying the
-    *outgoing* session's description, and a feed joined between sessions opens
-    with one.  Real run numbers vary per session and are re-sent throughout the
-    session they name — ``$B,27`` arrives five times across one observed race —
-    so a boundary is the ``unique_number`` *changing*, not a record arriving.
-    95 is the only stable session-boundary signal this protocol offers.  ``$I``
-    is not an alternative: it is emitted inconsistently — none at all on one
-    scoreboard reset, one after a finished race, three at a session start — and
-    never at a session's end.  See :meth:`server.race_state.RaceState._init`.
+    ``unique_number`` **95 is a session-end sentinel**, not a run: a closing
+    ``$B,95`` carries the *outgoing* session's description, and a feed joined
+    between sessions opens with one.  A capture cut off mid-session has none,
+    so its absence means nothing.  Real run numbers vary per session and are
+    re-sent throughout the session they name — ``$B,27`` arrives five times
+    across one observed race, a Sebring session's record 264 times — and 95
+    itself recurs, so a boundary is the ``unique_number`` *changing*, never a
+    record arriving.  95 is still the only session-end signal this protocol
+    offers.  ``$I`` is not an alternative: it is emitted inconsistently — none
+    at all on one scoreboard reset, one after a finished race, three at a
+    session start — and never at a session's end.  See
+    :meth:`server.race_state.RaceState._init`.
     """
     return {
         "type": "run",

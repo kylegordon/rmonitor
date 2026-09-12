@@ -423,9 +423,9 @@ class RaceState:
         boundaries from ``$B`` instead — but from the **change** in its
         ``unique_number``, never from a record's arrival: a live session
         re-sends its own run record throughout (``$B,27`` five times across one
-        race), so acting on every one would reopen a session already running.
-        95 arriving is the end edge; any other number *becoming* current is the
-        start edge.
+        race, a Sebring session's 264 times) and 95 recurs too, so acting on
+        every one would reopen a session already running.  Becoming 95 is the
+        end edge; becoming any other number is the start edge.
         """
         log.info("New race/session – clearing all state")
         self.reset()
