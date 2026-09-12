@@ -50,17 +50,14 @@ negative or blank for a lap. Guarded by
 ## One signal drives both the sort order and the interval reference
 
 `RaceState._sort_mode()` returns the single value that picks the sort key *and* the
-interval branch, and it keys on the `session_mode` label — never directly on
-`_is_qualifying`, which any `$G` clears permanently and which therefore measures `False`
-in every capture and example file here. The label usually comes from `$B`, but
-`_derive_session_mode` tests `_is_qualifying` first and unconditionally, so while that
-flag is set the label reads `Qualifying` whatever `$B` said — a feed that sent
-`$B,"Race 1"` then a `$H` sorts by best lap until its first `$G`. That is the one route
-by which the flag still reaches the sort, and it is supported, not vestigial. `Gap` means
-"interval to the row above", so values and order that disagree are worse than either
-alone. Guarded by
-`test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` in
-`tests/test_race_state.py`.
+interval branch, keyed on the `session_mode` label — never directly on `_is_qualifying`,
+which any `$G` clears permanently and which measures `False` in every capture here. The
+flag still reaches the sort through the label: `_derive_session_mode` tests it first and
+unconditionally, so it overrides `$B` until a session's first `$G`. `Gap` means "interval
+to the row above", so values and order that disagree are worse than either alone. Both
+guarded in `tests/test_race_state.py`, by
+`test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` and
+`test_early_qual_info_overrides_a_race_description_until_the_first_race_info`.
 
 ## A negative `Gap` is blanked, never rendered and never converted to `+1 L`
 
@@ -72,7 +69,9 @@ a lap. Blank it; `_apply_intervals`' docstring carries the arithmetic. Guarded b
 
 ## `sort_mode` in the payload is what the page reads
 
-`snapshot()` states which order it sorted in, and `templates/index.html` reads that field
-rather than re-deriving the condition from `session_mode` and `flag` — nothing here
-renders the template, so a duplicated condition is a rule no test can reach. Guarded by
-`test_snapshot_reports_the_sort_mode_it_used` in `tests/test_race_state.py`.
+`snapshot()` states which order it sorted in; `templates/index.html` reads that field
+instead of re-deriving it from `session_mode` and `flag`. Guarded by
+`test_snapshot_reports_the_sort_mode_it_used` (race_state) and
+`test_the_page_reads_sort_mode_and_does_not_re_derive_it` (repo_invariants). What the
+page *draws* under that sort — row index, tooltip, suppressed arrows — is **unguarded**;
+nothing here renders the template, so check it by eye.
