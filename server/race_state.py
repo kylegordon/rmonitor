@@ -420,8 +420,12 @@ class RaceState:
         is not idempotent in practice, and each one costs a full reset plus a
         broadcast to every client.  What makes that safe is only ordering — the
         repopulating records follow in the same batch.  Derive session
-        boundaries from ``$B`` instead (95 for over, any other number for
-        begun).
+        boundaries from ``$B`` instead — but from the **change** in its
+        ``unique_number``, never from a record's arrival: a live session
+        re-sends its own run record throughout (``$B,27`` five times across one
+        race), so acting on every one would reopen a session already running.
+        95 arriving is the end edge; any other number *becoming* current is the
+        start edge.
         """
         log.info("New race/session – clearing all state")
         self.reset()

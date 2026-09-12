@@ -5,9 +5,22 @@ Message formats are verified against the protocol as implemented by:
   - https://github.com/zacharyfox/RMonitorLeaderboard
 """
 
+import pathlib
+import re
+
 import pytest
 
 from relay.rmonitor_client import parse_line
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Every committed feed sample: the reference Sebring exports and the one capture
+# force-added past the `captures/*.log` ignore rule.
+FIXTURE_FILES = sorted((_REPO_ROOT / "examples").glob("*.txt")) + sorted(
+    (_REPO_ROOT / "captures").glob("*.log")
+)
+# $F,laps_to_go,"time_to_go","time_of_day","race_time","flag" — the flag field
+# raw, before :func:`_tokenize` strips it.
+_F_FLAG_FIELD = re.compile(r'\$F,[^,]*,"[^"]*","[^"]*","[^"]*","([^"]*)"')
 
 
 # -- $F Heartbeat -----------------------------------------------------------
@@ -28,39 +41,39 @@ def test_heartbeat_flag_trim():
     assert msg["flag"] == "Green"
 
 
-@pytest.mark.parametrize("raw", ["Green ", "Yellow", "Finish", "      "])
-def test_heartbeat_flag_field_is_fixed_width_six(raw):
-    """Every flag value arrives as exactly six characters.
+@pytest.mark.parametrize("raw", ["Green ", "Yellow", "Finish", "Red   ", "      "])
+def test_heartbeat_flag_padding_is_stripped(raw):
+    """Each observed flag value reaches the caller with its padding gone.
 
-    Measured over every ``$F`` in this repository's captures: ``"Green "``,
-    ``"Yellow"``, ``"Finish"`` and six spaces, with no other value and no other
-    width.  The field is fixed width, not incidentally padded, which is why a
-    name longer than six characters truncates instead — see
-    :func:`relay.rmonitor_client._parse_heartbeat`.
+    These are every value the fixtures contain.  ``"Yellow"`` was captured
+    during a race that ran green, went yellow for 109s and returned to green —
+    the only flag round trip on record.  Blank is ambiguous: pre-session,
+    formation lap, between sessions and post-finish all use it, so it must not
+    be read as a state of its own.
     """
-    assert len(raw) == 6
     msg = parse_line(f'$F,9999,"00:00:00","07:59:59","00:00:00","{raw}"')
     assert msg["flag"] == raw.strip()
 
 
-def test_heartbeat_flag_yellow():
-    """A caution parses to a bare ``"Yellow"``.
+def test_captured_flag_fields_are_all_six_characters():
+    """The ``$F`` flag field is fixed width, measured over the fixtures.
 
-    Captured live during a race that ran green, went yellow for 109s, and
-    returned to green — the only flag round trip in this repository's captures.
+    Derived rather than asserted against a hard-coded list, so it fails if a
+    fixture is ever committed carrying a differently sized field — which is the
+    only way this repository would learn the width is installation-specific
+    rather than protocol-wide.  Fixed width is what makes a name longer than
+    six characters truncate instead of pad; see
+    :func:`relay.rmonitor_client._parse_heartbeat`.
     """
-    msg = parse_line('$F,9,"00:00:00","15:32:59","00:01:11","Yellow"')
-    assert msg["flag"] == "Yellow"
+    widths: dict[int, int] = {}
+    for path in FIXTURE_FILES:
+        for line in path.read_text(errors="replace").splitlines():
+            m = _F_FLAG_FIELD.search(line)
+            if m:
+                widths[len(m.group(1))] = widths.get(len(m.group(1)), 0) + 1
 
-
-def test_heartbeat_blank_flag_is_empty_string():
-    """A six-space flag reaches the caller as ``""``.
-
-    Blank is ambiguous — pre-session, formation lap, between sessions and
-    post-finish all use it — so it must not be mistaken for a distinct state.
-    """
-    msg = parse_line('$F,0,"00:00:00","15:27:24","00:00:00","      "')
-    assert msg["flag"] == ""
+    assert sum(widths.values()) > 1000, "fixtures missing: nothing was measured"
+    assert set(widths) == {6}, f"non-six-character $F flag fields: {widths}"
 
 
 # -- $A Competitor ----------------------------------------------------------

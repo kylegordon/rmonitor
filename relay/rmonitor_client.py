@@ -238,7 +238,9 @@ def _parse_run(t: list[str]) -> dict:
     ``unique_number`` **95 is a session-end sentinel**, not a run: every
     session observed on a live feed closes with a ``$B,95`` carrying the
     *outgoing* session's description, and a feed joined between sessions opens
-    with one.  Real run numbers vary per session and may repeat within one, so
+    with one.  Real run numbers vary per session and are re-sent throughout the
+    session they name — ``$B,27`` arrives five times across one observed race —
+    so a boundary is the ``unique_number`` *changing*, not a record arriving.
     95 is the only stable session-boundary signal this protocol offers.  ``$I``
     is not an alternative: it is emitted inconsistently — none at all on one
     scoreboard reset, one after a finished race, three at a session start — and

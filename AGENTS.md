@@ -140,8 +140,10 @@ to one function it lives in that function's docstring and is deliberately not re
    `_tokenize` strips the padding, but a longer name would truncate, so never compare against one
    over six characters. Blank is ambiguous, covering pre-session, formation lap, between sessions
    and post-finish alike. Trust `relay/rmonitor_client.py` over the spec. Guarded by
-   `test_heartbeat_flag_trim`, `test_heartbeat_flag_field_is_fixed_width_six`,
-   `test_lap_info_sp` and `test_lap_info_sr` in `tests/test_parser.py`.
+   `test_heartbeat_flag_trim`, `test_heartbeat_flag_padding_is_stripped`,
+   `test_captured_flag_fields_are_all_six_characters` (which measures the width over the
+   committed fixtures rather than a hard-coded list), `test_lap_info_sp` and `test_lap_info_sr`
+   in `tests/test_parser.py`.
 4. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
    `tests/Dockerfile` installs from all four and is the only place that list exists; why each file
    is copied with its path preserved is commented there. Adding a package to one workflow's inline
@@ -151,7 +153,8 @@ to one function it lives in that function's docstring and is deliberately not re
    scoreboard reset, one after a finished race, three at a session start — and each is a live
    `RaceState.reset()` plus a broadcast, made safe only by the repopulating records that follow in
    the same batch. `$B,95` closes every session, carrying the outgoing description; any other
-   number opens one. Guarded by `test_run_95_is_the_session_end_sentinel` in `tests/test_parser.py`,
+   number names the session that is current — and is re-sent throughout it, so a boundary is that
+   number *changing*, never a `$B` arriving. Guarded by `test_run_95_is_the_session_end_sentinel` in `tests/test_parser.py`,
    `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py` for the
    resulting state, and `test_repeated_init_wipes_reach_clients_before_repopulation` in
    `tests/test_server.py` for the broadcast-per-init over the real ingest path.
