@@ -148,25 +148,28 @@ def test_run():
 
 
 def test_every_opened_session_is_closed_by_a_95_carrying_its_description():
-    """``$B,95`` closes the session that ran, measured over the corpus.
+    """``$B,95`` closes the session that ran, tracked as an edge over the corpus.
 
-    Derived from the committed samples rather than two hand-written lines, so a
-    sample showing 95 behaving otherwise fails here.  The closing record
-    repeats the *outgoing* description verbatim, which is what makes the number
-    and not the text the boundary: both edges of a session read identically
-    apart from it.
+    Walks the run records in order and follows the *active* session: a non-95
+    number becoming current opens one, and a 95 repeating that description
+    closes it.  Every sample here opens exactly one session and closes it, so
+    the counts are compared per file — delete a closing record, or change the
+    description it carries, and this fails.
 
-    Two exemptions, each a real property of the feed rather than a convenience.
-    The last session a sample opens need not close, because the recording can
-    stop while it is still running.  And a 95 may carry a description the
-    sample never opened — a feed joined mid-meeting sees the previous session's
-    closing record first — so 95's *presence* is evidence and its absence is
-    not.  See :meth:`server.race_state.RaceState._init`.
+    Two properties of the feed shape the walk.  A 95 may name a session the
+    sample never opened, because a feed joined mid-meeting sees the previous
+    session's closing record first; those are counted as closures of nothing
+    rather than errors.  And a sample cut off mid-session would have an active
+    run at EOF — none here does, which is why an equality holds; a truncated
+    capture added to the corpus should fail this and be reckoned with rather
+    than silently exempted.  See :meth:`server.race_state.RaceState._init`.
     """
-    unclosed = []
+    opened: dict[str, int] = {}
+    closed: dict[str, int] = {}
+    superseded = []
     for path in FIXTURE_FILES:
-        opened: list[str] = []
-        closed: set[str] = set()
+        active = None
+        opened[path.name] = closed[path.name] = 0
         for line in path.read_text(errors="replace").splitlines():
             m = _B_RUN_RECORD.search(line)
             if not m:
@@ -175,13 +178,20 @@ def test_every_opened_session_is_closed_by_a_95_carrying_its_description():
             msg = parse_line(m.group(0))
             assert msg["unique_number"] == number and msg["description"] == description
             if number == "95":
-                closed.add(description)
-            elif description not in opened:
-                opened.append(description)
-        # All but the last opened session must have been closed by a 95.
-        unclosed += [(path.name, d) for d in opened[:-1] if d not in closed]
+                if active is not None and description == active:
+                    closed[path.name] += 1
+                    active = None
+            elif description != active:
+                if active is not None:
+                    superseded.append((path.name, active))
+                active = description
+                opened[path.name] += 1
+        if active is not None:
+            superseded.append((path.name, active))
 
-    assert not unclosed, f"sessions that opened and never closed with a $B,95: {unclosed}"
+    assert not superseded, f"sessions left open — no $B,95 carried their description: {superseded}"
+    assert opened == closed, f"opened/closed session counts differ: {opened} vs {closed}"
+    assert sum(closed.values()) == 4, f"expected one closure per feed sample: {closed}"
 
 
 def test_corpus_contains_a_green_yellow_green_round_trip():
