@@ -524,17 +524,18 @@ class RaceState:
         - **Seconds are rounded to 3 dp**, matching the feed's millisecond
           resolution.  That is what keeps each ``Diff`` exactly equal to the
           running sum of the ``Gap`` values above it rather than float-noisy.
-        - **A negative ``Gap`` is never rendered as a negative time.**  The
-          subtraction is this row's deficit minus the row above's, so a negative
-          result means *this* row's deficit is the smaller of the two — which
-          happens when this car is *stalled*.  Pitted or retired, its deficit
-          froze at its last crossing while the leader kept lapping, and because
-          the field orders by lap count it sits below rows whose larger deficit
-          is still current.  The stale entry is therefore the one being written,
-          not the one above it.  Its deficit is reported as the lap difference
-          instead, and only where a lap difference exists; at equal
-          ``timed_lap`` there is nothing true to say and both gap fields stay
-          *None* for an em-dash.
+        - **A negative ``Gap`` is blanked, not rendered and not converted.**
+          The subtraction is this row's deficit minus the row above's, and it
+          goes negative whenever the row above lost more time to the leader on
+          its latest lap than the real on-track gap between the two — which
+          happens for a *stalled* car, whose deficit froze at its last crossing,
+          and equally for a car merely inside the one-lap crossing window.
+          Nothing available here separates those two, so neither a time nor a
+          ``+1 L`` can be emitted honestly: replayed over the captures, a
+          ``+1 L`` here fires on cars seconds apart and flips back to a time
+          once a lap, which is the flicker the threshold of 2 exists to prevent.
+          Both gap fields stay *None* for an em-dash, on the same reasoning as
+          the purple-flag blank below.
         """
         for e in entries:
             e["gap_ahead_seconds"] = None
@@ -593,12 +594,6 @@ class RaceState:
                 gap = round(diffs[i] - diffs[i - 1], 3)
                 if gap >= 0:
                     e["gap_ahead_seconds"] = gap
-                elif (
-                    ahead_laps is not None
-                    and own_laps is not None
-                    and ahead_laps - own_laps >= 1
-                ):
-                    e["gap_ahead_laps"] = ahead_laps - own_laps
 
     def _to_dict(self) -> dict:
         """Serialise state for a :class:`~server.state_store.StateStore`."""

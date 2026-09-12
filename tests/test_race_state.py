@@ -748,26 +748,69 @@ def test_gap_lap_deficit_is_measured_against_the_car_ahead(state):
     assert car_1["gap_ahead_seconds"] == pytest.approx(114.318, abs=1e-3)
 
 
-def test_negative_gap_becomes_a_lap_deficit(state):
-    """A negative Gap means this row is stalled, so report the lap instead.
+def test_negative_gap_is_blanked(state):
+    """A negative Gap is suppressed rather than rendered or converted.
 
-    ``Gap`` subtracts the row above's deficit from this row's, so a negative
-    result identifies *this* entry — car 6 below — as the stalled one, sitting
-    under a circulating car whose larger deficit is still current.  Read it the
-    other way round and a future fix would go looking at the wrong entry.
-
-    See :func:`_feed_stalled_car` for how the negative arises.  The information
-    to say something true is already in hand at the guard: the two rows differ
-    by exactly one ``timed_lap``, as all eleven negative rows measured across
-    the seven captures do, so ``+1 L`` is both correct and strictly more useful
-    than the em-dash of suppressing the value.
+    See :func:`_feed_stalled_car` for how the negative arises.  The live page
+    rendered it as a negative time (``-67.000`` for this data), which is the
+    defect.  It is blanked rather than turned into ``+1 L`` because the sign
+    alone does not identify a stalled car — see
+    :func:`test_negative_gap_in_the_crossing_window_is_not_a_lap_deficit`.
     """
     _feed_stalled_car(state)
     car_6 = _by_reg(state.snapshot())["6"]
-    # Before the fix this read -67.000: 35.881 (frozen, lap 8) - 102.881 (live,
-    # lap 9).  Car 17 ahead is on lap 9 and car 6 on lap 8.
+    # 35.881 (frozen, lap 8) - 102.881 (live, lap 9) = -67.000.
     assert car_6["gap_ahead_seconds"] is None
-    assert car_6["gap_ahead_laps"] == 1
+    assert car_6["gap_ahead_laps"] is None
+
+
+def test_negative_gap_in_the_crossing_window_is_not_a_lap_deficit(state):
+    """Two cars seconds apart must not be reported a lap apart.
+
+    The reason a negative ``Gap`` cannot be converted to ``+1 L``.  The
+    subtraction is ``G - d``, where ``G`` is the real on-track gap between the
+    two cars and ``d`` is what the car ahead lost to the leader on its latest
+    lap, so *any* pair goes negative while the car ahead has crossed for a lap
+    the car behind has not and ``d > G``.  Nothing distinguishes that from a
+    stalled car at the point of the guard.
+
+    Here car 91 is 20.000 s down at lap 8 and 27.500 s down at lap 9 (it lost
+    7.500 s to the leader), and car 55 is 22.000 s down at lap 8 and has not yet
+    crossed for lap 9.  The two are 2.000 s apart on the road, but the gap
+    computes as ``22.000 - 27.500 = -5.500``.
+
+    Emitting ``+1 L`` here is worse than the negative time it replaced: it is
+    plausible and wrong, and it reverts to a time the moment car 55 crosses.
+    Replaying ``captures/capture_20260418T132655.log`` that way flipped the
+    column between a time and ``+1 L`` 73 times across 12 cars — one car 13
+    times, about once a lap — which is precisely the flicker the lap-deficit
+    threshold of 2 exists to prevent.
+    """
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "15",
+        "laps": "8", "total_time": "00:07:40.000",
+    })
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "91",
+        "laps": "8", "total_time": "00:08:00.000",
+    })
+    state.process({
+        "type": "race_info", "position": "3", "reg_number": "55",
+        "laps": "8", "total_time": "00:08:02.000",
+    })
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "15",
+        "laps": "9", "total_time": "00:08:37.500",
+    })
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "91",
+        "laps": "9", "total_time": "00:09:05.000",
+    })
+    car_55 = _by_reg(state.snapshot())["55"]
+    assert car_55["gap_ahead_laps"] is None, "55 is 2 s behind 91, not a lap"
+    assert car_55["gap_ahead_seconds"] is None
+    # Diff is unaffected: it normalises against the leader, not the row above.
+    assert car_55["diff_leader_seconds"] == pytest.approx(22.0, abs=1e-3)
 
 
 def test_negative_gap_at_equal_laps_is_blank(state):

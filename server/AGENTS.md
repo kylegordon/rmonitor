@@ -62,14 +62,13 @@ alone. Guarded by
 `test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` in
 `tests/test_race_state.py`.
 
-## A negative `Gap` is a stalled car, never a negative time
+## A negative `Gap` is blanked, never rendered and never converted to `+1 L`
 
-A car that has pitted or retired keeps a frozen deficit while the leader laps on, so
-subtracting two deficits goes negative. The subtraction is this row's deficit minus the
-row above's, so the stalled car is the **lower** row — the entry being written, not the
-one above it. Report the lap difference (`+N L`) where one exists and leave the column
-blank where it does not. Guarded by `test_negative_gap_becomes_a_lap_deficit` in
-`tests/test_race_state.py`.
+The sign does not identify a stalled car — an ordinary pair inside the one-lap crossing
+window goes negative too — so `+1 L` there lands on cars seconds apart and flickers once
+a lap. Blank it; `_apply_intervals`' docstring carries the arithmetic. Guarded by
+`test_negative_gap_is_blanked` and
+`test_negative_gap_in_the_crossing_window_is_not_a_lap_deficit` in `tests/test_race_state.py`.
 
 ## `sort_mode` in the payload is what the page reads
 
