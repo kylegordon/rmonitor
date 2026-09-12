@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.17](https://github.com/kylegordon/rmonitor/compare/v0.1.16...v0.1.17) (2026-09-12)
+
+## What's Changed
+* docs(agents): record protocol field observations from a live meeting by @kylegordon in https://github.com/kylegordon/rmonitor/pull/88
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.16...v0.1.17
+
+
 ## [0.1.16](https://github.com/kylegordon/rmonitor/compare/v0.1.15...v0.1.16) (2026-09-12)
 
 ## What's Changed
