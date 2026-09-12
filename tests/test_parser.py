@@ -148,27 +148,28 @@ def test_run():
 
 
 def test_every_opened_session_is_closed_by_a_95_carrying_its_description():
-    """``$B,95`` closes the session that ran, tracked as an edge over the corpus.
+    """``$B,95`` closes the session that ran, tracked as a ``unique_number`` edge.
 
-    Walks the run records in order and follows the *active* session: a non-95
-    number becoming current opens one, and a 95 repeating that description
-    closes it.  Every sample here opens exactly one session and closes it, so
-    the counts are compared per file — delete a closing record, or change the
-    description it carries, and this fails.
+    Follows the active run the way the protocol rule states it: a *number*
+    becoming current opens a session — never a description, or two sessions
+    sharing one name would read as a repeat — and a 95 closes it only if it
+    repeats that session's description.  The same number arriving again is not
+    a boundary, which is the whole point: the four full-session samples send
+    their run record between 1 and 264 times and still open one session each.
 
     Two properties of the feed shape the walk.  A 95 may name a session the
     sample never opened, because a feed joined mid-meeting sees the previous
-    session's closing record first; those are counted as closures of nothing
-    rather than errors.  And a sample cut off mid-session would have an active
-    run at EOF — none here does, which is why an equality holds; a truncated
-    capture added to the corpus should fail this and be reckoned with rather
-    than silently exempted.  See :meth:`server.race_state.RaceState._init`.
+    session's closing record first; those close nothing rather than erroring.
+    And a sample cut off mid-session would leave a run active at EOF — none
+    here does, which is why the counts are equal; a truncated capture added to
+    the corpus should fail this and be reckoned with rather than silently
+    exempted.  See :meth:`server.race_state.RaceState._init`.
     """
     opened: dict[str, int] = {}
     closed: dict[str, int] = {}
-    superseded = []
+    left_open = []
     for path in FIXTURE_FILES:
-        active = None
+        active_number = active_description = None
         opened[path.name] = closed[path.name] = 0
         for line in path.read_text(errors="replace").splitlines():
             m = _B_RUN_RECORD.search(line)
@@ -178,20 +179,22 @@ def test_every_opened_session_is_closed_by_a_95_carrying_its_description():
             msg = parse_line(m.group(0))
             assert msg["unique_number"] == number and msg["description"] == description
             if number == "95":
-                if active is not None and description == active:
+                if active_number is not None and description == active_description:
                     closed[path.name] += 1
-                    active = None
-            elif description != active:
-                if active is not None:
-                    superseded.append((path.name, active))
-                active = description
+                    active_number = active_description = None
+            elif number != active_number:
+                if active_number is not None:
+                    left_open.append((path.name, active_number, active_description))
+                active_number, active_description = number, description
                 opened[path.name] += 1
-        if active is not None:
-            superseded.append((path.name, active))
+        if active_number is not None:
+            left_open.append((path.name, active_number, active_description))
 
-    assert not superseded, f"sessions left open — no $B,95 carried their description: {superseded}"
+    assert not left_open, f"sessions no $B,95 closed by description: {left_open}"
     assert opened == closed, f"opened/closed session counts differ: {opened} vs {closed}"
-    assert sum(closed.values()) == 4, f"expected one closure per feed sample: {closed}"
+    # Four of the five samples carry a whole session; the caution excerpt is a
+    # mid-race window and carries no $B at all.
+    assert sum(closed.values()) == 4, f"expected 4 closures across the corpus: {closed}"
 
 
 def test_corpus_contains_a_green_yellow_green_round_trip():
