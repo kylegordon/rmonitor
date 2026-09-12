@@ -193,3 +193,38 @@ def test_there_is_no_conftest_py() -> None:
         if not set(path.relative_to(ROOT).parts) & _SKIP_DIRS
     ]
     assert not found, f"conftest.py appeared at {found}; see tests/AGENTS.md"
+
+
+def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
+    """Guards server/AGENTS.md: ``index.html`` reads ``sort_mode``, never re-derives it.
+
+    Which order the rows are in decides what the ``POS`` column means, and the server
+    already answers that in the payload. If the template recomputed the condition from
+    ``session_mode`` and ``flag`` instead, the server's branch would exist in two
+    places in two languages, and only one of them is reachable from a test — nothing in
+    this repository renders the template.
+
+    So this asserts the textual half of the rule, which is the half that can be
+    asserted: the page consults ``data.sort_mode``, and no sort condition in it is
+    keyed on the session mode. What the page then *draws* — the row index, the tooltip,
+    the suppressed arrows — is still unguarded, and closing that needs the template
+    smoke test this repository does not yet have.
+    """
+    page = ROOT / "server" / "templates" / "index.html"
+    source = page.read_text(encoding="utf-8")
+
+    assert "data.sort_mode" in source, (
+        "index.html no longer reads data.sort_mode; either the payload field was "
+        "dropped or the page went back to deriving the sort itself"
+    )
+
+    # A sort decision keyed on the mode label rather than on the server's answer.
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(source.splitlines(), 1)
+        if re.search(r"(session_mode|\bmode\b)\s*===?\s*['\"](Practice|Qualifying)", line)
+    ]
+    assert not offenders, (
+        "index.html derives a sort condition from the session mode instead of reading "
+        f"data.sort_mode: {offenders}"
+    )

@@ -46,3 +46,32 @@ independently and are not a pair, so reading them together makes the whole field
 negative or blank for a lap. Guarded by
 `test_no_negative_interval_in_the_window_between_a_passing_and_its_race_info` in
 `tests/test_race_state.py`.
+
+## One signal drives both the sort order and the interval reference
+
+`RaceState._sort_mode()` returns the single value that picks the sort key *and* the
+interval branch, keyed on the `session_mode` label — never directly on `_is_qualifying`,
+which any `$G` clears permanently and which measures `False` in every capture here. The
+flag still reaches the sort through the label: `_derive_session_mode` tests it first and
+unconditionally, so it overrides `$B` until a session's first `$G`. `Gap` means "interval
+to the row above", so values and order that disagree are worse than either alone. Both
+guarded in `tests/test_race_state.py`, by
+`test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` and
+`test_early_qual_info_overrides_a_race_description_until_the_first_race_info`.
+
+## A negative `Gap` is blanked, never rendered and never converted to `+1 L`
+
+The sign does not identify a stalled car — an ordinary pair inside the one-lap crossing
+window goes negative too — so `+1 L` there lands on cars seconds apart and flickers once
+a lap. Blank it; `_apply_intervals`' docstring carries the arithmetic. Guarded by
+`test_negative_gap_is_blanked` and
+`test_negative_gap_in_the_crossing_window_is_not_a_lap_deficit` in `tests/test_race_state.py`.
+
+## `sort_mode` in the payload is what the page reads
+
+`snapshot()` states which order it sorted in; `templates/index.html` reads that field
+instead of re-deriving it from `session_mode` and `flag`. Guarded by
+`test_snapshot_reports_the_sort_mode_it_used` (race_state) and
+`test_the_page_reads_sort_mode_and_does_not_re_derive_it` (repo_invariants). What the
+page *draws* under that sort — row index, tooltip, suppressed arrows — is **unguarded**;
+nothing here renders the template, so check it by eye.

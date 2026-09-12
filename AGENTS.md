@@ -47,7 +47,7 @@ comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 - **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
   wait-for-display poll this repo has twice seen hang indefinitely.
 - **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 200 tests CI runs.
+  than skips when a display is missing. A local run is the same 220 tests CI runs.
 - **Both interpreters are reachable locally** — the fence's last line switches to the
   3.13 matrix leg, so it is reproducible here rather than CI-only.
 
@@ -126,10 +126,13 @@ to one function it lives in that function's docstring and is deliberately not re
    blanking a field an earlier `$A`/`$COMP` filled. Guarded by
    `test_competitor_keyed_by_reg_number_not_displayed_number` and
    `test_competitor_name_not_blanked_by_empty_update` in `tests/test_race_state.py`.
-2. **Session mode runs on two independent signals that disagree by design** — `_is_qualifying`,
-   set by message type and driving sort order, and the `session_mode` label, derived by substring
-   match on `run_description`. Read `RaceState._derive_session_mode`, `_qual_info` and `snapshot`
-   together before touching any of them. Guarded by
+2. **Session mode runs on two signals and only one of them is live.** The `session_mode` label,
+   derived by substring match on `run_description`, is the one that matters; `_is_qualifying` is
+   set by message type and cleared permanently by any `$G`, so it measures `False` in every
+   capture here — but `_derive_session_mode` tests it first and unconditionally, so until a
+   session's first `$G` it overrides the description outright. Read `_derive_session_mode` and
+   `_qual_info` together before touching either —
+   `server/AGENTS.md` carries what the label then drives. Guarded by
    `test_qual_info_during_a_race_does_not_overwrite_race_positions` and the `session_mode` and
    sort-order tests in `tests/test_race_state.py`.
 3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real

@@ -40,15 +40,32 @@ def _lap_time_seconds(t: str) -> float | None:
 # Read as elapsed seconds it would put a car an hour behind the leader.
 _NO_TIME_SENTINEL = "00:59:59.999"
 
+# Substrings of a lowercased ``$B`` run description that mark a non-competitive
+# session.  Any one match wins, so their order here carries no meaning; what
+# does is that :meth:`RaceState._derive_session_mode` tests them *before* the
+# ``"qual"`` test, so a description matching both reads as practice.
+_PRACTICE_KEYWORDS = (
+    "practice",
+    "prac",
+    "warm",
+    "familiarisation",
+    "familiarization",
+    "test",
+    "shakedown",
+    "sighting",
+    "untimed",
+)
+
 
 def _interval_seconds(value: str) -> float | None:
     """Convert a feed time field to seconds, or *None* if unusable.
 
     The single input guard for both session modes.  In a race
-    :meth:`RaceState._race_info` passes a cumulative ``total_time``; in
-    qualifying :meth:`RaceState._apply_intervals` passes a ``best_lap_time``.
-    Both want the same four checks and differ only in which field they read, so
-    neither branch may reach the interval derivation by another route.
+    :meth:`RaceState._race_info` passes a cumulative ``total_time``; on the
+    best-lap branch — practice and qualifying alike —
+    :meth:`RaceState._apply_intervals` passes a ``best_lap_time``.  Both want
+    the same four checks and differ only in which field they read, so neither
+    branch may reach the interval derivation by another route.
 
     :param value: a time field as the feed sends it, ``"00:14:33.950"``.
     :returns: seconds, or *None* for an empty value, for the
@@ -402,19 +419,63 @@ class RaceState:
 
     # ---- serialisation ----
 
+    def _sort_mode(self, session_mode: str) -> str:
+        """Pick the one mode that drives the sort order *and* the intervals.
+
+        Which order the field is shown in and which reference the ``Gap`` and
+        ``Diff`` columns derive from are a single decision, not two: ``Gap``
+        means "interval to the row above", so if the values switch to best laps
+        while the rows stay in track order, the row above is no longer the
+        next-fastest car and the column goes negative.  Replaying the captures
+        measured that disagreement at 17 negative gaps in the Familiarisation
+        session against 4 for the status quo — worse, not better.  Returning one
+        value that both consumers read makes them structurally unable to differ.
+
+        Keying this on ``_is_qualifying`` was the defect.  That flag is set by
+        *message type* — a ``$H`` arriving before any ``$G`` — and cleared
+        permanently by any ``$G`` (:meth:`_race_info`, :meth:`_qual_info`).
+        Every capture and example file in this repository emits ``$G``,
+        including two sessions named ``Qualifying``, so the flag measures
+        ``False`` in every real session and the best-lap sort and best-lap
+        interval branch were reachable only in a session's opening seconds.
+        The ``session_mode`` label is the signal that survives.  It is not a
+        rename of the flag: the label usually comes from ``$B``, but
+        :meth:`_derive_session_mode` tests ``_is_qualifying`` first and
+        unconditionally, so while that flag is set the label reads
+        ``"Qualifying"`` whatever ``$B`` said and this method returns
+        ``"best_lap"``.  Any ``$G`` clears the flag permanently, so that is a
+        session's opening moments — or the whole of a pure-``$H`` session.
+        Either way the flag reaches the sort through the label, never around it.
+
+        :param session_mode: the label from :meth:`_derive_session_mode`.
+        :returns: ``"total_time"`` under a purple flag, which overrides the
+            session; ``"best_lap"`` for ``"Practice"`` and ``"Qualifying"``;
+            ``"position"`` otherwise.
+        """
+        if str(self.flag).strip().lower() == "purple":
+            return "total_time"
+        if session_mode in ("Practice", "Qualifying"):
+            return "best_lap"
+        return "position"
+
     def snapshot(self) -> dict:
         """Return the full state as a JSON-serialisable dict.
 
-        Sort order follows the session: ``best_lap_time`` ascending while
-        ``_is_qualifying``, numeric ``position`` otherwise.  A purple flag
-        overrides both with ``total_time`` ascending whatever the mode says —
-        intended for formation and pace laps at race end, where cars are on
-        track in the order they crossed the timing loop.
+        Sort order follows the session-mode label: ``best_lap_time`` ascending
+        in practice and qualifying, numeric ``position`` otherwise.  A purple
+        flag overrides both with ``total_time`` ascending whatever the mode says
+        — intended for formation and pace laps at race end, where cars are on
+        track in the order they crossed the timing loop.  :meth:`_sort_mode`
+        makes that one choice, and ``"sort_mode"`` in the returned dict is the
+        payload's single source of truth for which order the page is being
+        shown: ``index.html`` reads it rather than re-deriving the condition
+        from ``session_mode`` and ``flag``.
         """
-        flag = str(self.flag).strip().lower()
-        if flag == "purple":
+        session_mode = self._derive_session_mode()
+        sort_mode = self._sort_mode(session_mode)
+        if sort_mode == "total_time":
             sort_fn = _sort_key_purple
-        elif self._is_qualifying:
+        elif sort_mode == "best_lap":
             sort_fn = _sort_key_best_lap
         else:
             sort_fn = _sort_key
@@ -426,12 +487,13 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
-        self._apply_intervals(entries, purple=(flag == "purple"))
+        self._apply_intervals(entries, sort_mode=sort_mode)
         return {
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
-            "session_mode": self._derive_session_mode(),
+            "session_mode": session_mode,
+            "sort_mode": sort_mode,
             "flag": self.flag,
             "race_time": self.race_time,
             "time_of_day": self.time_of_day,
@@ -440,7 +502,7 @@ class RaceState:
             "entries": entries,
         }
 
-    def _apply_intervals(self, entries: list[dict], *, purple: bool) -> None:
+    def _apply_intervals(self, entries: list[dict], *, sort_mode: str) -> None:
         """Write the ``Gap`` and ``Diff`` intervals onto every entry.
 
         *entries* must already be in display order: ``Gap`` reads the entry one
@@ -454,7 +516,7 @@ class RaceState:
         keeps all four *None* — it has nobody ahead and is its own reference, so
         both columns render an em-dash rather than ``0.000``.
 
-        Two choices the code cannot explain:
+        Three choices the code cannot explain:
 
         - **The lap-deficit threshold is 2, not 1.**  A one-lap difference is
           the *normal* state — the car ahead has crossed the line for this lap
@@ -463,6 +525,18 @@ class RaceState:
         - **Seconds are rounded to 3 dp**, matching the feed's millisecond
           resolution.  That is what keeps each ``Diff`` exactly equal to the
           running sum of the ``Gap`` values above it rather than float-noisy.
+        - **A negative ``Gap`` is blanked, not rendered and not converted.**
+          The subtraction is this row's deficit minus the row above's, and it
+          goes negative whenever the row above lost more time to the leader on
+          its latest lap than the real on-track gap between the two — which
+          happens for a *stalled* car, whose deficit froze at its last crossing,
+          and equally for a car merely inside the one-lap crossing window.
+          Nothing available here separates those two, so neither a time nor a
+          ``+1 L`` can be emitted honestly: replayed over the captures, a
+          ``+1 L`` here fires on cars seconds apart and flips back to a time
+          once a lap, which is the flicker the threshold of 2 exists to prevent.
+          Both gap fields stay *None* for an em-dash, on the same reasoning as
+          the purple-flag blank below.
         """
         for e in entries:
             e["gap_ahead_seconds"] = None
@@ -474,13 +548,15 @@ class RaceState:
         # timing loop just before — not the car ahead on track.  Purple marks
         # formation and pace laps, where an interval carries no meaning, and a
         # blank column is honest where a plausible-looking wrong number is not.
-        if purple or not entries:
+        if sort_mode == "total_time" or not entries:
             return
         values: list[float | None]
         laps: list[int | None]
-        if self._is_qualifying:
-            # ``$H`` carries no cumulative time, so both columns derive from
-            # best laps, and no lap deficit applies.
+        if sort_mode == "best_lap":
+            # The rows are in best-lap order, so the reference has to be the
+            # best lap too.  Reached by practice and qualifying alike; in a
+            # pure-``$H`` feed there is no cumulative time to use anyway.  No
+            # lap deficit applies to a comparison of single laps.
             values = [
                 _interval_seconds(e.get("best_lap_time", "")) for e in entries
             ]
@@ -516,7 +592,9 @@ class RaceState:
             ):
                 e["gap_ahead_laps"] = ahead_laps - own_laps
             elif diffs[i] is not None and diffs[i - 1] is not None:
-                e["gap_ahead_seconds"] = round(diffs[i] - diffs[i - 1], 3)
+                gap = round(diffs[i] - diffs[i - 1], 3)
+                if gap >= 0:
+                    e["gap_ahead_seconds"] = gap
 
     def _to_dict(self) -> dict:
         """Serialise state for a :class:`~server.state_store.StateStore`."""
@@ -574,22 +652,36 @@ class RaceState:
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
 
-        Session detection runs on two independent signals, and they are not
-        interchangeable.  ``_is_qualifying`` is set by *message type* — True on a
-        ``$H`` arriving before any ``$G``, cleared by any ``$G`` — and is what
-        ``snapshot`` sorts on; it takes priority here, returning ``"Qualifying"``
-        without reading the description at all.  The label below is derived
-        separately, by substring match on ``run_description`` (from ``$B``).
+        This label is the session signal: :meth:`_sort_mode` derives the sort
+        order and the interval reference from it.  ``_is_qualifying`` is set by
+        *message type* — True on a ``$H`` arriving before any ``$G``, cleared by
+        any ``$G`` — and is tested first and *unconditionally*: it overrides
+        ``run_description`` rather than filling in for a missing one.  A feed
+        that has sent ``$B,"Race 1"`` and then a ``$H`` reports ``"Qualifying"``
+        until its first ``$G`` arrives, and because :meth:`_sort_mode` keys on
+        this label, that window is shown in best-lap order too — a race briefly
+        sorted by best lap.  Any ``$G`` clears the flag for good, so in a feed
+        that sends them the window is a session's opening moments; in a
+        pure-``$H`` feed it is the whole session, which is the case the test
+        exists for.  Everything below it is a substring match on
+        ``run_description`` (from ``$B``).
 
-        Matching is spelling-sensitive and the fallthrough is silent: a
-        description matching no keyword is reported as ``"Race"``, so "Free
-        Practice" and "Shakedown" both read as a race today.  Extend the keyword
-        lists when a new session type appears rather than leaning on that.
+        Matching is on bare substrings and the fallthrough is silent: a
+        description matching no keyword is reported as ``"Race"``.  Both halves
+        of that cost are real.  ``"test"`` in :data:`_PRACTICE_KEYWORDS` also
+        matches ``Contest``, ``Protest`` and ``Fastest``, so a session named for
+        any of those would silently read as practice; no ``$B`` description in
+        this repository's ``captures/*.log`` or ``examples/*.txt`` collides, and
+        word-boundary matching was not adopted because the corpus does not
+        justify it.  In the other direction, an unmatched description is not
+        flagged — it is simply reported as a race.  Extend
+        :data:`_PRACTICE_KEYWORDS` when a new session type appears rather than
+        leaning on either.
         """
         if self._is_qualifying:
             return "Qualifying"
         desc = self.run_description.lower()
-        if "practice" in desc or "prac" in desc or "warm" in desc or "familiarisation" in desc:
+        if any(word in desc for word in _PRACTICE_KEYWORDS):
             return "Practice"
         if "qual" in desc:
             return "Qualifying"
