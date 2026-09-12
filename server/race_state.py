@@ -509,7 +509,7 @@ class RaceState:
         keeps all four *None* — it has nobody ahead and is its own reference, so
         both columns render an em-dash rather than ``0.000``.
 
-        Two choices the code cannot explain:
+        Three choices the code cannot explain:
 
         - **The lap-deficit threshold is 2, not 1.**  A one-lap difference is
           the *normal* state — the car ahead has crossed the line for this lap
@@ -518,13 +518,17 @@ class RaceState:
         - **Seconds are rounded to 3 dp**, matching the feed's millisecond
           resolution.  That is what keeps each ``Diff`` exactly equal to the
           running sum of the ``Gap`` values above it rather than float-noisy.
-        - **A negative ``Gap`` is never rendered as a negative time.**  It does
-          not mean the row above is behind: it means that row is *stalled* —
-          pitted or retired — so its deficit froze at its last crossing while
-          the leader kept lapping, and the field sorts by lap count first.  The
-          deficit is reported as the lap difference instead, and only where a
-          lap difference exists; at equal ``timed_lap`` there is nothing true to
-          say and both gap fields stay *None* for an em-dash.
+        - **A negative ``Gap`` is never rendered as a negative time.**  The
+          subtraction is this row's deficit minus the row above's, so a negative
+          result means *this* row's deficit is the smaller of the two — which
+          happens when this car is *stalled*.  Pitted or retired, its deficit
+          froze at its last crossing while the leader kept lapping, and because
+          the field orders by lap count it sits below rows whose larger deficit
+          is still current.  The stale entry is therefore the one being written,
+          not the one above it.  Its deficit is reported as the lap difference
+          instead, and only where a lap difference exists; at equal
+          ``timed_lap`` there is nothing true to say and both gap fields stay
+          *None* for an em-dash.
         """
         for e in entries:
             e["gap_ahead_seconds"] = None

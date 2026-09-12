@@ -60,9 +60,11 @@ disagree are worse than either alone. Guarded by
 ## A negative `Gap` is a stalled car, never a negative time
 
 A car that has pitted or retired keeps a frozen deficit while the leader laps on, so
-subtracting two deficits goes negative. Report the lap difference (`+N L`) where one
-exists and leave the column blank where it does not. Guarded by
-`test_negative_gap_becomes_a_lap_deficit` in `tests/test_race_state.py`.
+subtracting two deficits goes negative. The subtraction is this row's deficit minus the
+row above's, so the stalled car is the **lower** row — the entry being written, not the
+one above it. Report the lap difference (`+N L`) where one exists and leave the column
+blank where it does not. Guarded by `test_negative_gap_becomes_a_lap_deficit` in
+`tests/test_race_state.py`.
 
 ## `sort_mode` in the payload is what the page reads
 

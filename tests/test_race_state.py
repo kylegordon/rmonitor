@@ -720,7 +720,12 @@ def test_gap_lap_deficit_is_measured_against_the_car_ahead(state):
 
 
 def test_negative_gap_becomes_a_lap_deficit(state):
-    """A negative Gap means the row above is stalled, so report the lap.
+    """A negative Gap means this row is stalled, so report the lap instead.
+
+    ``Gap`` subtracts the row above's deficit from this row's, so a negative
+    result identifies *this* entry — car 6 below — as the stalled one, sitting
+    under a circulating car whose larger deficit is still current.  Read it the
+    other way round and a future fix would go looking at the wrong entry.
 
     See :func:`_feed_stalled_car` for how the negative arises.  The information
     to say something true is already in hand at the guard: the two rows differ
