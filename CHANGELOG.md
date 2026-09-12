@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.16](https://github.com/kylegordon/rmonitor/compare/v0.1.15...v0.1.16) (2026-09-12)
+
+## What's Changed
+* fix(server): key gap and diff on the session mode, not $H by @kylegordon in https://github.com/kylegordon/rmonitor/pull/86
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.15...v0.1.16
+
+
 ## [0.1.15](https://github.com/kylegordon/rmonitor/compare/v0.1.14...v0.1.15) (2026-09-06)
 
 ## What's Changed
