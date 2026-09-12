@@ -53,10 +53,12 @@ negative or blank for a lap. Guarded by
 interval branch, and it keys on the `session_mode` label — never directly on
 `_is_qualifying`, which any `$G` clears permanently and which therefore measures `False`
 in every capture and example file here. The label usually comes from `$B`, but
-`_derive_session_mode` falls back to `_is_qualifying` when there is no `$B` at all: that
-pure-`$H` path is the one route by which the flag still reaches the sort, and it is
-supported, not vestigial. `Gap` means "interval to the row above", so values and order
-that disagree are worse than either alone. Guarded by
+`_derive_session_mode` tests `_is_qualifying` first and unconditionally, so while that
+flag is set the label reads `Qualifying` whatever `$B` said — a feed that sent
+`$B,"Race 1"` then a `$H` sorts by best lap until its first `$G`. That is the one route
+by which the flag still reaches the sort, and it is supported, not vestigial. `Gap` means
+"interval to the row above", so values and order that disagree are worse than either
+alone. Guarded by
 `test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` in
 `tests/test_race_state.py`.
 

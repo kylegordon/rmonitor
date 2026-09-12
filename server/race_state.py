@@ -438,10 +438,13 @@ class RaceState:
         ``False`` in every real session and the best-lap sort and best-lap
         interval branch were reachable only in a session's opening seconds.
         The ``session_mode`` label is the signal that survives.  It is not a
-        rename of the flag: it normally comes from ``$B``, and
-        :meth:`_derive_session_mode` falls back to ``_is_qualifying`` only when
-        there is no ``$B`` at all, so a pure-``$H`` feed still reaches the
-        best-lap sort through the label rather than around it.
+        rename of the flag: the label usually comes from ``$B``, but
+        :meth:`_derive_session_mode` tests ``_is_qualifying`` first and
+        unconditionally, so while that flag is set the label reads
+        ``"Qualifying"`` whatever ``$B`` said and this method returns
+        ``"best_lap"``.  Any ``$G`` clears the flag permanently, so that is a
+        session's opening moments — or the whole of a pure-``$H`` session.
+        Either way the flag reaches the sort through the label, never around it.
 
         :param session_mode: the label from :meth:`_derive_session_mode`.
         :returns: ``"total_time"`` under a purple flag, which overrides the
@@ -656,10 +659,14 @@ class RaceState:
         This label is the session signal: :meth:`_sort_mode` derives the sort
         order and the interval reference from it.  ``_is_qualifying`` is set by
         *message type* — True on a ``$H`` arriving before any ``$G``, cleared by
-        any ``$G`` — and survives as the first test below only to catch a
-        pure-``$H`` feed that sends no ``$B`` at all; it takes priority here,
-        returning ``"Qualifying"`` without reading the description.  Everything
-        else is a substring match on ``run_description`` (from ``$B``).
+        any ``$G`` — and is tested first and *unconditionally*: it overrides
+        ``run_description`` rather than filling in for a missing one.  A feed
+        that has sent ``$B,"Race 1"`` and then a ``$H`` reports ``"Qualifying"``
+        until its first ``$G`` arrives, and since F-2 that window is in best-lap
+        order too.  Any ``$G`` clears the flag for good, so in a feed that sends
+        them the window is a session's opening moments; in a pure-``$H`` feed it
+        is the whole session, which is the case the test exists for.  Everything
+        below it is a substring match on ``run_description`` (from ``$B``).
 
         Matching is on bare substrings and the fallthrough is silent: a
         description matching no keyword is reported as ``"Race"``.  Both halves

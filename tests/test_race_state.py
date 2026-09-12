@@ -410,6 +410,35 @@ def test_session_mode_qualifying_from_description(state):
     assert state.snapshot()["session_mode"] == "Qualifying"
 
 
+def test_early_qual_info_overrides_a_race_description_until_the_first_race_info(state):
+    """`_is_qualifying` overrides `$B`; it does not merely fill in for a missing one.
+
+    `_derive_session_mode` tests the flag first and unconditionally, so a feed
+    that has already sent `$B,"Race 1"` reports Qualifying — and since the sort
+    follows the label, best-lap order — from the first `$H` until the first
+    `$G`. Every capture in this repository opens with `$H`, so this window is
+    real in every session; it is short only because any `$G` clears the flag
+    permanently.
+    """
+    state.process({"type": "run", "description": "Race 1"})
+    state.process({
+        "type": "qual_info", "position": "1", "reg_number": "1",
+        "best_lap": "1", "best_lap_time": "00:01:50.000",
+    })
+    snap = state.snapshot()
+    assert state.run_description == "Race 1"
+    assert snap["session_mode"] == "Qualifying"
+    assert snap["sort_mode"] == "best_lap"
+
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "1",
+        "laps": "1", "total_time": "00:01:30.000",
+    })
+    snap = state.snapshot()
+    assert snap["session_mode"] == "Race"
+    assert snap["sort_mode"] == "position"
+
+
 def test_bare_test_keyword_also_matches_contest(state):
     """The ``test`` keyword is a bare substring, and this is the cost.
 
