@@ -47,7 +47,7 @@ comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 - **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
   wait-for-display poll this repo has twice seen hang indefinitely.
 - **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 232 tests CI runs.
+  than skips when a display is missing. A local run is the same 234 tests CI runs.
 - **Both interpreters are reachable locally** — the fence's last line switches to the
   3.13 matrix leg, so it is reproducible here rather than CI-only.
 
@@ -155,7 +155,8 @@ to one function it lives in that function's docstring and is deliberately not re
    repopulating records that follow in the same batch. `$B,95` closes the running session,
    carrying its description; any other number names the session that is current. Both recur, an
    active record up to 264 times, so a boundary is `unique_number` *changing*, and a capture cut
-   mid-session simply has no closing 95. Guarded by `test_run_95_is_the_session_end_sentinel` and
+   mid-session simply has no closing 95. Guarded by
+   `test_every_opened_session_is_closed_by_a_95_carrying_its_description` and
    `test_captured_run_records_repeat_so_a_boundary_is_an_edge` in `tests/test_parser.py`,
    `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`, and
    `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for the

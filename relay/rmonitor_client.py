@@ -155,10 +155,10 @@ def _parse_heartbeat(t: list[str]) -> dict:
     """Parse a ``$F`` line into a ``heartbeat`` dict.
 
     The flag is a **fixed-width six-character field**, space-padded — every one
-    of the 33,020 ``$F`` records in the committed samples is exactly six
-    characters: ``"Green "``, ``"Yellow"``, ``"Finish"``, ``"Red   "`` and six
-    spaces for "no flag".  :func:`_tokenize` strips the padding, so a caller
-    sees ``"Green"``.
+    of the 24,273 ``$F`` records in the committed samples is exactly six
+    characters, across all five values they carry: ``"Green "``, ``"Yellow"``,
+    ``"Finish"``, ``"Red   "`` and six spaces for "no flag".  :func:`_tokenize`
+    strips the padding, so a caller sees ``"Green"``.
 
     Fixed width, not merely padded, is the load-bearing distinction: a flag
     name longer than six characters is **truncated** rather than padded, so a

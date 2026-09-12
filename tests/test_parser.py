@@ -13,16 +13,34 @@ import pytest
 from relay.rmonitor_client import parse_line
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-# Every committed feed sample: the reference Sebring exports and the one capture
-# force-added past the `captures/*.log` ignore rule.
-FIXTURE_FILES = sorted((_REPO_ROOT / "examples").glob("*.txt")) + sorted(
-    (_REPO_ROOT / "captures").glob("*.log")
-)
+#: Every committed feed sample, named rather than globbed.  `captures/*.log` is
+#: gitignored and these two are force-added past it, so a glob would sweep in
+#: whatever local captures a developer happens to hold and make these tests mean
+#: something different here than in CI.
+FIXTURE_FILES = [
+    _REPO_ROOT / "examples" / "2009 Sebring Test ALMS Session 4 - 0800-1000.txt",
+    _REPO_ROOT / "examples" / "2009 Sebring Test ALMS Session 5 - 1410-1620.txt",
+    _REPO_ROOT / "examples" / "2009 Sebring Test Lites Session 4 - 1010-1200.txt",
+    _REPO_ROOT / "captures" / "capture_20260418T132655.log",
+    _REPO_ROOT / "captures" / "capture_20260912T143259-caution-excerpt.log",
+]
+
+
+def test_every_named_fixture_is_present():
+    """The corpus the derived tests measure is committed and complete.
+
+    Without this, a renamed or dropped sample would quietly shrink what those
+    tests examine instead of failing.
+    """
+    missing = [p.name for p in FIXTURE_FILES if not p.is_file()]
+    assert not missing, f"committed fixtures missing: {missing}"
+
 # $F,laps_to_go,"time_to_go","time_of_day","race_time","flag" — the flag field
 # raw, before :func:`_tokenize` strips it.
 _F_FLAG_FIELD = re.compile(r'\$F,[^,]*,"[^"]*","[^"]*","[^"]*","([^"]*)"')
 # $B,unique_number,"description" — the run number, 95 being the end sentinel.
 _B_RUN_NUMBER = re.compile(r'\$B,([^,]*),"')
+_B_RUN_RECORD = re.compile(r'\$B,([^,]*),"([^"]*)"')
 
 
 # -- $F Heartbeat -----------------------------------------------------------
@@ -129,22 +147,59 @@ def test_run():
     assert msg["description"] == "Test Session 4"
 
 
-def test_run_95_is_the_session_end_sentinel():
-    """``$B,95`` closes a session, carrying the outgoing description.
+def test_every_opened_session_is_closed_by_a_95_carrying_its_description():
+    """``$B,95`` closes the session that ran, measured over the corpus.
 
-    Every session across this repository's captures ends this way — a session
-    opening as ``$B,27,"Race 5 - 1st Race"`` closes as
-    ``$B,95,"Race 5 - 1st Race"``, same description, number 95 — and a feed
-    joined between sessions opens with one.  Real run numbers (26, 27, 31-35,
-    81) vary per session and can repeat within one, so 95 is the only stable
-    boundary signal.  The sentinel must stay distinguishable from the
-    description, which is identical on both edges.
+    Derived from the committed samples rather than two hand-written lines, so a
+    sample showing 95 behaving otherwise fails here.  The closing record
+    repeats the *outgoing* description verbatim, which is what makes the number
+    and not the text the boundary: both edges of a session read identically
+    apart from it.
+
+    Two exemptions, each a real property of the feed rather than a convenience.
+    The last session a sample opens need not close, because the recording can
+    stop while it is still running.  And a 95 may carry a description the
+    sample never opened — a feed joined mid-meeting sees the previous session's
+    closing record first — so 95's *presence* is evidence and its absence is
+    not.  See :meth:`server.race_state.RaceState._init`.
     """
-    start = parse_line('$B,27,"Race 5 - 1st Race"')
-    end = parse_line('$B,95,"Race 5 - 1st Race"')
-    assert start["description"] == end["description"]
-    assert start["unique_number"] == "27"
-    assert end["unique_number"] == "95"
+    unclosed = []
+    for path in FIXTURE_FILES:
+        opened: list[str] = []
+        closed: set[str] = set()
+        for line in path.read_text(errors="replace").splitlines():
+            m = _B_RUN_RECORD.search(line)
+            if not m:
+                continue
+            number, description = m.group(1), m.group(2)
+            msg = parse_line(m.group(0))
+            assert msg["unique_number"] == number and msg["description"] == description
+            if number == "95":
+                closed.add(description)
+            elif description not in opened:
+                opened.append(description)
+        # All but the last opened session must have been closed by a 95.
+        unclosed += [(path.name, d) for d in opened[:-1] if d not in closed]
+
+    assert not unclosed, f"sessions that opened and never closed with a $B,95: {unclosed}"
+
+
+def test_corpus_contains_a_green_yellow_green_round_trip():
+    """A caution and its recovery are on record, not just in the notes.
+
+    ``capture_20260912T143259-caution-excerpt.log`` holds the only flag round
+    trip this repository has: 109 seconds of ``"Yellow"`` between green either
+    side.  Derived here so the observation the pitfall cites is verifiable from
+    the repository rather than from a capture that was never committed.
+    """
+    flags = []
+    text = (_REPO_ROOT / "captures" / "capture_20260912T143259-caution-excerpt.log").read_text()
+    for line in text.splitlines():
+        m = _F_FLAG_FIELD.search(line)
+        if m and (not flags or m.group(1) != flags[-1]):
+            flags.append(m.group(1))
+
+    assert flags == ["Green ", "Yellow", "Green "], f"not a round trip: {flags}"
 
 
 def test_captured_run_records_repeat_so_a_boundary_is_an_edge():
@@ -159,10 +214,9 @@ def test_captured_run_records_repeat_so_a_boundary_is_an_edge():
     ``unique_number`` is a boundary.
 
     Note what is deliberately *not* asserted: that every sample closes with a
-    ``$B,95``.  A capture stopped mid-session has no closing record for it
-    (``capture_20260517T134241.log`` ends during "Final"), so the absence of a
-    sentinel says nothing — which is itself why only the transition can be
-    acted on.  See :meth:`server.race_state.RaceState._init`.
+    ``$B,95``.  A capture stopped mid-session has no closing record for it, so
+    the absence of a sentinel says nothing — which is itself why only the
+    transition can be acted on.  See :meth:`server.race_state.RaceState._init`.
     """
     per_dir: dict[str, dict[str, int]] = {}
     for path in FIXTURE_FILES:
