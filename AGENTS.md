@@ -126,15 +126,14 @@ to one function it lives in that function's docstring and is deliberately not re
    blanking a field an earlier `$A`/`$COMP` filled. Guarded by
    `test_competitor_keyed_by_reg_number_not_displayed_number` and
    `test_competitor_name_not_blanked_by_empty_update` in `tests/test_race_state.py`.
-2. **The `session_mode` label is the session signal — not `_is_qualifying`.** The label, derived
-   by substring match on `run_description`, drives the sort order *and* the interval mode through
-   the single `RaceState._sort_mode`. `_is_qualifying` is set by message type and cleared
-   permanently by any `$G`, so it measures `False` in every capture here; it survives only as
-   `_derive_session_mode`'s first test, catching a pure-`$H` feed that sends no `$B` at all. Read
-   `_derive_session_mode`, `_sort_mode`, `_qual_info` and `snapshot` together before touching any
-   of them. Guarded by `test_qual_info_during_a_race_does_not_overwrite_race_positions`,
-   `test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them`, and the
-   `session_mode` and sort-order tests in `tests/test_race_state.py`.
+2. **Session mode runs on two signals and only one of them is live.** The `session_mode` label,
+   derived by substring match on `run_description`, is the one that matters; `_is_qualifying` is
+   set by message type and cleared permanently by any `$G`, so it measures `False` in every
+   capture here and survives only as `_derive_session_mode`'s fallback for a pure-`$H` feed that
+   sends no `$B`. Read `_derive_session_mode` and `_qual_info` together before touching either —
+   `server/AGENTS.md` carries what the label then drives. Guarded by
+   `test_qual_info_during_a_race_does_not_overwrite_race_positions` and the `session_mode` and
+   sort-order tests in `tests/test_race_state.py`.
 3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real
    output from some Orbits setups, and `_tokenize` strips quotes *and* whitespace because flag
    strings such as `"Green "` arrive padded. Trust `relay/rmonitor_client.py` over the spec.

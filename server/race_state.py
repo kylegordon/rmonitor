@@ -437,8 +437,11 @@ class RaceState:
         including two sessions named ``Qualifying``, so the flag measures
         ``False`` in every real session and the best-lap sort and best-lap
         interval branch were reachable only in a session's opening seconds.
-        The session-mode label, derived from ``$B``, is the signal that
-        survives.
+        The ``session_mode`` label is the signal that survives.  It is not a
+        rename of the flag: it normally comes from ``$B``, and
+        :meth:`_derive_session_mode` falls back to ``_is_qualifying`` only when
+        there is no ``$B`` at all, so a pure-``$H`` feed still reaches the
+        best-lap sort through the label rather than around it.
 
         :param session_mode: the label from :meth:`_derive_session_mode`.
         :returns: ``"total_time"`` under a purple flag, which overrides the

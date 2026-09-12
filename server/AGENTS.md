@@ -50,10 +50,13 @@ negative or blank for a lap. Guarded by
 ## One signal drives both the sort order and the interval reference
 
 `RaceState._sort_mode()` returns the single value that picks the sort key *and* the
-interval branch, keyed on the session-mode label from `$B` — never on `_is_qualifying`,
-which any `$G` clears permanently and which therefore measures `False` in every capture
-and example file here. `Gap` means "interval to the row above", so values and order that
-disagree are worse than either alone. Guarded by
+interval branch, and it keys on the `session_mode` label — never directly on
+`_is_qualifying`, which any `$G` clears permanently and which therefore measures `False`
+in every capture and example file here. The label usually comes from `$B`, but
+`_derive_session_mode` falls back to `_is_qualifying` when there is no `$B` at all: that
+pure-`$H` path is the one route by which the flag still reaches the sort, and it is
+supported, not vestigial. `Gap` means "interval to the row above", so values and order
+that disagree are worse than either alone. Guarded by
 `test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` in
 `tests/test_race_state.py`.
 
