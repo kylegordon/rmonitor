@@ -150,6 +150,11 @@ def test_repeated_init_then_repopulate_leaves_state_correct(state):
     this calls :meth:`RaceState.process` directly; it is pinned over the real
     ingest path by
     ``tests/test_server.py::test_repeated_init_wipes_reach_clients_before_repopulation``.
+
+    The trailing repeat matters on its own: a non-95 ``$B`` is re-sent
+    periodically *during* a live session — ``$B,27,"Race 5 - 1st Race"`` arrives
+    five times across that race — so an active run record must never be taken
+    for a boundary and must leave the field it lands on untouched.
     """
     for _ in range(3):
         assert state.process({"type": "init", "time_of_day": "15:29:14", "date": "12 Sep 26"}) == "init"
@@ -167,6 +172,13 @@ def test_repeated_init_then_repopulate_leaves_state_correct(state):
 
     assert state.run_description == "Race 6 - Final 12a"
     assert len(state.competitors) == 1
+    assert state.competitors["79"]["last_name"] == "Brydon"
+
+    # The same run record re-sent mid-session, as the live feed does: it is not
+    # a boundary, so the populated field must survive it intact.
+    state.process({"type": "run", "unique_number": "33", "description": "Race 6 - Final 12a"})
+
+    assert state.run_description == "Race 6 - Final 12a"
     assert state.competitors["79"]["last_name"] == "Brydon"
 
 
