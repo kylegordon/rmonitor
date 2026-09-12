@@ -139,6 +139,74 @@ def test_init_clears_state(state):
     assert state.flag == ""
 
 
+def test_repeated_init_then_repopulate_leaves_state_correct(state):
+    """Three consecutive ``$I`` records still end with the session populated.
+
+    A live session start sent ``$I`` three times inside two milliseconds, then
+    a duplicated ``$B`` and the usual competitor dump.  Replays that order and
+    pins the resulting :class:`RaceState` only: repeated wipes and a duplicated
+    ``$B`` leave the session whole, rather than a half-applied batch.  The
+    broadcast-per-init half of the invariant is not visible from here, because
+    this calls :meth:`RaceState.process` directly; it is pinned over the real
+    ingest path by
+    ``tests/test_server.py::test_repeated_init_wipes_reach_clients_before_repopulation``.
+
+    The trailing repeat matters on its own: a non-95 ``$B`` is re-sent
+    periodically *during* a live session — ``$B,27,"Race 5 - 1st Race"`` arrives
+    five times across that race — so an active run record must never be taken
+    for a boundary and must leave the field it lands on untouched.
+    """
+    for _ in range(3):
+        assert state.process({"type": "init", "time_of_day": "15:29:14", "date": "12 Sep 26"}) == "init"
+    for _ in range(2):
+        state.process({"type": "run", "unique_number": "33", "description": "Race 6 - Final 12a"})
+    state.process({
+        "type": "competitor",
+        "reg_number": "79",
+        "number": "79",
+        "first_name": "Paul",
+        "last_name": "Brydon",
+        "nationality": "Solution F BMW M3",
+        "class_number": "1",
+    })
+
+    assert state.run_description == "Race 6 - Final 12a"
+    assert len(state.competitors) == 1
+    assert state.competitors["79"]["last_name"] == "Brydon"
+
+    # The same run record re-sent mid-session, as the live feed does: it is not
+    # a boundary, so the populated field must survive it intact.
+    state.process({"type": "run", "unique_number": "33", "description": "Race 6 - Final 12a"})
+
+    assert state.run_description == "Race 6 - Final 12a"
+    assert state.competitors["79"]["last_name"] == "Brydon"
+
+
+def test_init_arriving_after_competitors_wipes_them(state):
+    """An ``$I`` mid-stream clears competitors that arrived before it.
+
+    ``$I`` is emitted inconsistently — none on a scoreboard reset, one after a
+    finished race, three at a session start — so it cannot be treated as a
+    session marker.  It is a live wipe wherever it lands, which is the whole
+    reason ordering within the batch matters.
+    """
+    state.process({
+        "type": "competitor",
+        "reg_number": "9",
+        "number": "9",
+        "first_name": "Ron",
+        "last_name": "Cumming",
+        "nationality": "Nemesis",
+        "class_number": "1",
+    })
+    state.process({"type": "run", "unique_number": "27", "description": "Race 5 - 1st Race"})
+    assert len(state.competitors) == 1
+
+    state.process({"type": "init", "time_of_day": "15:19:53", "date": "12 Sep 26"})
+    assert state.competitors == {}
+    assert state.run_description == ""
+
+
 def test_snapshot_sorted_by_position(state):
     state.process({"type": "race_info", "position": "3", "reg_number": "A", "laps": "", "total_time": ""})
     state.process({"type": "race_info", "position": "1", "reg_number": "B", "laps": "", "total_time": ""})

@@ -207,6 +207,13 @@ class RaceState:
         return "competitor"
 
     def _run(self, msg: dict) -> str:
+        """Record the run description from ``$B``.
+
+        ``unique_number`` is deliberately dropped: nothing here consumes it
+        yet.  It is not noise, though — 95 marks a session's end (see
+        :func:`relay.rmonitor_client._parse_run`), so this is where a reliable
+        session-boundary signal would be picked up if one is ever needed.
+        """
         self.run_description = msg["description"]
         self._dirty = True
         return "run"
@@ -400,6 +407,26 @@ class RaceState:
         return "lap_info"
 
     def _init(self, _msg: dict) -> str:
+        """Clear all state in response to ``$I``.
+
+        ``$I`` is not the session marker its name suggests, and is emitted
+        inconsistently: a live feed sent none at all on a scoreboard reset, one
+        after a finished race, and **three within two milliseconds** at a
+        session start, followed by a duplicated ``$B``.  It never appears at a
+        session's *end*, where ``$B,95`` does — the two are asymmetric, and
+        neither brackets a session alone.
+
+        So treat ``$I`` as a wipe to survive rather than an edge to act on: it
+        is not idempotent in practice, and each one costs a full reset plus a
+        broadcast to every client.  What makes that safe is only ordering — the
+        repopulating records follow in the same batch.  Derive session
+        boundaries from ``$B`` instead — but from the **change** in its
+        ``unique_number``, never from a record's arrival: a live session
+        re-sends its own run record throughout (``$B,27`` five times across one
+        race, a Sebring session's 264 times) and 95 recurs too, so acting on
+        every one would reopen a session already running.  Becoming 95 is the
+        end edge; becoming any other number is the start edge.
+        """
         log.info("New race/session – clearing all state")
         self.reset()
         return "init"
@@ -446,6 +473,17 @@ class RaceState:
         ``"best_lap"``.  Any ``$G`` clears the flag permanently, so that is a
         session's opening moments — or the whole of a pure-``$H`` session.
         Either way the flag reaches the sort through the label, never around it.
+
+        The purple branch has never been reached by a real feed.  One live
+        meeting ran a purple flag for a full form-up and the ``$F`` flag stayed
+        *blank* for all 610 heartbeats between the previous session ending and
+        the green, then went straight to ``"Green "``: that installation does
+        not treat purple as a timing state.  Do not "fix" the comparison by
+        guessing a different spelling — the string is absent, not misspelled,
+        and ``"Purple"`` is exactly six characters so it would arrive intact if
+        it were sent at all.  It is kept because the parser is shared and only
+        one installation has been observed.  The tests covering it synthesise
+        the heartbeat, so they prove the ordering logic, not reachability.
 
         :param session_mode: the label from :meth:`_derive_session_mode`.
         :returns: ``"total_time"`` under a purple flag, which overrides the
