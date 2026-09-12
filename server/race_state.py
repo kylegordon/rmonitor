@@ -41,8 +41,9 @@ def _lap_time_seconds(t: str) -> float | None:
 _NO_TIME_SENTINEL = "00:59:59.999"
 
 # Substrings of a lowercased ``$B`` run description that mark a non-competitive
-# session.  Tested in order by :meth:`RaceState._derive_session_mode`, ahead of
-# the ``"qual"`` test, so a description matching both reads as practice.
+# session.  Any one match wins, so their order here carries no meaning; what
+# does is that :meth:`RaceState._derive_session_mode` tests them *before* the
+# ``"qual"`` test, so a description matching both reads as practice.
 _PRACTICE_KEYWORDS = (
     "practice",
     "prac",
@@ -657,11 +658,13 @@ class RaceState:
         any ``$G`` — and is tested first and *unconditionally*: it overrides
         ``run_description`` rather than filling in for a missing one.  A feed
         that has sent ``$B,"Race 1"`` and then a ``$H`` reports ``"Qualifying"``
-        until its first ``$G`` arrives, and since F-2 that window is in best-lap
-        order too.  Any ``$G`` clears the flag for good, so in a feed that sends
-        them the window is a session's opening moments; in a pure-``$H`` feed it
-        is the whole session, which is the case the test exists for.  Everything
-        below it is a substring match on ``run_description`` (from ``$B``).
+        until its first ``$G`` arrives, and because :meth:`_sort_mode` keys on
+        this label, that window is shown in best-lap order too — a race briefly
+        sorted by best lap.  Any ``$G`` clears the flag for good, so in a feed
+        that sends them the window is a session's opening moments; in a
+        pure-``$H`` feed it is the whole session, which is the case the test
+        exists for.  Everything below it is a substring match on
+        ``run_description`` (from ``$B``).
 
         Matching is on bare substrings and the fallthrough is silent: a
         description matching no keyword is reported as ``"Race"``.  Both halves
