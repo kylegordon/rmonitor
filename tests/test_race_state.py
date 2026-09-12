@@ -139,6 +139,59 @@ def test_init_clears_state(state):
     assert state.flag == ""
 
 
+def test_repeated_init_then_repopulate_leaves_state_correct(state):
+    """Three consecutive ``$I`` records still end with the session populated.
+
+    A live session start sent ``$I`` three times inside two milliseconds, then
+    a duplicated ``$B`` and the usual competitor dump.  Each ``$I`` costs a full
+    reset and a broadcast, so what makes this safe is only that the
+    repopulating records follow in the same batch; this pins that ordering
+    rather than the wipe count.  Replays the observed order.
+    """
+    for _ in range(3):
+        assert state.process({"type": "init", "time_of_day": "15:29:14", "date": "12 Sep 26"}) == "init"
+    for _ in range(2):
+        state.process({"type": "run", "unique_number": "33", "description": "Race 6 - Final 12a"})
+    state.process({
+        "type": "competitor",
+        "reg_number": "79",
+        "number": "79",
+        "first_name": "Paul",
+        "last_name": "Brydon",
+        "nationality": "Solution F BMW M3",
+        "class_number": "1",
+    })
+
+    assert state.run_description == "Race 6 - Final 12a"
+    assert len(state.competitors) == 1
+    assert state.competitors["79"]["last_name"] == "Brydon"
+
+
+def test_init_arriving_after_competitors_wipes_them(state):
+    """An ``$I`` mid-stream clears competitors that arrived before it.
+
+    ``$I`` is emitted inconsistently — none on a scoreboard reset, one after a
+    finished race, three at a session start — so it cannot be treated as a
+    session marker.  It is a live wipe wherever it lands, which is the whole
+    reason ordering within the batch matters.
+    """
+    state.process({
+        "type": "competitor",
+        "reg_number": "9",
+        "number": "9",
+        "first_name": "Ron",
+        "last_name": "Cumming",
+        "nationality": "Nemesis",
+        "class_number": "1",
+    })
+    state.process({"type": "run", "unique_number": "27", "description": "Race 5 - 1st Race"})
+    assert len(state.competitors) == 1
+
+    state.process({"type": "init", "time_of_day": "15:19:53", "date": "12 Sep 26"})
+    assert state.competitors == {}
+    assert state.run_description == ""
+
+
 def test_snapshot_sorted_by_position(state):
     state.process({"type": "race_info", "position": "3", "reg_number": "A", "laps": "", "total_time": ""})
     state.process({"type": "race_info", "position": "1", "reg_number": "B", "laps": "", "total_time": ""})

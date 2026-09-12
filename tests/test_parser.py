@@ -28,6 +28,41 @@ def test_heartbeat_flag_trim():
     assert msg["flag"] == "Green"
 
 
+@pytest.mark.parametrize("raw", ["Green ", "Yellow", "Finish", "      "])
+def test_heartbeat_flag_field_is_fixed_width_six(raw):
+    """Every flag value arrives as exactly six characters.
+
+    Measured over every ``$F`` in this repository's captures: ``"Green "``,
+    ``"Yellow"``, ``"Finish"`` and six spaces, with no other value and no other
+    width.  The field is fixed width, not incidentally padded, which is why a
+    name longer than six characters truncates instead — see
+    :func:`relay.rmonitor_client._parse_heartbeat`.
+    """
+    assert len(raw) == 6
+    msg = parse_line(f'$F,9999,"00:00:00","07:59:59","00:00:00","{raw}"')
+    assert msg["flag"] == raw.strip()
+
+
+def test_heartbeat_flag_yellow():
+    """A caution parses to a bare ``"Yellow"``.
+
+    Captured live during a race that ran green, went yellow for 109s, and
+    returned to green — the only flag round trip in this repository's captures.
+    """
+    msg = parse_line('$F,9,"00:00:00","15:32:59","00:01:11","Yellow"')
+    assert msg["flag"] == "Yellow"
+
+
+def test_heartbeat_blank_flag_is_empty_string():
+    """A six-space flag reaches the caller as ``""``.
+
+    Blank is ambiguous — pre-session, formation lap, between sessions and
+    post-finish all use it — so it must not be mistaken for a distinct state.
+    """
+    msg = parse_line('$F,0,"00:00:00","15:27:24","00:00:00","      "')
+    assert msg["flag"] == ""
+
+
 # -- $A Competitor ----------------------------------------------------------
 
 def test_competitor_a():
@@ -41,6 +76,17 @@ def test_competitor_a():
     assert msg["last_name"] == "Johnson"
     assert msg["nationality"] == "USA"
     assert msg["class_number"] == "5"
+
+
+def test_competitor_transponder_is_not_always_numeric():
+    """A transponder may be alphanumeric, so it stays a string.
+
+    ``"NE2"`` and ``"NE4"`` are real values from a live feed — club hire units,
+    alongside ordinary numeric ones.  Anything coercing this field to ``int``
+    raises on them.
+    """
+    msg = parse_line('$A,"26","26",NE4,"Michael","Barron","Legend Coupe",1')
+    assert msg["transponder"] == "NE4"
 
 
 # -- $COMP Extended competitor ----------------------------------------------
@@ -66,6 +112,24 @@ def test_run():
     assert msg["type"] == "run"
     assert msg["unique_number"] == "32"
     assert msg["description"] == "Test Session 4"
+
+
+def test_run_95_is_the_session_end_sentinel():
+    """``$B,95`` closes a session, carrying the outgoing description.
+
+    Every session across this repository's captures ends this way — a session
+    opening as ``$B,27,"Race 5 - 1st Race"`` closes as
+    ``$B,95,"Race 5 - 1st Race"``, same description, number 95 — and a feed
+    joined between sessions opens with one.  Real run numbers (26, 27, 31-35,
+    81) vary per session and can repeat within one, so 95 is the only stable
+    boundary signal.  The sentinel must stay distinguishable from the
+    description, which is identical on both edges.
+    """
+    start = parse_line('$B,27,"Race 5 - 1st Race"')
+    end = parse_line('$B,95,"Race 5 - 1st Race"')
+    assert start["description"] == end["description"]
+    assert start["unique_number"] == "27"
+    assert end["unique_number"] == "95"
 
 
 # -- $C Class information ---------------------------------------------------

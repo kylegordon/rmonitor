@@ -47,7 +47,7 @@ comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 - **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
   wait-for-display poll this repo has twice seen hang indefinitely.
 - **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 220 tests CI runs.
+  than skips when a display is missing. A local run is the same 230 tests CI runs.
 - **Both interpreters are reachable locally** — the fence's last line switches to the
   3.13 matrix leg, so it is reproducible here rather than CI-only.
 
@@ -136,15 +136,23 @@ to one function it lives in that function's docstring and is deliberately not re
    `test_qual_info_during_a_race_does_not_overwrite_race_positions` and the `session_mode` and
    sort-order tests in `tests/test_race_state.py`.
 3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real
-   output from some Orbits setups, and `_tokenize` strips quotes *and* whitespace because flag
-   strings such as `"Green "` arrive padded. Trust `relay/rmonitor_client.py` over the spec.
-   Guarded by `test_heartbeat_flag_trim`, `test_lap_info_sp` and `test_lap_info_sr` in
-   `tests/test_parser.py`.
+   output from some Orbits setups, and the `$F` flag is a **fixed-width six-character field** —
+   `_tokenize` strips the padding, but a longer name would truncate, so never compare against one
+   over six characters. Blank is ambiguous, covering pre-session, formation lap, between sessions
+   and post-finish alike. Trust `relay/rmonitor_client.py` over the spec. Guarded by
+   `test_heartbeat_flag_trim`, `test_heartbeat_flag_field_is_fixed_width_six`,
+   `test_lap_info_sp` and `test_lap_info_sr` in `tests/test_parser.py`.
 4. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
    `tests/Dockerfile` installs from all four and is the only place that list exists; why each file
    is copied with its path preserved is commented there. Adding a package to one workflow's inline
    list only ever fixes that workflow, and the next one silently drifts out of sync. Guarded by
    `tests/test_repo_invariants.py`, which also asserts the `xvfb-run` and `conftest.py` rules.
+5. **Session boundaries come from `$B`, never `$I`.** `$I` is emitted inconsistently — none on a
+   scoreboard reset, one after a finished race, three at a session start — and each is a live
+   `RaceState.reset()` plus a broadcast, made safe only by the repopulating records that follow in
+   the same batch. `$B,95` closes every session, carrying the outgoing description; any other
+   number opens one. Guarded by `test_run_95_is_the_session_end_sentinel` in `tests/test_parser.py`
+   and `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

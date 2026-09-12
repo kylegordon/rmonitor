@@ -152,6 +152,19 @@ def _reg(cmd: str):
 # $F,laps_to_go,"time_to_go","time_of_day","race_time","flag_status"
 @_reg("$F")
 def _parse_heartbeat(t: list[str]) -> dict:
+    """Parse a ``$F`` line into a ``heartbeat`` dict.
+
+    The flag is a **fixed-width six-character field**, space-padded — every
+    value observed on a live feed is exactly six characters: ``"Green "``,
+    ``"Yellow"``, ``"Finish"`` and six spaces for "no flag".  :func:`_tokenize`
+    strips the padding, so a caller sees ``"Green"``.
+
+    Fixed width, not merely padded, is the load-bearing distinction: a flag
+    name longer than six characters is **truncated** rather than padded, so a
+    comparison against a full name over six characters can never match.  Blank
+    is also ambiguous — it covers pre-session, formation lap, between sessions
+    and post-finish alike, so no session state can be inferred from it.
+    """
     return {
         "type": "heartbeat",
         "laps_to_go": t[1],
@@ -184,6 +197,20 @@ def _parse_competitor(t: list[str]) -> dict:
 #       "nationality","additional_data"
 @_reg("$COMP")
 def _parse_comp(t: list[str]) -> dict:
+    """Parse a ``$COMP`` line into a ``competitor`` dict.
+
+    ``nationality`` and ``additional_data`` are operator-defined free text, not
+    the fields their names promise: one live feed carries the car model
+    (``"Radical SR10 XXR"``) and engine capacity (``"2261"``) in them, while the
+    reference feeds in ``examples/`` carry a team name.  Never key behaviour off
+    either.
+
+    Nothing in this record is a stable cross-meeting identifier.  Transponders
+    are reused between drivers, car numbers are reassigned, and names vary in
+    spelling between sessions, so only ``reg_number`` *within one session* is
+    dependable.  ``transponder`` is also not always numeric — ``"NE2"`` and
+    ``"NE4"`` are real values — hence it stays a string here.
+    """
     return {
         "type": "competitor",
         "reg_number": t[1],
@@ -200,6 +227,15 @@ def _parse_comp(t: list[str]) -> dict:
 # $B,unique_number,"description"
 @_reg("$B")
 def _parse_run(t: list[str]) -> dict:
+    """Parse a ``$B`` line into a ``run`` dict.
+
+    ``unique_number`` **95 is a session-end sentinel**, not a run: every
+    session observed on a live feed closes with a ``$B,95`` carrying the
+    *outgoing* session's description, and a feed joined between sessions opens
+    with one.  Real run numbers vary per session and may repeat within one, so
+    95 is the only stable session-boundary signal this protocol offers — more
+    dependable than ``$I``, which fires only at a session's start.
+    """
     return {
         "type": "run",
         "unique_number": t[1],
