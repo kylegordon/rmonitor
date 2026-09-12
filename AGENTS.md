@@ -47,7 +47,7 @@ comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 - **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
   wait-for-display poll this repo has twice seen hang indefinitely.
 - **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 230 tests CI runs.
+  than skips when a display is missing. A local run is the same 231 tests CI runs.
 - **Both interpreters are reachable locally** — the fence's last line switches to the
   3.13 matrix leg, so it is reproducible here rather than CI-only.
 
@@ -151,8 +151,10 @@ to one function it lives in that function's docstring and is deliberately not re
    scoreboard reset, one after a finished race, three at a session start — and each is a live
    `RaceState.reset()` plus a broadcast, made safe only by the repopulating records that follow in
    the same batch. `$B,95` closes every session, carrying the outgoing description; any other
-   number opens one. Guarded by `test_run_95_is_the_session_end_sentinel` in `tests/test_parser.py`
-   and `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`.
+   number opens one. Guarded by `test_run_95_is_the_session_end_sentinel` in `tests/test_parser.py`,
+   `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py` for the
+   resulting state, and `test_repeated_init_wipes_reach_clients_before_repopulation` in
+   `tests/test_server.py` for the broadcast-per-init over the real ingest path.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

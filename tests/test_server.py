@@ -166,6 +166,56 @@ async def test_ingest_updates_race_state(client, app):
 
 
 @pytest.mark.asyncio
+async def test_repeated_init_wipes_reach_clients_before_repopulation(client):
+    """Three ``$I`` records in a row each wipe live state and tell the clients.
+
+    A live session start sent ``$I`` three times inside two milliseconds, then a
+    duplicated ``$B`` and the competitor dump.  This posts that sequence through
+    the real ``/api/ingest`` path with a WebSocket client attached, so it pins
+    what the unit tests cannot: every init is broadcast as it lands, each one
+    carrying an *empty* snapshot, and the session is only whole again because
+    the repopulating records follow in the same batch.  A change that deferred,
+    coalesced or reordered those broadcasts would fail here.
+    """
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+
+        headers = {"Authorization": "Bearer test-secret"}
+        for _ in range(3):
+            resp = await client.post(
+                "/api/ingest",
+                json={"type": "init", "time_of_day": "15:29:14", "date": "12 Sep 26"},
+                headers=headers,
+            )
+            assert resp.status == 200
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+            assert msg["event"] == "init"
+            # The wipe is visible to clients at the moment it happens: the
+            # fixture's competitor is gone from the very first one.
+            assert msg["data"]["entries"] == []
+
+        for _ in range(2):
+            await client.post(
+                "/api/ingest",
+                json={"type": "run", "unique_number": "33",
+                      "description": "Race 6 - Final 12a"},
+                headers=headers,
+            )
+        await client.post(
+            "/api/ingest",
+            json={"type": "competitor", "reg_number": "79", "number": "79",
+                  "first_name": "Paul", "last_name": "Brydon",
+                  "nationality": "Solution F BMW M3", "class_number": "1"},
+            headers=headers,
+        )
+
+    resp = await client.get("/api/state")
+    data = await resp.json()
+    assert data["run_description"] == "Race 6 - Final 12a"
+    assert [e["reg_number"] for e in data["entries"]] == ["79"]
+
+
+@pytest.mark.asyncio
 async def test_ingest_with_empty_relay_secret_allows_no_auth_header(race_state):
     """RELAY_SECRET='' is a documented way to disable ingest auth entirely."""
     app = create_app(race_state, relay_secret="")

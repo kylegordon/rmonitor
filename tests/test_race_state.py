@@ -143,10 +143,13 @@ def test_repeated_init_then_repopulate_leaves_state_correct(state):
     """Three consecutive ``$I`` records still end with the session populated.
 
     A live session start sent ``$I`` three times inside two milliseconds, then
-    a duplicated ``$B`` and the usual competitor dump.  Each ``$I`` costs a full
-    reset and a broadcast, so what makes this safe is only that the
-    repopulating records follow in the same batch; this pins that ordering
-    rather than the wipe count.  Replays the observed order.
+    a duplicated ``$B`` and the usual competitor dump.  Replays that order and
+    pins the resulting :class:`RaceState` only: repeated wipes and a duplicated
+    ``$B`` leave the session whole, rather than a half-applied batch.  The
+    broadcast-per-init half of the invariant is not visible from here, because
+    this calls :meth:`RaceState.process` directly; it is pinned over the real
+    ingest path by
+    ``tests/test_server.py::test_repeated_init_wipes_reach_clients_before_repopulation``.
     """
     for _ in range(3):
         assert state.process({"type": "init", "time_of_day": "15:29:14", "date": "12 Sep 26"}) == "init"

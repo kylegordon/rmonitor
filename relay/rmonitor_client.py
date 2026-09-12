@@ -180,6 +180,14 @@ def _parse_heartbeat(t: list[str]) -> dict:
 #    "nationality",class_number
 @_reg("$A")
 def _parse_competitor(t: list[str]) -> dict:
+    """Parse an ``$A`` line into a ``competitor`` dict.
+
+    ``transponder`` is **not always numeric** — ``"NE2"`` and ``"NE4"``, club
+    hire units, are real values from a live feed alongside ordinary numeric
+    ones — so it stays a string here and anything coercing it to ``int`` will
+    raise.  It is not a stable identifier either: transponders are reused
+    between drivers from meeting to meeting.
+    """
     return {
         "type": "competitor",
         "reg_number": t[1],
@@ -205,11 +213,9 @@ def _parse_comp(t: list[str]) -> dict:
     reference feeds in ``examples/`` carry a team name.  Never key behaviour off
     either.
 
-    Nothing in this record is a stable cross-meeting identifier.  Transponders
-    are reused between drivers, car numbers are reassigned, and names vary in
-    spelling between sessions, so only ``reg_number`` *within one session* is
-    dependable.  ``transponder`` is also not always numeric — ``"NE2"`` and
-    ``"NE4"`` are real values — hence it stays a string here.
+    Nothing in this record is a stable cross-meeting identifier either: car
+    numbers are reassigned and names vary in spelling between sessions, so only
+    ``reg_number``, and only *within one session*, is dependable.
     """
     return {
         "type": "competitor",
@@ -233,8 +239,10 @@ def _parse_run(t: list[str]) -> dict:
     session observed on a live feed closes with a ``$B,95`` carrying the
     *outgoing* session's description, and a feed joined between sessions opens
     with one.  Real run numbers vary per session and may repeat within one, so
-    95 is the only stable session-boundary signal this protocol offers — more
-    dependable than ``$I``, which fires only at a session's start.
+    95 is the only stable session-boundary signal this protocol offers.  ``$I``
+    is not an alternative: it is emitted inconsistently — none at all on one
+    scoreboard reset, one after a finished race, three at a session start — and
+    never at a session's end.  See :meth:`server.race_state.RaceState._init`.
     """
     return {
         "type": "run",
