@@ -50,3 +50,33 @@ def test_replay_sample_file(sample_file):
         assert "reg_number" in entry
         assert "number" in entry
         assert "class_description" in entry
+
+
+@pytest.mark.parametrize(
+    "sample_file",
+    SAMPLE_FILES,
+    ids=[f.name for f in SAMPLE_FILES],
+)
+def test_test_session_examples_classify_as_practice(sample_file):
+    """All three example sessions are named "Test Session N" and are practice.
+
+    They classified as ``"Race"`` until ``test`` joined the practice keyword
+    list — a third live instance of the defect class that motivated the change,
+    evidenced rather than hypothesised, and 9955 ``$G`` lines between them.
+    Reclassifying them changes their sort order and interval mode, so the new
+    classification is asserted here rather than assumed.
+    """
+    state = RaceState()
+    with open(sample_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            msg = parse_line(line)
+            if msg:
+                state.process(msg)
+
+    snap = state.snapshot()
+    assert "test session" in state.run_description.lower()
+    assert snap["session_mode"] == "Practice"
+    assert snap["sort_mode"] == "best_lap"

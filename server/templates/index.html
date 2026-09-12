@@ -373,6 +373,9 @@
 
     function render(data) {
       const mode = data.session_mode || '';
+      // The server states which order it sorted in; the page never re-derives
+      // that condition from session_mode and flag.
+      const bestLapSort = data.sort_mode === 'best_lap';
       modeBadgeEl.textContent = mode || '—';
       modeBadgeEl.className = 'mode-badge ' + modeClass(mode);
       trackEl.textContent = data.track_name || '—';
@@ -425,12 +428,19 @@
         }) : '';
         const vehicle = [e.nationality, extra].filter(Boolean).join(' — ');
         const cls = e.class_description || '—';
-        const posText = e.position || '—';
-        const posArrow = e.position_change === 'up' ? ' <span class="arrow-up">▲</span>'
+        // Under a best-lap sort the feed's own position field is track order,
+        // not the order on screen, so POS counts the rows and keeps the track
+        // position as the tooltip.  The movement arrows track the feed's order
+        // too, so they are suppressed rather than left pointing at an ordering
+        // the page is not showing — the same call as the purple-flag blank.
+        const posText = bestLapSort ? String(idx + 1) : (e.position || '—');
+        const posTitle = bestLapSort && e.position ? 'Track position ' + e.position : '';
+        const posArrow = bestLapSort ? ' <span class="arrow-none"></span>'
+                       : e.position_change === 'up' ? ' <span class="arrow-up">▲</span>'
                        : e.position_change === 'down' ? ' <span class="arrow-down">▼</span>'
                        : ' <span class="arrow-none"></span>';
         const cellData = [
-          { html: escapeHtml(String(posText)) + posArrow, cls: 'pos' },
+          { html: escapeHtml(String(posText)) + posArrow, cls: 'pos', title: posTitle },
           { text: e.number || e.reg_number, cls: 'number' },
           { text: name, title: vehicle },
           { text: intervalText(e.gap_ahead_seconds, e.gap_ahead_laps) },

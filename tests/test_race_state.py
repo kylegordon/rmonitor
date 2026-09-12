@@ -372,6 +372,12 @@ def test_green_flag_overrides_qualifying_sort(state):
     # Familiarisation
     ("Familiarisation",      "Practice"),
     ("familiarisation run",  "Practice"),
+    ("Familiarization",      "Practice"),
+    # Other non-competitive session names
+    ("Test Session 4",       "Practice"),
+    ("Shakedown",            "Practice"),
+    ("Sighting laps",        "Practice"),
+    ("Untimed session",      "Practice"),
 ])
 def test_session_mode_practice_keywords(state, description, expected_mode):
     """Descriptions that should derive 'Practice' mode."""
@@ -404,14 +410,36 @@ def test_session_mode_qualifying_from_description(state):
     assert state.snapshot()["session_mode"] == "Qualifying"
 
 
+def test_bare_test_keyword_also_matches_contest(state):
+    """The ``test`` keyword is a bare substring, and this is the cost.
+
+    It also matches ``Contest``, ``Protest`` and ``Fastest``, so a session named
+    for any of those reads as practice — and the fallthrough is silent, so it
+    would do so invisibly.  The behaviour is pinned here rather than left to be
+    "fixed" later by someone who reads it as a bug: no ``$B`` description in
+    this repository's ``captures/*.log`` or ``examples/*.txt`` collides, and
+    word-boundary matching was not adopted because the corpus does not justify
+    the complexity.  Revisit if a real description ever collides.
+    """
+    state.process({"type": "run", "description": "Contest 1"})
+    assert state.snapshot()["session_mode"] == "Practice"
+
+
 def test_session_mode_warm_up_with_race_info_is_practice(state):
-    """Warm-up description takes priority over _seen_race_info flag."""
+    """Warm-up description takes priority over _seen_race_info flag.
+
+    Feeding a ``$B`` *and* a ``$G`` is exactly the shape that used to label a
+    session Practice while running race maths underneath, so the sort mode is
+    asserted alongside the label.
+    """
     state.process({"type": "run", "description": "Warm-up"})
     state.process({
         "type": "race_info", "position": "1", "reg_number": "1",
         "laps": "1", "total_time": "00:01:30.000",
     })
-    assert state.snapshot()["session_mode"] == "Practice"
+    snap = state.snapshot()
+    assert snap["session_mode"] == "Practice"
+    assert snap["sort_mode"] == "best_lap"
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +558,47 @@ def _feed_lapped_field(state):
     })
 
 
+def _feed_stalled_car(state):
+    """Feed the moment a stalled car drove the live page's negative ``Gap``.
+
+    The defect this reproduces was found on ``timing.glasgownet.com`` during
+    Knockhill's "Familiarisation - Q1", whose ``Gap`` column rendered negative
+    times (P16 ``-38.448``, P20 ``-1:27.302``) — a car cannot be a negative
+    interval behind the one ahead of it.  Replaying
+    ``captures/capture_20260419T075703.log`` reproduced four such rows, and
+    every one of them is a car that has pitted or retired.
+
+    ``_time_behind_leader`` only advances when a car crosses the timing line,
+    which is intended: it answers "how far behind was this car at its own last
+    crossing".  A stalled car therefore keeps a small, *frozen* deficit while
+    the leader keeps lapping, and the field sorts by the feed's position, which
+    puts the stalled car below rows whose larger deficit is current.
+    Subtracting the two then gives a negative number.
+
+    This is that arithmetic, with the capture's own leader index — 479.672 at
+    lap 8 and 538.553 at lap 9.  Car 17 is circulating, one lap further on and
+    genuinely 102.881 s down; car 6 has stopped, frozen at 35.881 s down on the
+    lap before.  The feed still lists 17 ahead of 6, so ``Gap`` on car 6 was
+    ``35.881 - 102.881 = -67.000`` — which is what the page drew.
+    """
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "85",
+        "laps": "8", "total_time": "00:07:59.672",
+    })
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "85",
+        "laps": "9", "total_time": "00:08:58.553",
+    })
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "17",
+        "laps": "9", "total_time": "00:10:41.434",
+    })
+    state.process({
+        "type": "race_info", "position": "3", "reg_number": "6",
+        "laps": "8", "total_time": "00:08:35.553",
+    })
+
+
 def _by_reg(snap):
     return {e["reg_number"]: e for e in snap["entries"]}
 
@@ -622,12 +691,17 @@ def test_one_lap_deficit_still_reports_a_time(state):
     line for this lap and you have not yet.  A threshold of 1 would flicker
     between ``+1 L`` and a time roughly once per lap, which is why the
     same-lap-only alternative was rejected.
+
+    The threshold is untouched by the negative-gap fix, which fires on the
+    *sign* rather than on the lap difference: car 64 is one lap down with a
+    positive interval, so it never reaches that branch and still reports a time.
     """
     _feed_capture_sequence(state)
     car_64 = _by_reg(state.snapshot())["64"]
     # Leader 15 on lap 14, car 64 on lap 13 — a deficit of exactly one.
     assert car_64["diff_leader_laps"] is None
     assert isinstance(car_64["diff_leader_seconds"], float)
+    assert car_64["gap_ahead_seconds"] > 0
 
 
 def test_gap_lap_deficit_is_measured_against_the_car_ahead(state):
@@ -643,6 +717,56 @@ def test_gap_lap_deficit_is_measured_against_the_car_ahead(state):
     # Both on lap 6, whose leader time is 352.784: 467.102 - 352.784 = 114.318
     assert isinstance(car_1["gap_ahead_seconds"], float)
     assert car_1["gap_ahead_seconds"] == pytest.approx(114.318, abs=1e-3)
+
+
+def test_negative_gap_becomes_a_lap_deficit(state):
+    """A negative Gap means the row above is stalled, so report the lap.
+
+    See :func:`_feed_stalled_car` for how the negative arises.  The information
+    to say something true is already in hand at the guard: the two rows differ
+    by exactly one ``timed_lap``, as all eleven negative rows measured across
+    the seven captures do, so ``+1 L`` is both correct and strictly more useful
+    than the em-dash of suppressing the value.
+    """
+    _feed_stalled_car(state)
+    car_6 = _by_reg(state.snapshot())["6"]
+    # Before the fix this read -67.000: 35.881 (frozen, lap 8) - 102.881 (live,
+    # lap 9).  Car 17 ahead is on lap 9 and car 6 on lap 8.
+    assert car_6["gap_ahead_seconds"] is None
+    assert car_6["gap_ahead_laps"] == 1
+
+
+def test_negative_gap_at_equal_laps_is_blank(state):
+    """With no lap difference to report, a negative Gap emits nothing.
+
+    The fallback for the case :meth:`RaceState._apply_intervals` already
+    comments on — "early in a session the feed's positions can briefly disagree
+    with the on-road order".  Both cars here are on lap 8, so the deficits
+    disagree with the feed's order with no lap difference behind it: there is
+    nothing true to say and both gap fields stay *None* for an em-dash.
+
+    ``Diff`` is deliberately untouched.  It normalises against the first-placed
+    entry, whose own deficit is ~0, so the stalled-car sign error does not reach
+    it — no negative ``Diff`` was measured across the seven captures.
+    """
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "85",
+        "laps": "8", "total_time": "00:07:59.672",
+    })
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "17",
+        "laps": "8", "total_time": "00:10:15.553",
+    })
+    state.process({
+        "type": "race_info", "position": "3", "reg_number": "6",
+        "laps": "8", "total_time": "00:08:35.553",
+    })
+    car_6 = _by_reg(state.snapshot())["6"]
+    # 35.881 - 135.881 = -100.000, and both cars are on lap 8.
+    assert car_6["gap_ahead_seconds"] is None
+    assert car_6["gap_ahead_laps"] is None
+    assert car_6["diff_leader_seconds"] == pytest.approx(35.881, abs=1e-3)
+    assert car_6["diff_leader_laps"] is None
 
 
 def test_qualifying_gap_and_diff_from_best_laps(state):
@@ -677,6 +801,92 @@ def test_qualifying_gap_and_diff_from_best_laps(state):
     for entry in entries:
         assert entry["gap_ahead_laps"] is None
         assert entry["diff_leader_laps"] is None
+
+
+def test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them(state):
+    """A session the badge calls Practice must use practice maths too.
+
+    ``captures/capture_20260419T075703.log`` opens with
+
+        $B,33,"Familiarisation"
+
+    and then sends 627 ``$G`` lines.  Any ``$G`` clears ``_is_qualifying``
+    permanently, so the flag is False for the whole session — as it measures
+    False in *every* capture and example file in this repository, including two
+    named ``Qualifying``.  Keying the sort and the interval reference on that
+    flag therefore ran race maths under a ``PRACTICE`` badge, which is what the
+    live page was doing.
+
+    Both must move together.  ``Gap`` means "interval to the row above", so
+    best-lap values under the feed's position sort measured *17* negative gaps
+    in this capture against 4 for the status quo; under the best-lap sort, none.
+    Car 77 holds the session's outright best lap from well down the feed's
+    order, so the reordering here is the real one.
+    """
+    state.process({"type": "run", "description": "Familiarisation"})
+    for reg, best in (
+        ("77", "00:00:57.502"),
+        ("94", "00:00:57.933"),
+        ("1", "00:00:58.078"),
+        ("97", "00:00:58.277"),
+    ):
+        state.process({
+            "type": "qual_info", "position": "", "reg_number": reg,
+            "best_lap": "6", "best_lap_time": best,
+        })
+    # The feed's own order, which disagrees with the best-lap order.
+    for pos, reg, total in (
+        ("1", "1", "00:06:10.000"),
+        ("2", "97", "00:06:11.000"),
+        ("3", "77", "00:06:12.000"),
+        ("4", "94", "00:06:13.000"),
+    ):
+        state.process({
+            "type": "race_info", "position": pos, "reg_number": reg,
+            "laps": "6", "total_time": total,
+        })
+    assert state.is_qualifying is False
+    snap = state.snapshot()
+    assert snap["session_mode"] == "Practice"
+    assert snap["sort_mode"] == "best_lap"
+    entries = snap["entries"]
+    assert [e["reg_number"] for e in entries] == ["77", "94", "1", "97"]
+    assert entries[0]["gap_ahead_seconds"] is None
+    assert entries[1]["gap_ahead_seconds"] == pytest.approx(0.431, abs=1e-3)
+    assert entries[2]["gap_ahead_seconds"] == pytest.approx(0.145, abs=1e-3)
+    assert entries[3]["gap_ahead_seconds"] == pytest.approx(0.199, abs=1e-3)
+    for entry in entries:
+        assert entry["gap_ahead_seconds"] is None or entry["gap_ahead_seconds"] > 0
+        assert entry["gap_ahead_laps"] is None
+        assert entry["diff_leader_laps"] is None
+
+
+@pytest.mark.parametrize("description,purple,expected_sort_mode", [
+    ("Race 3 - 1st Race", False, "position"),
+    ("Familiarisation",   False, "best_lap"),
+    ("Qualifying 3",      False, "best_lap"),
+    ("Race 3 - 1st Race", True,  "total_time"),
+    ("Familiarisation",   True,  "total_time"),
+])
+def test_snapshot_reports_the_sort_mode_it_used(
+    state, description, purple, expected_sort_mode
+):
+    """The payload states which order it sorted in, rather than implying it.
+
+    ``index.html`` has to know whether the rows are in the feed's order before
+    it can decide what ``POS`` means, and the only way to keep the server's
+    branch condition from existing in two places is for the server to answer
+    the question.  This is the half of that a test can reach: nothing in this
+    repository renders the template.
+    """
+    if purple:
+        _set_purple_flag(state)
+    state.process({"type": "run", "description": description})
+    state.process({
+        "type": "race_info", "position": "1", "reg_number": "1",
+        "laps": "1", "total_time": "00:01:30.000",
+    })
+    assert state.snapshot()["sort_mode"] == expected_sort_mode
 
 
 def test_purple_flag_suppresses_gap_and_diff(state):

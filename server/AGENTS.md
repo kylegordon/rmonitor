@@ -46,3 +46,27 @@ independently and are not a pair, so reading them together makes the whole field
 negative or blank for a lap. Guarded by
 `test_no_negative_interval_in_the_window_between_a_passing_and_its_race_info` in
 `tests/test_race_state.py`.
+
+## One signal drives both the sort order and the interval reference
+
+`RaceState._sort_mode()` returns the single value that picks the sort key *and* the
+interval branch, keyed on the session-mode label from `$B` — never on `_is_qualifying`,
+which any `$G` clears permanently and which therefore measures `False` in every capture
+and example file here. `Gap` means "interval to the row above", so values and order that
+disagree are worse than either alone. Guarded by
+`test_practice_session_sorts_by_best_lap_and_derives_intervals_from_them` in
+`tests/test_race_state.py`.
+
+## A negative `Gap` is a stalled car, never a negative time
+
+A car that has pitted or retired keeps a frozen deficit while the leader laps on, so
+subtracting two deficits goes negative. Report the lap difference (`+N L`) where one
+exists and leave the column blank where it does not. Guarded by
+`test_negative_gap_becomes_a_lap_deficit` in `tests/test_race_state.py`.
+
+## `sort_mode` in the payload is what the page reads
+
+`snapshot()` states which order it sorted in, and `templates/index.html` reads that field
+rather than re-deriving the condition from `session_mode` and `flag` — nothing here
+renders the template, so a duplicated condition is a rule no test can reach. Guarded by
+`test_snapshot_reports_the_sort_mode_it_used` in `tests/test_race_state.py`.
