@@ -26,6 +26,7 @@ The application is split into two components that can each run in Docker:
 - Automatic reconnect to the timing feed on connection loss
 - Clears and restarts the display when a new session/race begins (`$I` init)
 - State persisted to disk — server resumes after a restart
+- Offers a reload prompt when the server is serving a newer version of the page
 
 ## Quick start
 

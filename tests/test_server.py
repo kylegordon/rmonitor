@@ -10,9 +10,11 @@ from aiohttp import test_utils, web
 
 from server.race_state import RaceState
 from server.server import (
+    PAGE_VERSION_TOKEN,
     broadcast,
     create_app,
     feed_state_key,
+    page_version_key,
     ws_clients_key,
 )
 
@@ -61,6 +63,53 @@ async def test_index_returns_html(client):
 
 
 @pytest.mark.asyncio
+async def test_index_sets_revalidation_headers(client):
+    """The page must be revalidated, not reused from cache indefinitely.
+
+    Before this, ``handle_index`` set no validator at all, so a browser was free to
+    keep a copy for as long as it liked -- which is how a phone came to run a page
+    older than the server it was talking to.
+    """
+    resp = await client.get("/")
+    assert resp.headers["Cache-Control"] == "no-cache"
+    etag = resp.headers["ETag"]
+    assert etag.startswith('"') and etag.endswith('"')
+    assert etag.strip('"')
+
+
+@pytest.mark.asyncio
+async def test_index_returns_304_to_a_matching_if_none_match(client):
+    """A validator with no 304 path would re-send the whole page every revalidation."""
+    first = await client.get("/")
+    etag = first.headers["ETag"]
+
+    resp = await client.get("/", headers={"If-None-Match": etag})
+    assert resp.status == 304
+    assert await resp.text() == ""
+
+
+@pytest.mark.asyncio
+async def test_index_returns_200_to_a_stale_if_none_match(client):
+    """The 304 path must not swallow a genuinely changed page -- the bug being fixed."""
+    resp = await client.get("/", headers={"If-None-Match": '"0000000000"'})
+    assert resp.status == 200
+    assert "SMART Live Timing" in await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_the_served_page_carries_its_version_and_no_placeholder(client, app):
+    """An unsubstituted token would leave every page claiming the same version.
+
+    The page half of the handshake compares a literal baked into the copy it was
+    served as; if the substitution silently stopped happening, every page would agree
+    with every server forever and the prompt would never appear.
+    """
+    text = await (await client.get("/")).text()
+    assert app[page_version_key] in text
+    assert PAGE_VERSION_TOKEN not in text
+
+
+@pytest.mark.asyncio
 async def test_healthz(client):
     resp = await client.get("/healthz")
     assert resp.status == 200
@@ -85,6 +134,28 @@ async def test_websocket_sends_full_state_on_connect(client):
         assert msg["event"] == "full"
         assert msg["data"]["track_name"] == "Test Track"
         assert "server_instance_id" in msg
+
+
+@pytest.mark.asyncio
+async def test_ws_full_message_carries_the_page_version(app, client):
+    """A client that connects and never sees an update still learns the version."""
+    async with client.ws_connect("/ws") as ws:
+        msg = await ws.receive_json()
+        assert msg["page_version"] == app[page_version_key]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_carries_the_page_version(app, client):
+    """``full`` on connect is not enough.
+
+    The phone in the reported incident was connected *through* the deploy, so the only
+    message that could tell it the page had changed was a broadcast.
+    """
+    async with client.ws_connect("/ws") as ws:
+        await ws.receive_json()  # the initial "full"
+        await broadcast(app, "update", {"test": True})
+        msg = await ws.receive_json()
+        assert msg["page_version"] == app[page_version_key]
 
 
 @pytest.mark.asyncio
