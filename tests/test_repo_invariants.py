@@ -373,7 +373,9 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
 
 
 #: A ``traefik.http.routers.<name>.<suffix>=<value>`` label line in the deploy compose file.
-_ROUTER_LABEL = re.compile(r"^\s*-\s*traefik\.http\.routers\.([A-Za-z0-9_-]+)\.(\S+?)=(.*)$", re.M)
+_ROUTER_LABEL = re.compile(
+    r"^\s*-\s*traefik\.http\.routers\.([A-Za-z0-9_-]+)\.(\S+?)=(.*)$", re.M
+)
 
 #: The middleware equivalent of :data:`_ROUTER_LABEL`.
 _MIDDLEWARE_LABEL = re.compile(
@@ -382,6 +384,12 @@ _MIDDLEWARE_LABEL = re.compile(
 
 #: One ``Host(`name`)`` matcher inside a router rule.
 _HOST_MATCHER = re.compile(r"Host\(`([^`]+)`\)")
+
+#: The alias hostnames the ``timing-smart`` router pair exists to serve.
+_SMART_TIMING_HOSTS = frozenset({
+    "live.smart-timing.co.uk",
+    "live-timing.smart-timing.co.uk",
+})
 
 
 def _compose_labels(pattern: re.Pattern[str]) -> dict[str, dict[str, str]]:
@@ -402,6 +410,19 @@ def _compose_labels(pattern: re.Pattern[str]) -> dict[str, dict[str, str]]:
     return grouped
 
 
+def _label_values(labels: dict[str, str], suffix: str) -> frozenset[str]:
+    """The comma-separated values of one Traefik label, empty if the label is absent.
+
+    ``entrypoints`` and ``middlewares`` both take a list, and a router naming two of
+    either is legal.  Comparing the raw string against a single expected value would
+    read ``entrypoints=web,websecure`` as neither, silently dropping that router out of
+    whichever check is iterating.
+    """
+    return frozenset(
+        part.strip() for part in labels.get(suffix, "").split(",") if part.strip()
+    )
+
+
 def _rule_hosts(rule: str) -> frozenset[str]:
     """The set of hostnames a Traefik router *rule* matches on."""
     return frozenset(_HOST_MATCHER.findall(rule))
@@ -410,8 +431,8 @@ def _rule_hosts(rule: str) -> frozenset[str]:
 def test_every_tls_routed_host_has_an_http_to_https_redirect_router() -> None:
     """Guards the deploy compose file: every HTTPS host is also reachable over plain HTTP.
 
-    The hostnames are written out twice — once on the HTTPS router, once on the HTTP
-    router that redirects to it — and both sites are maintained by hand.  A host added
+    The hostnames are written out twice -- once on the HTTPS router, once on the HTTP
+    router that redirects to it -- and both sites are maintained by hand.  A host added
     to the first and missed on the second answers ``https://`` correctly while
     ``http://`` 404s, which is invisible to anyone who only ever types the scheme.  It
     also breaks the HTTP-01 ACME challenge, which is fetched over port 80.
@@ -426,10 +447,9 @@ def test_every_tls_routed_host_has_an_http_to_https_redirect_router() -> None:
 
     redirected: set[str] = set()
     for labels in routers.values():
-        if labels.get("entrypoints") != "web":
+        if "web" not in _label_values(labels, "entrypoints"):
             continue
-        named = {part.strip() for part in labels.get("middlewares", "").split(",")}
-        if named & redirectors:
+        if _label_values(labels, "middlewares") & redirectors:
             redirected |= _rule_hosts(labels.get("rule", ""))
 
     tls_routers = {
@@ -443,7 +463,7 @@ def test_every_tls_routed_host_has_an_http_to_https_redirect_router() -> None:
         missing = hosts - redirected
         assert not missing, (
             f"router {name} serves {sorted(missing)} over HTTPS, but no web-entrypoint "
-            "router redirects those names — http:// will 404 and HTTP-01 cannot validate"
+            "router redirects those names -- http:// will 404 and HTTP-01 cannot validate"
         )
 
 
@@ -455,7 +475,7 @@ def test_the_production_hostname_keeps_its_certificate_to_itself() -> None:
     two ``smart-timing.co.uk`` names reach this service by CNAME from a zone a third
     party owns, which we cannot change and will not be told about if they do.  Folding
     them onto the ``timing`` router puts all three names on one certificate, so a CNAME
-    that is removed or repointed fails the whole ACME order — and
+    that is removed or repointed fails the whole ACME order -- and
     ``timing.glasgownet.com`` stops renewing.  Production then goes dark roughly thirty
     days later, with nothing visibly broken in the interim.  Two routers, two orders,
     two blast radii.
@@ -464,7 +484,7 @@ def test_the_production_hostname_keeps_its_certificate_to_itself() -> None:
     on deepcore is DNS-01 through a Route 53 credential scoped to one hosted zone, so
     it cannot answer a challenge for ``smart-timing.co.uk`` at all; those names need an
     HTTP-01 resolver.  Tidying the second router onto its neighbour's resolver produces
-    a configuration that deploys cleanly and then never obtains a certificate — silent
+    a configuration that deploys cleanly and then never obtains a certificate -- silent
     in the repository and silent at runtime, which is why it is asserted here.
     """
     routers = _compose_labels(_ROUTER_LABEL)
@@ -492,10 +512,6 @@ def test_the_production_hostname_keeps_its_certificate_to_itself() -> None:
     )
 
 
-#: The alias hostnames the ``timing-smart`` router pair exists to serve.
-_SMART_TIMING_HOSTS = frozenset({"live.smart-timing.co.uk", "live-timing.smart-timing.co.uk"})
-
-
 def test_the_smart_timing_aliases_are_routed_over_tls() -> None:
     """Guards the deploy compose file: both alias hostnames are actually served.
 
@@ -520,4 +536,4 @@ def test_the_smart_timing_aliases_are_routed_over_tls() -> None:
         "the timing-smart router no longer enables TLS, so the aliases are advertised "
         "over https:// but answered by Traefik's default certificate"
     )
-    assert routers["timing-smart-http"]["entrypoints"] == "web"
+    assert "web" in _label_values(routers["timing-smart-http"], "entrypoints")
