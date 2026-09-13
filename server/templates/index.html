@@ -274,7 +274,13 @@
     <div class="no-feed-box">No timing feed</div>
   </div>
   <div id="conn-status" class="connection-status disconnected">Connecting…</div>
-  <button id="update-banner" class="update-banner hidden" type="button">New version available – tap to reload</button>
+  <!-- The live region is present from first paint and stays empty, so revealing the
+       button inside it is an addition a screen reader announces. `polite` rather than
+       moving focus: the board is readable and still updating, and yanking focus out of
+       it to offer an optional reload would interrupt someone mid-row. -->
+  <div id="update-region" role="status" aria-live="polite">
+    <button id="update-banner" class="update-banner hidden" type="button">New version available – tap to reload</button>
+  </div>
   <header>
     <h1 id="title">SMART Live Timing</h1>
     <div class="header-right">

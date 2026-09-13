@@ -335,12 +335,38 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
         f"deploy reloads the page instead of prompting: {restart_reloads}"
     )
 
-    # Every reload in the page is either that guard or the user's own tap on the prompt.
+    # The user's tap is the *only* other way the page may reload, so exempt that exact
+    # line rather than any listener: a `window.addEventListener('load', ...)` reload
+    # would sail through a blanket exemption while being precisely what this forbids.
+    taps = [
+        number
+        for number, line in enumerate(lines, 1)
+        if "updateBannerEl.addEventListener('click'" in line
+    ]
+    assert len(taps) == 1, f"expected one banner click listener, found {taps}"
+    assert "location.reload" in lines[taps[0] - 1], (
+        "the banner's click listener no longer reloads, so tapping the prompt does "
+        "nothing"
+    )
+
+    allowed = set(taps) | set(range(restart_first, restart_last + 1))
     unaccounted = [
         f"{number}: {line.strip()}"
         for number, line in enumerate(lines, 1)
-        if "location.reload" in line
-        and "addEventListener" not in line
-        and not restart_first <= number <= restart_last
+        if "location.reload" in line and number not in allowed
     ]
     assert not unaccounted, f"unexplained page reload at {unaccounted}"
+
+    # The prompt has to reach a screen-reader user too: it is revealed rather than
+    # inserted, so without a live region around it nothing announces that the data
+    # being read is outdated.
+    banner = next(number for number, line in enumerate(lines, 1) if 'id="update-banner"' in line)
+    region = next(
+        number
+        for number, line in enumerate(lines, 1)
+        if 'aria-live="polite"' in line and "role=\"status\"" in line
+    )
+    assert region < banner, (
+        "the reload prompt must sit inside a persistent aria-live region, or its "
+        "appearance is silent to assistive technology"
+    )
