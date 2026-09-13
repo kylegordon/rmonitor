@@ -576,17 +576,6 @@
         heartbeatEl.classList.add('beating');
         const msg = JSON.parse(evt.data);
 
-        // Detect server restart: if the server instance ID changes after the
-        // initial connection, reload the page to avoid stale state.
-        if (msg.server_instance_id !== undefined) {
-          if (knownServerInstanceId === null) {
-            knownServerInstanceId = msg.server_instance_id;
-          } else if (msg.server_instance_id !== knownServerInstanceId) {
-            window.location.reload();
-            return;
-          }
-        }
-
         // Detect an outdated page. The server reports the version of the page it is
         // serving now; this copy carries the version it was served as. A tab left open
         // across a deploy runs the old page against the new server with its data still
@@ -597,8 +586,28 @@
         // someone is present to tap, and an unrequested reload on a personal device is
         // worse than an offer. Deliberately no `return` — the board keeps updating
         // while the prompt stands.
-        if (msg.page_version !== undefined && msg.page_version !== PAGE_VERSION) {
+        const pageOutdated = msg.page_version !== undefined && msg.page_version !== PAGE_VERSION;
+        if (pageOutdated) {
           updateBannerEl.classList.remove('hidden');
+        }
+
+        // Detect server restart: if the server instance ID changes after the initial
+        // connection, reload the page to avoid stale state. This is checked second and
+        // yields to the prompt above, because a deploy changes the process *and* the
+        // page: reloading here would take the choice out of the user's hands in exactly
+        // the case the prompt exists for, and the state this reload refreshes has
+        // already been refreshed by the `full` message the reconnect delivered. A plain
+        // restart, which leaves the page version alone, still reloads as it always did.
+        if (msg.server_instance_id !== undefined) {
+          if (knownServerInstanceId === null) {
+            knownServerInstanceId = msg.server_instance_id;
+          } else if (msg.server_instance_id !== knownServerInstanceId) {
+            if (!pageOutdated) {
+              window.location.reload();
+              return;
+            }
+            knownServerInstanceId = msg.server_instance_id;
+          }
         }
 
         if (msg.event === 'full' || msg.event === 'update') {

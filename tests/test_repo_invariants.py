@@ -292,13 +292,19 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
     offer. That is a decision about people rather than about code, which makes it
     exactly the kind nothing else in this repository can hold: no test here renders the
     template, so the guard is textual.
+
+    The second half of this is subtler and was missed on first writing. A deploy changes
+    the server process *and* the page, so the older ``server_instance_id`` guard fires on
+    the same message as the version mismatch — and it reloads and returns. Written in
+    that order the prompt is unreachable in precisely the case it exists for, and the
+    page self-reloads after all. So the order and the ``!pageOutdated`` condition are
+    both load-bearing, and both are asserted here.
     """
     page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
     lines = page.splitlines()
 
-    first, last = _js_block(lines, "msg.page_version")
+    first, last = _js_block(lines, "if (pageOutdated)")
     body = "\n".join(lines[first - 1 : last])
-
     assert "classList.remove('hidden')" in body, (
         "the page_version mismatch branch must reveal the reload prompt"
     )
@@ -306,14 +312,35 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
         "an outdated page must prompt, not reload itself: these are users' own devices"
     )
 
-    # Every reload in the page is either the server-restart guard, which predates this
-    # and reloads on a changed instance id, or the user's own tap on the prompt.
-    restart_guard = range(*_js_block(lines, "msg.server_instance_id !== undefined"))
+    # The restart guard must yield to the prompt, and must be able to: `pageOutdated` is
+    # read inside it, so it has to be computed above it.
+    restart_first, restart_last = _js_block(lines, "msg.server_instance_id !== undefined")
+    assert first < restart_first, (
+        "the page_version check must run before the server_instance_id guard, or the "
+        "guard reloads and returns before the prompt can appear"
+    )
+
+    deferral_first, deferral_last = _js_block(lines, "if (!pageOutdated)")
+    assert restart_first < deferral_first <= deferral_last < restart_last, (
+        "the !pageOutdated condition must sit inside the server_instance_id guard"
+    )
+    restart_reloads = [
+        number
+        for number in range(restart_first, restart_last + 1)
+        if "location.reload" in lines[number - 1]
+    ]
+    assert restart_reloads, "the server_instance_id guard no longer reloads at all"
+    assert all(deferral_first <= number <= deferral_last for number in restart_reloads), (
+        "the server_instance_id guard reloads without checking !pageOutdated, so a "
+        f"deploy reloads the page instead of prompting: {restart_reloads}"
+    )
+
+    # Every reload in the page is either that guard or the user's own tap on the prompt.
     unaccounted = [
         f"{number}: {line.strip()}"
         for number, line in enumerate(lines, 1)
         if "location.reload" in line
         and "addEventListener" not in line
-        and number not in restart_guard
+        and not restart_first <= number <= restart_last
     ]
     assert not unaccounted, f"unexplained page reload at {unaccounted}"
