@@ -490,3 +490,34 @@ def test_the_production_hostname_keeps_its_certificate_to_itself() -> None:
         "the smart-timing router must use the HTTP-01 resolver; the letsencrypt "
         "resolver is DNS-01 and cannot issue for a zone we do not control"
     )
+
+
+#: The alias hostnames the ``timing-smart`` router pair exists to serve.
+_SMART_TIMING_HOSTS = frozenset({"live.smart-timing.co.uk", "live-timing.smart-timing.co.uk"})
+
+
+def test_the_smart_timing_aliases_are_routed_over_tls() -> None:
+    """Guards the deploy compose file: both alias hostnames are actually served.
+
+    Its two neighbours above are isolation invariants -- they constrain what the routers
+    must not share, and neither notices a hostname that is simply absent.  A typo
+    repeated identically in the HTTPS rule and in the redirect rule is self-consistent,
+    so both pass; and dropping ``tls=true`` takes the router out of the set they iterate
+    over at all, so both pass then too.  Either leaves a hostname this repository
+    advertises in its compose header and in ``up.sh`` dark, with CI green.  The expected
+    host set is therefore pinned here by name rather than derived from the file.
+    """
+    routers = _compose_labels(_ROUTER_LABEL)
+
+    for name in ("timing-smart", "timing-smart-http"):
+        assert name in routers, f"the {name} router is gone from the compose file"
+        assert _rule_hosts(routers[name]["rule"]) == _SMART_TIMING_HOSTS, (
+            f"router {name} serves {sorted(_rule_hosts(routers[name]['rule']))}, but the "
+            f"alias set this repository advertises is {sorted(_SMART_TIMING_HOSTS)}"
+        )
+
+    assert routers["timing-smart"]["tls"] == "true", (
+        "the timing-smart router no longer enables TLS, so the aliases are advertised "
+        "over https:// but answered by Traefik's default certificate"
+    )
+    assert routers["timing-smart-http"]["entrypoints"] == "web"
