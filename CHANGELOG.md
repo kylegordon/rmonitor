@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.17](https://github.com/kylegordon/rmonitor/compare/v0.1.16...v0.1.17) (2026-09-13)
+
+## What's Changed
+* docs(agents): record protocol field observations from a live meeting by @kylegordon in https://github.com/kylegordon/rmonitor/pull/88
+* fix(server): prompt an outdated page to reload by @kylegordon in https://github.com/kylegordon/rmonitor/pull/90
+* feat(deploy): serve the smart-timing hostnames from their own router by @kylegordon in https://github.com/kylegordon/rmonitor/pull/91
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.16...v0.1.17
+
+
 ## [0.1.16](https://github.com/kylegordon/rmonitor/compare/v0.1.15...v0.1.16) (2026-09-12)
 
 ## What's Changed
