@@ -125,6 +125,27 @@
     .connected { background: var(--green); color: #000; }
     .disconnected { background: var(--red); color: #fff; }
 
+    .update-banner {
+      position: fixed;
+      left: 50%;
+      bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%);
+      background: var(--yellow);
+      color: #000;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      cursor: pointer;
+      /* Above the no-feed overlay (z-index 200): an outdated page is exactly the
+         thing most likely to be showing one, and the prompt must stay tappable. */
+      z-index: 300;
+    }
+    .update-banner.hidden { display: none; }
+
     main { padding: 1rem 2rem; }
 
     .table-wrapper {
@@ -253,6 +274,7 @@
     <div class="no-feed-box">No timing feed</div>
   </div>
   <div id="conn-status" class="connection-status disconnected">Connecting…</div>
+  <button id="update-banner" class="update-banner hidden" type="button">New version available – tap to reload</button>
   <header>
     <h1 id="title">SMART Live Timing</h1>
     <div class="header-right">
@@ -306,11 +328,16 @@
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
     const connEl = document.getElementById('conn-status');
+    const updateBannerEl = document.getElementById('update-banner');
     const noFeedEl = document.getElementById('no-feed-modal');
 
     let previousRegs = new Set();
     let rowMap = {};
     let knownServerInstanceId = null;
+    // The version of the page this copy was served as; the server substitutes it in
+    // handle_index. A long-open tab keeps the value it was served with, which is what
+    // makes it comparable against the version the server reports now.
+    const PAGE_VERSION = '{{PAGE_VERSION}}';
 
     function escapeHtml(str) {
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -560,6 +587,20 @@
           }
         }
 
+        // Detect an outdated page. The server reports the version of the page it is
+        // serving now; this copy carries the version it was served as. A tab left open
+        // across a deploy runs the old page against the new server with its data still
+        // live — the failure this guards is a correct row order under a POS column the
+        // old page labelled from the feed's track position.
+        //
+        // Prompt rather than reload: these are the user's own phones and laptops, so
+        // someone is present to tap, and an unrequested reload on a personal device is
+        // worse than an offer. Deliberately no `return` — the board keeps updating
+        // while the prompt stands.
+        if (msg.page_version !== undefined && msg.page_version !== PAGE_VERSION) {
+          updateBannerEl.classList.remove('hidden');
+        }
+
         if (msg.event === 'full' || msg.event === 'update') {
           hideNoFeedModal();
           render(msg.data);
@@ -573,6 +614,8 @@
         }
       };
     }
+
+    updateBannerEl.addEventListener('click', () => window.location.reload());
 
     connect();
   </script>

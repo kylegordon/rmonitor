@@ -1,6 +1,7 @@
 """aiohttp web server with WebSocket push for live race state."""
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -14,6 +15,11 @@ from aiohttp import web
 log = logging.getLogger(__name__)
 TEMPLATES = pathlib.Path(__file__).parent / "templates"
 
+#: Token in ``templates/index.html`` that the served page carries in place of its
+#: version. One literal, named here and read from the template, so the two halves of
+#: the handshake cannot be spelled differently.
+PAGE_VERSION_TOKEN = "{{PAGE_VERSION}}"
+
 BROADCAST_INTERVAL = float(os.environ.get("BROADCAST_INTERVAL", "0.25"))
 NO_FEED_TIMEOUT = float(os.environ.get("NO_FEED_TIMEOUT", "300"))  # seconds
 
@@ -21,6 +27,8 @@ NO_FEED_TIMEOUT = float(os.environ.get("NO_FEED_TIMEOUT", "300"))  # seconds
 race_state_key = web.AppKey("race_state")
 ws_clients_key = web.AppKey("ws_clients", set)
 server_instance_id_key = web.AppKey("server_instance_id", str)
+page_key = web.AppKey("page", str)
+page_version_key = web.AppKey("page_version", str)
 relay_secret_key = web.AppKey("relay_secret", str)
 # Mutable feed-state dict; mutate contents rather than reassigning the key.
 # Keys: "last_ingest_at" (float|None), "feed_lost" (bool), "watchdog_task" (Task|None)
@@ -31,11 +39,50 @@ def _feed_state(app) -> dict:
     return app[feed_state_key]
 
 
+def _load_page() -> tuple[str, str]:
+    """Read ``index.html`` once and stamp it with a version taken from its content.
+
+    The version is a prefix of the SHA-256 of the file *as committed*, i.e. with the
+    token still in it, so it changes exactly when the page changes and never when the
+    server restarts — which is the distinction ``server_instance_id`` cannot make.
+
+    Body and version are computed together and held for the process' lifetime: the
+    ETag has to describe the bytes actually served, and re-reading per request would
+    let a template edited under a running server go out with the startup version's
+    ETag. The cost is that editing the template needs a restart, which a deploy does
+    anyway.
+
+    :returns: the page with the token substituted, and the version substituted into it.
+    """
+    raw = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+    version = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return raw.replace(PAGE_VERSION_TOKEN, version), version
+
+
+def _if_none_match(request: web.Request, version: str) -> bool:
+    """Whether the client's ``If-None-Match`` already names *version*.
+
+    Parsed by hand because ``web.Response`` does no conditional handling at all: the
+    header is a comma-separated list, and an entry may be quoted, weak-prefixed or
+    ``*``.
+    """
+    for candidate in request.headers.get("If-None-Match", "").split(","):
+        tag = candidate.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag.strip('"') == version:
+            return True
+    return False
+
+
 def create_app(race_state, relay_secret: str = "", restored: bool = False) -> web.Application:
     app = web.Application()
     app[race_state_key] = race_state
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
+    app[page_key], app[page_version_key] = _load_page()
     app[relay_secret_key] = relay_secret
     app[feed_state_key] = {"last_ingest_at": None, "feed_lost": restored, "watchdog_task": None}
 
@@ -52,8 +99,20 @@ def create_app(race_state, relay_secret: str = "", restored: bool = False) -> we
 
 
 async def handle_index(request: web.Request) -> web.Response:
-    html = (TEMPLATES / "index.html").read_text()
-    return web.Response(text=html, content_type="text/html")
+    """Serve the page, stamped with its version and always revalidated.
+
+    ``no-cache`` lets a browser keep the copy but forbids reusing it without asking,
+    so a deploy reaches an idle tab on its next load instead of whenever the copy
+    happens to expire. It does nothing for a tab that is already open — that is what
+    the ``page_version`` handshake in the WebSocket payload is for.
+    """
+    version = request.app[page_version_key]
+    headers = {"Cache-Control": "no-cache", "ETag": f'"{version}"'}
+    if _if_none_match(request, version):
+        return web.Response(status=304, headers=headers)
+    return web.Response(
+        text=request.app[page_key], content_type="text/html", headers=headers
+    )
 
 
 async def handle_api_state(request: web.Request) -> web.Response:
@@ -83,6 +142,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     clients.add(ws)
     state = request.app[race_state_key]
     instance_id = request.app[server_instance_id_key]
+    page_version = request.app[page_version_key]
     log.info("WebSocket client connected (%d total)", len(clients))
     try:
         # Send the full current state on connect, including the server instance ID
@@ -91,6 +151,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             "event": "full",
             "data": state.snapshot(),
             "server_instance_id": instance_id,
+            "page_version": page_version,
         })
         # If the feed is already known to be lost (or timed out before the
         # watchdog's next poll), tell this client immediately so it doesn't
@@ -100,7 +161,12 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         if fs["feed_lost"] or feed_timed_out:
             if not fs["feed_lost"]:
                 fs["feed_lost"] = True  # sync flag so watchdog won't double-fire
-            await ws.send_json({"event": "no_feed", "data": {}, "server_instance_id": instance_id})
+            await ws.send_json({
+                "event": "no_feed",
+                "data": {},
+                "server_instance_id": instance_id,
+                "page_version": page_version,
+            })
         async for _msg in ws:
             pass  # We don't expect client-to-server messages
     finally:
@@ -193,6 +259,7 @@ async def broadcast(app: web.Application, event: str, data: dict):
         "event": event,
         "data": data,
         "server_instance_id": app[server_instance_id_key],
+        "page_version": app[page_version_key],
     })
 
     async def _send(ws):

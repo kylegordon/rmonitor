@@ -161,6 +161,17 @@ to one function it lives in that function's docstring and is deliberately not re
    `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`, and
    `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for the
    broadcast-per-init over the real ingest path.
+6. **The page and the server are two halves of one behaviour, and a long-open tab can run an
+   old half against a new one with its data still live** — nothing looks broken, so nothing
+   reports it. Hence `handle_index` serves `Cache-Control: no-cache` plus an `ETag` derived from
+   the template's content, and every WebSocket payload carries `page_version`; a mismatch
+   **prompts** and never self-reloads, because these displays are on users' own devices.
+   `server_instance_id` is a different signal and does not cover this: it tracks the process, so
+   a client reconnecting after a restart adopts the new id while still running the old page.
+   Guarded by the `test_index_*` tests and `test_ws_full_message_carries_the_page_version` in
+   `tests/test_server.py`, and `test_the_page_version_token_is_substituted_by_the_server` and
+   `test_an_outdated_page_prompts_rather_than_reloading_itself` in
+   `tests/test_repo_invariants.py`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

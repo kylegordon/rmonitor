@@ -228,3 +228,92 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
         "index.html derives a sort condition from the session mode instead of reading "
         f"data.sort_mode: {offenders}"
     )
+
+
+def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
+    """Line numbers, 1-based and inclusive, of the ``if`` block opened by *opener*.
+
+    The template is asserted about as text -- nothing in this repository renders it --
+    so a block is found by indentation: the sole line containing *opener*, through the
+    next line that is a bare closing brace at the same indentation.
+
+    :raises AssertionError: if *opener* does not appear on exactly one line.
+    """
+    starts = [number for number, line in enumerate(lines, 1) if opener in line]
+    assert len(starts) == 1, f"expected one {opener!r} in index.html, found {starts}"
+    start = starts[0]
+    indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
+    end = next(
+        number
+        for number, line in enumerate(lines, 1)
+        if number > start
+        and line.strip() == "}"
+        and len(line) - len(line.lstrip()) == indent
+    )
+    return start, end
+
+
+def test_the_page_version_token_is_substituted_by_the_server() -> None:
+    """Guards AGENTS.md pitfall 6: the two halves of the handshake share one spelling.
+
+    The 2026-09-12 deploy shipped a matched server/page pair with nothing to make them
+    run together, and a phone kept a tab open across it: the old page drew the feed's
+    track position in the POS column while the new server sorted on best lap, so the
+    numbers read out of sequence beside correct times. The fix is a version the server
+    stamps into the page and repeats in every payload — which only works while both
+    sides spell the token and the field identically, and neither spelling is reachable
+    from the other's language.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    server = (ROOT / "server" / "server.py").read_text(encoding="utf-8")
+
+    assert page.count("{{PAGE_VERSION}}") == 1, (
+        "index.html must carry the version token exactly once; the server substitutes "
+        "it at load and a second copy would go out unsubstituted"
+    )
+    assert server.count("{{PAGE_VERSION}}") == 1, (
+        "server.py must name the version token exactly once, in PAGE_VERSION_TOKEN"
+    )
+    assert "msg.page_version" in page, (
+        "index.html no longer reads msg.page_version; an outdated page can no longer "
+        "tell that it is outdated"
+    )
+    assert '"page_version"' in server, (
+        "server.py no longer sends a page_version field; the page has nothing to "
+        "compare its own version against"
+    )
+
+
+def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
+    """Guards AGENTS.md pitfall 6: a stale page offers a reload, it never takes one.
+
+    These displays run on users' own phones and laptops, not on unattended trackside
+    screens, so someone is present to tap and an unrequested reload is worse than an
+    offer. That is a decision about people rather than about code, which makes it
+    exactly the kind nothing else in this repository can hold: no test here renders the
+    template, so the guard is textual.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    lines = page.splitlines()
+
+    first, last = _js_block(lines, "msg.page_version")
+    body = "\n".join(lines[first - 1 : last])
+
+    assert "classList.remove('hidden')" in body, (
+        "the page_version mismatch branch must reveal the reload prompt"
+    )
+    assert "location.reload" not in body, (
+        "an outdated page must prompt, not reload itself: these are users' own devices"
+    )
+
+    # Every reload in the page is either the server-restart guard, which predates this
+    # and reloads on a changed instance id, or the user's own tap on the prompt.
+    restart_guard = range(*_js_block(lines, "msg.server_instance_id !== undefined"))
+    unaccounted = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(lines, 1)
+        if "location.reload" in line
+        and "addEventListener" not in line
+        and number not in restart_guard
+    ]
+    assert not unaccounted, f"unexplained page reload at {unaccounted}"
