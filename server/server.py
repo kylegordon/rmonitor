@@ -52,7 +52,7 @@ def _load_page() -> tuple[str, str]:
     ETag. The cost is that editing the template needs a restart, which a deploy does
     anyway.
 
-    :returns: the page with the token substituted, and the version substituted into it.
+    :returns: the page with the token substituted, and the version it was given.
     """
     raw = (TEMPLATES / "index.html").read_text(encoding="utf-8")
     version = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
