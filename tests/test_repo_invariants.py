@@ -370,3 +370,170 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
         "the reload prompt must sit inside a persistent aria-live region, or its "
         "appearance is silent to assistive technology"
     )
+
+
+#: A ``traefik.http.routers.<name>.<suffix>=<value>`` label line in the deploy compose file.
+_ROUTER_LABEL = re.compile(
+    r"^\s*-\s*traefik\.http\.routers\.([A-Za-z0-9_-]+)\.(\S+?)=(.*)$", re.M
+)
+
+#: The middleware equivalent of :data:`_ROUTER_LABEL`.
+_MIDDLEWARE_LABEL = re.compile(
+    r"^\s*-\s*traefik\.http\.middlewares\.([A-Za-z0-9_-]+)\.(\S+?)=(.*)$", re.M
+)
+
+#: One ``Host(`name`)`` matcher inside a router rule.
+_HOST_MATCHER = re.compile(r"Host\(`([^`]+)`\)")
+
+#: The alias hostnames the ``timing-smart`` router pair exists to serve.
+_SMART_TIMING_HOSTS = frozenset({
+    "live.smart-timing.co.uk",
+    "live-timing.smart-timing.co.uk",
+})
+
+
+def _compose_labels(pattern: re.Pattern[str]) -> dict[str, dict[str, str]]:
+    """Traefik labels in ``docker-compose-deepcore.yaml``, grouped by router or middleware.
+
+    Read as raw text rather than parsed as YAML on purpose: PyYAML is declared in none
+    of the four requirements files, so importing it here would be caught by
+    :func:`test_every_third_party_import_is_declared_in_an_installed_requirements_file`.
+    The labels are flat ``key=value`` strings, so a regex loses nothing.
+
+    :param pattern: :data:`_ROUTER_LABEL` or :data:`_MIDDLEWARE_LABEL`.
+    :return: ``{name: {label_suffix: value}}``, e.g. ``{"timing": {"rule": "Host(...)"}}``.
+    """
+    text = (ROOT / "docker-compose-deepcore.yaml").read_text(encoding="utf-8")
+    grouped: dict[str, dict[str, str]] = {}
+    for name, suffix, value in pattern.findall(text):
+        grouped.setdefault(name, {})[suffix] = value.strip()
+    return grouped
+
+
+def _label_values(labels: dict[str, str], suffix: str) -> frozenset[str]:
+    """The comma-separated values of one Traefik label, empty if the label is absent.
+
+    ``entrypoints`` and ``middlewares`` both take a list, and a router naming two of
+    either is legal.  Comparing the raw string against a single expected value would
+    read ``entrypoints=web,websecure`` as neither, silently dropping that router out of
+    whichever check is iterating.
+    """
+    return frozenset(
+        part.strip() for part in labels.get(suffix, "").split(",") if part.strip()
+    )
+
+
+def _rule_hosts(rule: str) -> frozenset[str]:
+    """The set of hostnames a Traefik router *rule* matches on."""
+    return frozenset(_HOST_MATCHER.findall(rule))
+
+
+def test_every_tls_routed_host_has_an_http_to_https_redirect_router() -> None:
+    """Guards the deploy compose file: every HTTPS host is also reachable over plain HTTP.
+
+    The hostnames are written out twice -- once on the HTTPS router, once on the HTTP
+    router that redirects to it -- and both sites are maintained by hand.  A host added
+    to the first and missed on the second answers ``https://`` correctly while
+    ``http://`` 404s, which is invisible to anyone who only ever types the scheme.  It
+    also breaks the HTTP-01 ACME challenge, which is fetched over port 80.
+    """
+    routers = _compose_labels(_ROUTER_LABEL)
+    redirectors = {
+        name
+        for name, labels in _compose_labels(_MIDDLEWARE_LABEL).items()
+        if labels.get("redirectscheme.scheme") == "https"
+    }
+    assert redirectors, "no redirectscheme middleware is defined in the compose file"
+
+    redirected: set[str] = set()
+    for labels in routers.values():
+        if "web" not in _label_values(labels, "entrypoints"):
+            continue
+        if _label_values(labels, "middlewares") & redirectors:
+            redirected |= _rule_hosts(labels.get("rule", ""))
+
+    tls_routers = {
+        name: _rule_hosts(labels.get("rule", ""))
+        for name, labels in routers.items()
+        if labels.get("tls") == "true"
+    }
+    assert tls_routers, "no TLS router is defined in the compose file"
+    for name, hosts in tls_routers.items():
+        assert hosts, f"router {name} enables TLS but names no Host()"
+        missing = hosts - redirected
+        assert not missing, (
+            f"router {name} serves {sorted(missing)} over HTTPS, but no web-entrypoint "
+            "router redirects those names -- http:// will 404 and HTTP-01 cannot validate"
+        )
+
+
+def test_the_production_hostname_keeps_its_certificate_to_itself() -> None:
+    """Guards the deploy compose file: one certificate per hostname group, never shared.
+
+    Traefik derives one certificate per router from that router's ``Host()`` matchers,
+    and HTTP-01 revalidates *every* identifier on a certificate at every renewal.  The
+    two ``smart-timing.co.uk`` names reach this service by CNAME from a zone a third
+    party owns, which we cannot change and will not be told about if they do.  Folding
+    them onto the ``timing`` router puts all three names on one certificate, so a CNAME
+    that is removed or repointed fails the whole ACME order -- and
+    ``timing.glasgownet.com`` stops renewing.  Production then goes dark roughly thirty
+    days later, with nothing visibly broken in the interim.  Two routers, two orders,
+    two blast radii.
+
+    The resolvers must stay split for the same reason the routers do.  ``letsencrypt``
+    on deepcore is DNS-01 through a Route 53 credential scoped to one hosted zone, so
+    it cannot answer a challenge for ``smart-timing.co.uk`` at all; those names need an
+    HTTP-01 resolver.  Tidying the second router onto its neighbour's resolver produces
+    a configuration that deploys cleanly and then never obtains a certificate -- silent
+    in the repository and silent at runtime, which is why it is asserted here.
+    """
+    routers = _compose_labels(_ROUTER_LABEL)
+
+    assert _rule_hosts(routers["timing"]["rule"]) == {"timing.glasgownet.com"}, (
+        "the timing router must name the canonical hostname and nothing else; it is "
+        f"currently {sorted(_rule_hosts(routers['timing']['rule']))}"
+    )
+
+    owner: dict[str, str] = {}
+    for name, labels in routers.items():
+        if labels.get("tls") != "true":
+            continue
+        for host in sorted(_rule_hosts(labels.get("rule", ""))):
+            assert host not in owner, (
+                f"{host} is served by both the {owner[host]} and {name} TLS routers, "
+                "which couples their certificates' renewals together"
+            )
+            owner[host] = name
+
+    assert routers["timing"]["tls.certresolver"] == "letsencrypt"
+    assert routers["timing-smart"]["tls.certresolver"] == "letsencrypt-http", (
+        "the smart-timing router must use the HTTP-01 resolver; the letsencrypt "
+        "resolver is DNS-01 and cannot issue for a zone we do not control"
+    )
+
+
+def test_the_smart_timing_aliases_are_routed_over_tls() -> None:
+    """Guards the deploy compose file: both alias hostnames are actually served.
+
+    Its two neighbours above are isolation invariants -- they constrain what the routers
+    must not share, and neither notices a hostname that is simply absent.  A typo
+    repeated identically in the HTTPS rule and in the redirect rule is self-consistent,
+    so both pass; and dropping ``tls=true`` takes the router out of the set they iterate
+    over at all, so both pass then too.  Either leaves a hostname this repository
+    advertises in its compose header and in ``up.sh`` dark, with CI green.  The expected
+    host set is therefore pinned here by name rather than derived from the file.
+    """
+    routers = _compose_labels(_ROUTER_LABEL)
+
+    for name in ("timing-smart", "timing-smart-http"):
+        assert name in routers, f"the {name} router is gone from the compose file"
+        assert _rule_hosts(routers[name]["rule"]) == _SMART_TIMING_HOSTS, (
+            f"router {name} serves {sorted(_rule_hosts(routers[name]['rule']))}, but the "
+            f"alias set this repository advertises is {sorted(_SMART_TIMING_HOSTS)}"
+        )
+
+    assert routers["timing-smart"]["tls"] == "true", (
+        "the timing-smart router no longer enables TLS, so the aliases are advertised "
+        "over https:// but answered by Traefik's default certificate"
+    )
+    assert "web" in _label_values(routers["timing-smart-http"], "entrypoints")

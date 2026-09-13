@@ -1,8 +1,11 @@
 ---
 # Server-only compose for deployment on deepcore (lodge.glasgownet.com).
 # The relay component runs on-premise; only the server runs here.
-# Traefik (already running on deepcore) handles TLS and routing to
-# https://timing.glasgownet.com via the traefik_traefik_proxy network.
+# Traefik (already running on deepcore) handles TLS and routing via the
+# traefik_traefik_proxy network, to:
+#   - https://timing.glasgownet.com            (canonical)
+#   - https://live.smart-timing.co.uk          (alias)
+#   - https://live-timing.smart-timing.co.uk   (alias)
 #
 # Usage: see up.sh
 
@@ -33,11 +36,31 @@ services:
       - traefik.http.routers.timing-http.rule=Host(`timing.glasgownet.com`)
       - traefik.http.routers.timing-http.middlewares=timing-https
       - traefik.http.middlewares.timing-https.redirectscheme.scheme=https
-      # HTTPS router (wildcard cert managed by Traefik on deepcore)
+      # HTTPS router (per-router cert from the letsencrypt resolver on deepcore)
       - traefik.http.routers.timing.rule=Host(`timing.glasgownet.com`)
       - traefik.http.routers.timing.entrypoints=websecure
       - traefik.http.routers.timing.tls=true
       - traefik.http.routers.timing.tls.certresolver=letsencrypt
+      # The smart-timing names are a SECOND router pair on purpose, not a `||` added to
+      # the rules above.  Traefik derives one certificate per router from that router's
+      # Host() matchers, and HTTP-01 revalidates every identifier on a certificate at
+      # every renewal.  Folding these names into the `timing` router would put all three
+      # on one certificate, so if either CNAME in smart-timing.co.uk — a third party's
+      # zone we cannot change — is ever removed or repointed, the renewal covering
+      # timing.glasgownet.com fails too, and production goes dark ~30 days later with
+      # nothing visibly broken in the interim.  Two routers, two ACME orders, two blast
+      # radii.  Guarded by test_the_production_hostname_keeps_its_certificate_to_itself.
+      - traefik.http.routers.timing-smart-http.entrypoints=web
+      - traefik.http.routers.timing-smart-http.rule=Host(`live.smart-timing.co.uk`) || Host(`live-timing.smart-timing.co.uk`)
+      - traefik.http.routers.timing-smart-http.middlewares=timing-https
+      - traefik.http.routers.timing-smart.rule=Host(`live.smart-timing.co.uk`) || Host(`live-timing.smart-timing.co.uk`)
+      - traefik.http.routers.timing-smart.entrypoints=websecure
+      - traefik.http.routers.timing-smart.tls=true
+      # letsencrypt-http, NOT letsencrypt: the latter is DNS-01 via a Route 53 credential
+      # scoped to glasgownet.com, which cannot answer a challenge for smart-timing.co.uk.
+      # The HTTP-01 resolver is a PREREQUISITE that must exist on deepcore's Traefik
+      # before this is deployed; it is additive there and changes no existing resolver.
+      - traefik.http.routers.timing-smart.tls.certresolver=letsencrypt-http
       - traefik.http.services.timing.loadbalancer.server.port=8080
       - traefik.http.services.timing.loadbalancer.healthcheck.path=/healthz
       - traefik.http.services.timing.loadbalancer.healthcheck.port=8080

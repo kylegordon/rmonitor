@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Deploy rmonitor:
-#   - server  → deepcore (lodge.glasgownet.com) via Traefik at https://timing.glasgownet.com
+#   - server  → deepcore (lodge.glasgownet.com) via Traefik at
+#               https://timing.glasgownet.com (canonical), and the aliases
+#               https://live.smart-timing.co.uk and https://live-timing.smart-timing.co.uk
 #   - relay   → local machine (connects to timing hardware, POSTs to deepcore server)
 #
 # Prerequisites:
@@ -28,4 +30,6 @@ docker compose up -d --build relay
 
 echo "==> Done."
 echo "    Server:  https://timing.glasgownet.com"
+echo "             https://live.smart-timing.co.uk"
+echo "             https://live-timing.smart-timing.co.uk"
 echo "    Relay:   running locally, posting to ${SERVER_URL:-<unset — check .env>}"
