@@ -59,6 +59,7 @@ _CONNECTED_STYLE = "success"
 _DISCONNECTED_STYLE = "danger"
 _PULSE_STYLE = "info"
 _HEARTBEAT_PULSE_MS = 400
+_HEARTBEAT_PERIOD_MS = 2000
 _SAVE_CONFIRMATION_MS = 1500
 _CLOSING_NOTICE_MS = 1000
 _WINDOW_GEOMETRY_KEY = "GUI_WINDOW_GEOMETRY"
@@ -81,6 +82,8 @@ class RelayGuiApp:
         self.update_var = tk.StringVar(value="")
         self._feed_connected = False
         self._server_connected = False
+        self._feed_line_seen = False
+        self._server_attempt_seen = False
         self._closing = False
 
         self._configure_style()
@@ -107,6 +110,9 @@ class RelayGuiApp:
         # through after(0, ...) guarantees mainloop is already pumping
         # events by the time it (and the thread it spawns) runs.
         self.root.after(0, self._start_runner)
+        self._heartbeat_after_id = self.root.after(
+            _HEARTBEAT_PERIOD_MS, self._heartbeat_tick
+        )
 
     def _start_runner(self) -> None:
         self.runner.start(self._config_from_fields())
@@ -207,17 +213,36 @@ class RelayGuiApp:
             lambda: self.server_status.configure(bootstyle=self._server_style()),
         )
 
+    def _heartbeat_tick(self) -> None:
+        """Pulse each indicator at most once per period, and only if a line
+        or attempt arrived since the last tick – the indicator means "data is
+        flowing", not "one pulse per line".
+        """
+        if self._feed_line_seen:
+            self._feed_line_seen = False
+            self._pulse_feed()
+        if self._server_attempt_seen:
+            self._server_attempt_seen = False
+            self._pulse_server()
+        self._heartbeat_after_id = self.root.after(
+            _HEARTBEAT_PERIOD_MS, self._heartbeat_tick
+        )
+
     def _on_feed_connect(self) -> None:
         self.root.after(0, self._set_feed_connected, True)
 
     def _on_feed_disconnect(self) -> None:
         self.root.after(0, self._set_feed_connected, False)
 
+    # These two run on the runner's thread and deliberately assign a bool
+    # rather than marshal via root.after(): no Tk state is touched, and a
+    # burst of feed lines no longer floods the Tk event queue.
+    # _heartbeat_tick() reads the flags on the Tk thread.
     def _on_feed_line(self) -> None:
-        self.root.after(0, self._pulse_feed)
+        self._feed_line_seen = True
 
     def _on_server_attempt(self) -> None:
-        self.root.after(0, self._pulse_server)
+        self._server_attempt_seen = True
 
     def _on_server_connect(self) -> None:
         self.root.after(0, self._set_server_connected, True)
@@ -320,6 +345,7 @@ class RelayGuiApp:
             self.runner.stop()
         except TimeoutError:
             log.warning("Relay runner did not stop cleanly within its timeout")
+        self.root.after_cancel(self._heartbeat_after_id)
         self.root.destroy()
 
 
