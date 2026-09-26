@@ -1882,3 +1882,20 @@ def test_a_codeless_preload_record_round_trips(state):
     restored = RaceState()
     restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
     assert restored.class_code_preload == state.class_code_preload
+
+
+def test_expiry_of_either_store_dirties_the_state(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC"))
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    state.mark_clean()
+    assert state.prune_expired_class_codes() is False
+    assert not state.dirty
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.dirty
+    assert state.class_codes == {}
+    assert state.class_code_preload["entries"] == []

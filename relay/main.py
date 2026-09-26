@@ -260,7 +260,12 @@ async def main(
         )
         if not cfg.class_codes_enabled:
             log.info("Class codes are disabled")
-            on_class_codes_status(ClassCodeStatus("disabled"))
+            # Guarded as ClassCodeClient guards its own status calls: a raising
+            # hook must not stop the feed, nor loop RelayRunner's respawn.
+            try:
+                on_class_codes_status(ClassCodeStatus("disabled"))
+            except Exception:
+                log.exception("Class-code status callback failed")
             await client.run()
             return
         codes_client = ClassCodeClient(

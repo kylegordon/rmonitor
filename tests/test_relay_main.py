@@ -281,6 +281,21 @@ async def test_disabled_class_codes_report_a_disabled_status(fake_sources):
     assert seen == [ClassCodeStatus("disabled")]
 
 
+@pytest.mark.asyncio
+async def test_a_raising_disabled_status_hook_does_not_stop_the_feed(fake_sources, caplog):
+    def on_status(status):
+        raise RuntimeError("window closing")
+
+    task = asyncio.ensure_future(relay_main.main(
+        _relay_config(class_codes_enabled=False), on_class_codes_status=on_status,
+    ))
+    await asyncio.sleep(0.05)
+    assert not task.done()  # the feed is running
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert "status callback failed" in caplog.text
+
+
 def test_class_code_status_reaches_the_runner_callback(fake_sources):
     status = ClassCodeStatus("connected", preloaded=3)
     fake_sources["status"] = status

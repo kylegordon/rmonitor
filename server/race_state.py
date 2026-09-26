@@ -554,6 +554,21 @@ class RaceState:
         self._dirty = True
         return "class_codes"
 
+    def prune_expired_class_codes(self) -> bool:
+        """Drop expired pushed codes and an expired preload; return whether any went.
+
+        A snapshot prunes too, but only runs once something else dirtied the
+        state: an idle page would otherwise show a code past its TTL.  So the
+        broadcast loop calls this every interval, and an expiry marks the
+        state dirty.
+        """
+        now = time.time()
+        expired = self._prune_class_codes(now)
+        expired = self._prune_class_code_preload(now) or expired
+        if expired:
+            self._dirty = True
+        return expired
+
     def _prune_class_code_preload(self, now: float) -> bool:
         """Drop the preload once past its TTL; return whether it went."""
         stamp = self.class_code_preload["received_at"]

@@ -441,6 +441,29 @@ async def test_broadcast_if_dirty_sends_one_update_when_the_feed_is_live(client,
 
 
 @pytest.mark.asyncio
+async def test_an_expired_preload_is_broadcast_on_an_idle_page(client, app, monkeypatch):
+    """Nothing else may dirty the state for hours; expiry itself must reach the page."""
+    import server.race_state as rs
+    from server.server import broadcast_if_dirty, race_state_key
+
+    state = app[race_state_key]
+    await _post_car_7_and(client, _preload_msg())
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        await broadcast_if_dirty(app)
+        await ws.receive_json(timeout=1.0)
+        assert await broadcast_if_dirty(app) is False  # idle
+        later = time.time() + rs._CLASS_CODE_TTL_SECONDS + 1
+        monkeypatch.setattr(rs.time, "time", lambda: later)
+        assert await broadcast_if_dirty(app) is True
+        msg = await ws.receive_json(timeout=1.0)
+    assert msg["event"] == "update"
+    car = next(e for e in msg["data"]["entries"] if e["reg_number"] == "7")
+    assert car["class_code"] == ""
+    assert msg["data"]["class_codes_available"] is False
+
+
+@pytest.mark.asyncio
 async def test_feed_restored_reset_keeps_class_codes(client, app):
     from server.server import race_state_key
 

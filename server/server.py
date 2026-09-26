@@ -281,6 +281,7 @@ async def broadcast_if_dirty(app: web.Application) -> bool:
     broadcasts it whole.
     """
     state = app[race_state_key]
+    state.prune_expired_class_codes()
     if not state.dirty or _feed_state(app)["feed_lost"]:
         return False
     # Cleared *before* awaiting the broadcast, not after, so a mutation that
