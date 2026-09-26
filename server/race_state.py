@@ -77,6 +77,8 @@ _PRELOAD_OPTIONAL_FIELDS = ("registration_id", "number")
 _RUN_FIELDS = ("run_id", "group_id", "name")
 # A run or group id as the timing host writes it, ``0x40002805``.
 _RUN_ID = re.compile(r"0x[0-9A-Fa-f]{1,8}")
+# The tag on every push, whatever its run; lowercased like a scope's tags.
+_ALL_PUSHES_TAG = "0x80000000"
 
 
 def _interval_seconds(value: str) -> float | None:
@@ -260,7 +262,22 @@ class RaceState:
         yet.  It is not noise, though — 95 marks a session's end (see
         :func:`relay.rmonitor_client._parse_run`), so this is where a reliable
         session-boundary signal would be picked up if one is ever needed.
+
+        A change of description to one other than the started run's name
+        discards that run: the session it announced is over, and run names
+        repeat, so a later session of the same name that the relay never saw
+        start must not inherit its id.  Only a change counts — ``$B`` repeats
+        many times within one session, and a run can be announced before its
+        ``$B`` arrives.
         """
+        run = self.class_code_run
+        if (
+            msg["description"] != self.run_description
+            and run is not None
+            and run["name"] != msg["description"]
+        ):
+            self.class_code_run = None
+            self.class_codes_revision += 1
         self.run_description = msg["description"]
         self._dirty = True
         return "run"
@@ -594,10 +611,16 @@ class RaceState:
         a run id not in the host's ``0x…`` form, or already past
         :data:`_CLASS_CODE_TTL_SECONDS` is ignored.
         """
-        run_id = msg.get("run_id") or ""
-        name = msg.get("name") or ""
+        run_id, name = msg.get("run_id"), msg.get("name")
         age = _entry_age(msg.get("age_seconds"))
-        if not name or not _RUN_ID.fullmatch(run_id) or age > _CLASS_CODE_TTL_SECONDS:
+        # _coerce_scalars leaves lists and dicts as they are.
+        if (
+            not isinstance(run_id, str)
+            or not isinstance(name, str)
+            or not name
+            or not _RUN_ID.fullmatch(run_id)
+            or age > _CLASS_CODE_TTL_SECONDS
+        ):
             return None
         log.info("Timing host started run %s %r", run_id, name)
         self.class_code_run = {"run_id": run_id, "name": name, "received_at": time.time() - age}
@@ -641,10 +664,12 @@ class RaceState:
         group = self.class_code_preload["run_group"].get(run_id.lower())
         if group:
             tags.add(group)
+        # It tags every push, so it would admit them all.
+        tags.discard(_ALL_PUSHES_TAG)
         return run_id, frozenset(tags)
 
     def prune_expired_class_codes(self) -> bool:
-        """Drop expired pushed codes and an expired preload; return whether any went.
+        """Drop expired pushed codes, preload and started run; return whether any went.
 
         A snapshot calls this too, but snapshots run only once something else
         dirtied the state: an idle page would otherwise show a code past its
@@ -654,6 +679,11 @@ class RaceState:
         now = time.time()
         expired = self._prune_class_codes(now)
         expired = self._prune_class_code_preload(now) or expired
+        run = self.class_code_run
+        if run is not None and now - run["received_at"] > _CLASS_CODE_TTL_SECONDS:
+            # Its expiry changes the scope, so an idle page must hear of it.
+            self.class_code_run = None
+            expired = True
         if expired:
             self.class_codes_revision += 1
             self._dirty = True
@@ -888,6 +918,8 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
+        # Before the scope is chosen: an expired started run changes it.
+        self.prune_expired_class_codes()
         scope = self._class_code_scope()
         scope_id = scope[0] if scope else ""
         if scope_id != self._logged_scope:

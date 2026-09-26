@@ -1241,3 +1241,27 @@ async def test_a_failed_run_delivery_is_retried_and_a_newer_run_replaces_it(monk
     assert client._run is None
     assert len(opened) == 1
     assert sleeps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_id, forwarded", [
+    (0x40002805, []),
+    (0x40002804, ["0x40002805"]),
+])
+async def test_a_run_stopped_before_its_start_was_delivered_is_not_forwarded(
+    monkeypatch, stopped_id, forwarded
+):
+    """Only the matching stop clears it; another run's stop leaves it alone."""
+    gate = asyncio.Event()
+    data = _run_state() + _run_state("Race 5", run_id=stopped_id, state="stopped")
+    _harness(monkeypatch, [(ChunkReader([IDENT_FRAME, gate, data]), FakeWriter())])
+    calls, on_batch = _recording()
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert [c["run_id"] for c in calls] == forwarded

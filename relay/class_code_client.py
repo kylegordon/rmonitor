@@ -891,6 +891,10 @@ class ClassCodeClient:
         for run in self._run_parser.feed(data):
             if run.state != "started":
                 log.debug("Run %s %r is %s", run.run_id, run.name, run.state)
+                # A run that stopped before its start was delivered is not
+                # running; a newer started run is left alone.
+                if self._run is not None and self._run["run_id"] == run.run_id:
+                    self._run = None
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
             self._run = {"run_id": run.run_id, "name": run.name, "_observed": time.monotonic()}

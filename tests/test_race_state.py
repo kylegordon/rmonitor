@@ -2129,6 +2129,9 @@ def test_class_code_run_survives_init_and_round_trips(state):
 @pytest.mark.parametrize("msg", [
     {"run_id": "0x40002806", "name": ""},
     {"run_id": "Race 7", "name": "Race 7 - 2nd Race"},
+    {"run_id": ["0x40002806"], "name": "Race 7 - 2nd Race"},
+    {"run_id": "0x40002806", "name": {"text": "Race 7 - 2nd Race"}},
+    {"name": "Race 7 - 2nd Race"},
     {"run_id": "0x40002806", "name": "Race 7 - 2nd Race", "age_seconds": 13 * 3600},
 ])
 def test_a_malformed_class_code_run_is_ignored(state, msg):
@@ -2143,3 +2146,50 @@ def test_class_code_run_does_not_make_stale_race_state_look_fresh(state, monkeyp
     monkeypatch.setattr(rs.time, "time", lambda: stale + 3600)
     assert _started(state) == "class_codes"
     assert state.last_updated == stale
+
+
+def test_the_tag_on_every_push_is_never_a_scope(state):
+    _runs_preload(state, _run_row(group_id="0x80000000"))
+    _session(state)
+    _started(state)
+    assert state._class_code_scope() == ("0x40002806", frozenset({"0x40002806"}))
+    _car_in_class(state, "72", "5588219", "Classic K")
+    _codes(state, "0x80000000", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
+    assert _entry_for(state.snapshot(), "72")["class_code"] == ""
+
+
+def test_a_session_change_discards_the_started_run_it_does_not_name(state):
+    """Run names repeat: a later same-named session the relay never saw start
+    must not inherit the earlier run's id."""
+    _session(state)
+    _started(state)
+    _session(state)  # $B repeats within a session
+    assert state.class_code_run is not None
+    _session(state, "Race 8")
+    assert state.class_code_run is None
+    _session(state)
+    assert state.snapshot()["class_code_scope"] == ""
+
+
+def test_a_run_announced_before_its_session_is_kept(state):
+    _session(state, "Race 6 - AMENDED GRID")
+    _started(state)
+    _session(state)
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+
+
+def test_an_expired_started_run_dirties_the_state(state, monkeypatch):
+    """An idle page must drop the scope when the run expires."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _session(state)
+    _started(state)
+    state.mark_clean()
+    assert state.prune_expired_class_codes() is False
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.dirty
+    assert state.class_code_run is None
+    assert state.snapshot()["class_code_scope"] == ""
