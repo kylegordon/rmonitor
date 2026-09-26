@@ -1026,3 +1026,14 @@ async def test_a_raising_status_callback_does_not_stop_the_client(monkeypatch, c
     assert len(opened) == 1
     assert sleeps == []
     assert "status callback failed" in caplog.text
+
+
+def test_a_marker_inside_model_bytes_is_not_taken_for_a_push():
+    """Model bytes go through the push parser so interleaved pushes are kept;
+    the marker alone, without a record's framing and header, yields nothing."""
+    body = b"\x00\x13model-internal\x00table\x01"
+    model = (
+        _registry_record() + b"datamanager" + struct.pack("<I", len(body)) + body
+        + b"datamanager\x02" + _registry_record(tx=22)
+    )
+    assert ccc.PushParser().feed(model) == []

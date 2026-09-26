@@ -615,7 +615,13 @@ class ClassCodeClient:
     async def _pull_registry(self, reader, writer) -> None:
         # Part of the model answers record 3 and the rest record 4, so every
         # byte read from record 3 on belongs to it — and still goes through
-        # _absorb, so a push arriving meanwhile is kept.
+        # _absorb, so a push arriving meanwhile is kept.  So does the rest of
+        # a pull cut short, read by the hold loop: pushes interleave with the
+        # model, and discarding the tail would lose them.  Model bytes are not
+        # mistaken for pushes, because PushParser accepts a record only with
+        # its length framing and its "Competitor … [run]:" header — the marker
+        # does occur inside a model, but in the pulls measured no such
+        # occurrence formed a record.
         model = bytearray()
         try:
             async with asyncio.timeout(self.model_cap):
