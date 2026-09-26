@@ -646,6 +646,11 @@ class RaceState:
         are the run id and its group id, lowercased: pushes are tagged with
         either, and a save fans out one push per tag.  *None* — no
         description, or no run by that name — leaves pushes unscoped.
+
+        A closing ``$B,95`` keeps its session in scope until the next
+        session's ``$B``: the board still shows that session's cars, so its
+        own run is the right filter, and going unscoped would readmit every
+        other run's pushes.
         """
         desc = self.run_description
         if not desc:
