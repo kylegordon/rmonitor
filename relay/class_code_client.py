@@ -289,6 +289,12 @@ class ClassCodeClient:
     backoff; :meth:`run` never raises anything but cancellation, so it can
     run beside the ``:50000`` feed without taking it down.  The timing knobs
     exist so tests run fast.
+
+    Delivery runs as a task of its own, never inline in the hold loop:
+    *on_batch* may spend minutes retrying an HTTP error, and a hold loop
+    waiting on it would send no keepalive, so the timing host would drop the
+    connection after ~30 s and the reconnect would cost the operator another
+    on-screen notice.  At most one delivery is in flight at a time.
     """
 
     def __init__(
@@ -324,6 +330,7 @@ class ClassCodeClient:
         self._retry_delay = retry_initial
         # Event-loop time before which a failed batch is not re-sent.
         self._retry_at = 0.0
+        self._delivery: asyncio.Task | None = None
         self._parser = PushParser()
         self._pending: dict[str, dict[str, dict]] = {}
         self._keepalive = b""
@@ -345,15 +352,27 @@ class ClassCodeClient:
                 finally:
                     survived = time.monotonic() - held_from >= self.keepalive_interval
             except asyncio.CancelledError:
+                if self._delivery is not None:
+                    self._delivery.cancel()
                 await self._close(writer)
                 raise
             except (ConnectionError, OSError, HandshakeError, TimeoutError) as exc:
                 log.warning("Class-code connection failed: %s", exc)
             except Exception:
                 log.exception("Class-code client: unexpected error – reconnecting after backoff")
-            # A burst cut short by a disconnect is still delivered.
-            await self._flush()
             await self._close(writer)
+            # A burst cut short by a disconnect is still delivered — after any
+            # delivery already in flight, never beside it.
+            try:
+                if self._delivery is not None:
+                    await self._delivery
+                    self._delivery = None
+                if self._pending:
+                    await self._flush()
+            except asyncio.CancelledError:
+                if self._delivery is not None:
+                    self._delivery.cancel()
+                raise
             if survived:
                 delay = self.reconnect_initial
             log.info("Reconnecting to class codes in %.0fs", delay)
@@ -419,7 +438,11 @@ class ClassCodeClient:
         while True:
             deadline = next_keepalive
             if self._pending:
-                deadline = min(deadline, max(last_rx + self.flush_quiet, self._retry_at))
+                if self._delivering():
+                    # Re-check once the delivery in flight may have finished.
+                    deadline = min(deadline, loop.time() + self.flush_quiet)
+                else:
+                    deadline = min(deadline, max(last_rx + self.flush_quiet, self._retry_at))
             try:
                 data = await asyncio.wait_for(
                     reader.read(65536), timeout=max(0.0, deadline - loop.time())
@@ -432,16 +455,20 @@ class ClassCodeClient:
                     next_keepalive = now + self.keepalive_interval
                 if (
                     self._pending
+                    and not self._delivering()
                     and now - last_rx >= self.flush_quiet
                     and now >= self._retry_at
                 ):
-                    await self._flush()
+                    self._delivery = asyncio.create_task(self._flush())
                 continue
             if not data:
                 log.warning("Class-code connection closed by remote end")
                 return
             self._absorb(data)
             last_rx = loop.time()
+
+    def _delivering(self) -> bool:
+        return self._delivery is not None and not self._delivery.done()
 
     def _absorb(self, data: bytes) -> None:
         for rec in self._parser.feed(data):

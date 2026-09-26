@@ -1536,7 +1536,7 @@ def test_malformed_class_codes_entries_are_skipped(state):
     assert (rec["number"], rec["class_name"], rec["transponder"]) == ("7", "", "1234567")
 
 
-def test_class_codes_round_trip_through_to_dict_and_load_dict(state):
+def test_class_codes_round_trip_through_their_own_dict(state):
     import json
 
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
@@ -1544,14 +1544,16 @@ def test_class_codes_round_trip_through_to_dict_and_load_dict(state):
     _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
     restored = RaceState()
     restored._load_dict(json.loads(json.dumps(state._to_dict())))
+    assert restored.class_codes == {}  # not part of the race-state dict
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
     assert restored.class_codes == state.class_codes
     assert _entry_for(restored.snapshot(), "7")["class_code"] == "SC"
 
 
-def test_load_dict_tolerates_a_malformed_class_code_store(state):
-    state._load_dict({"class_codes": "nonsense"})
+def test_load_class_codes_tolerates_a_malformed_store(state):
+    state.load_class_codes({"class_codes": "nonsense"})
     assert state.class_codes == {}
-    state._load_dict({"class_codes": {
+    state.load_class_codes({"class_codes": {
         "r\te1": {"number": "7", "received_at": "yesterday"},
         "r\te2": "not a dict",
         "r\te3": {"number": "7", "class_name": "Saloon Cup", "transponder": "",
@@ -1561,7 +1563,7 @@ def test_load_dict_tolerates_a_malformed_class_code_store(state):
 
 
 @pytest.mark.parametrize("stamp", ["NaN", "Infinity", "-Infinity", "true"])
-def test_load_dict_drops_a_class_code_with_a_non_finite_timestamp(state, stamp):
+def test_load_class_codes_drops_a_non_finite_timestamp(state, stamp):
     """``json`` decodes these, and a NaN or infinite stamp would never expire."""
     import json
 
@@ -1569,19 +1571,52 @@ def test_load_dict_drops_a_class_code_with_a_non_finite_timestamp(state, stamp):
         '{"class_codes": {"r\\te1": {"number": "7", "class_name": "Saloon Cup",'
         ' "transponder": "1234567", "class_code": "SC", "received_at": %s}}}' % stamp
     )
-    state._load_dict(json.loads(raw))
+    state.load_class_codes(json.loads(raw))
     assert state.class_codes == {}
 
 
-def test_load_dict_caps_a_future_class_code_timestamp_at_now(state, monkeypatch):
+def test_load_class_codes_caps_a_future_timestamp_at_now(state, monkeypatch):
     import server.race_state as rs
 
     monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
-    state._load_dict({"class_codes": {"r\te1": {
+    state.load_class_codes({"class_codes": {"r\te1": {
         "number": "7", "class_name": "Saloon Cup", "transponder": "",
         "class_code": "SC", "received_at": 9_000_000_000.0,
     }}})
     assert state.class_codes["r\te1"]["received_at"] == 1_000_000.0
+
+
+def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path, monkeypatch):
+    """A restart after a quiet gap drops the race state but keeps the codes.
+
+    The race-state store is discarded whole past ``STATE_MAX_AGE``; codes pushed
+    for runs not yet started are never pushed again, so they live in a store of
+    their own that only their per-entry TTL expires.
+    """
+    import server.race_state as rs
+    import server.state_store as ss
+    from server.state_store import JsonFileStateStore
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    monkeypatch.setattr(ss.time, "time", lambda: now[0])
+    race_store = JsonFileStateStore(tmp_path / "state.json", max_age_seconds=900)
+    codes_store = JsonFileStateStore(tmp_path / "state-class-codes.json")
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    race_store.save(state._to_dict())
+    codes_store.save(state.class_codes_to_dict())
+
+    now[0] += 3600  # an hour between sessions, then a restart
+    restored = RaceState()
+    assert race_store.load() == {}
+    restored.load_class_codes(codes_store.load())
+    assert len(restored.class_codes) == 1
+
+    now[0] += rs._CLASS_CODE_TTL_SECONDS  # the entry's own expiry still applies
+    later = RaceState()
+    later.load_class_codes(codes_store.load())
+    assert later.class_codes == {}
 
 
 def test_snapshot_reports_class_codes_available(state):

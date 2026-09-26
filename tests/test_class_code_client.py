@@ -552,6 +552,44 @@ async def test_retry_delay_doubles_while_delivery_fails_and_resets_on_success(mo
 
 
 @pytest.mark.asyncio
+async def test_a_slow_delivery_does_not_hold_up_the_keepalive(monkeypatch):
+    """``on_batch`` can spend minutes in HTTP retries; the socket must stay alive."""
+    gate = asyncio.Event()
+    release = asyncio.Event()
+    reader = ChunkReader([IDENT_FRAME, gate, _push("added", "0x4000AAAA", _fields())])
+    writer = FakeWriter()
+    opened, sleeps = _harness(monkeypatch, [(reader, writer)])
+    started = []
+
+    async def on_batch(msg):
+        started.append(msg)
+        await release.wait()
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch, **{**FAST, "keepalive_interval": 0.05}
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        gate.set()
+        await _until(lambda: started)
+        sent_at_start = len(writer.writes)
+        await asyncio.sleep(0.3)
+        keepalives = len(writer.writes) - sent_at_start
+        # Records pushed during the slow delivery wait for it, not beside it.
+        reader._items.append(_push("modified", "0x4000AAAA", _fields("e2")))
+        await asyncio.sleep(0.2)
+        assert len(started) == 1
+        release.set()
+        await _until(lambda: len(started) >= 2)
+    finally:
+        await _finish(task)
+    assert keepalives >= 3
+    assert len(opened) == 1
+    assert sleeps == []
+    assert [e["entrant_id"] for e in started[1]["entries"]] == ["e2"]
+
+
+@pytest.mark.asyncio
 async def test_unexpected_exception_is_logged_and_retried_not_raised(monkeypatch, caplog):
     opened, sleeps = _harness(monkeypatch, [RuntimeError("boom")])
     client = ccc.ClassCodeClient("timing-host", _collect([]), **FAST)

@@ -769,7 +769,6 @@ class RaceState:
             "competitors": self.competitors,
             "classes": self.classes,
             "leader_time_at_lap": self.leader_time_at_lap,
-            "class_codes": self.class_codes,
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
@@ -793,7 +792,8 @@ class RaceState:
         :meth:`_time_behind_leader`, and both derived columns would go silently
         blank after a restart until the feed re-populated the index.  A
         hand-edited or truncated store degrades to an empty index rather than
-        failing startup, and the class-code registry the same way.
+        failing startup.  The class-code registry is not part of this dict; see
+        :meth:`class_codes_to_dict`.
         """
         self.competitors = data.get("competitors", {})
         self.classes = data.get("classes", {})
@@ -804,6 +804,37 @@ class RaceState:
             }
         except (AttributeError, TypeError, ValueError):
             self.leader_time_at_lap = {}
+        self.track_name = data.get("track_name", "")
+        self.track_length_miles = data.get("track_length_miles")
+        self.run_description = data.get("run_description", "")
+        self.flag = data.get("flag", "")
+        self.race_time = data.get("race_time", "")
+        self.time_of_day = data.get("time_of_day", "")
+        self.time_to_go = data.get("time_to_go", "")
+        self.laps_to_go = data.get("laps_to_go", "")
+        self._is_qualifying = data.get("_is_qualifying", False)
+        self._seen_race_info = data.get("_seen_race_info", False)
+        self.last_updated = data.get("last_updated", time.time())
+        self._dirty = True
+
+    def class_codes_to_dict(self) -> dict:
+        """Serialise the class-code registry for a store of its own.
+
+        It is kept out of :meth:`_to_dict` because the race-state store is
+        discarded whole once it is older than ``STATE_MAX_AGE`` — 15 minutes —
+        and a restart after a quiet gap between sessions would then lose codes
+        pushed for runs not yet started, which are never pushed again.  The
+        registry needs no such cutoff: every entry expires on its own
+        :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
+        """
+        return {"class_codes": self.class_codes}
+
+    def load_class_codes(self, data: dict) -> None:
+        """Restore the registry from :meth:`class_codes_to_dict`'s output.
+
+        A malformed store degrades to an empty registry rather than failing
+        startup, and expired entries are pruned on the way in.
+        """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
         # a corrupt store can neither keep a code forever nor extend its life.
@@ -821,18 +852,6 @@ class RaceState:
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
         self._prune_class_codes(now)
-        self.track_name = data.get("track_name", "")
-        self.track_length_miles = data.get("track_length_miles")
-        self.run_description = data.get("run_description", "")
-        self.flag = data.get("flag", "")
-        self.race_time = data.get("race_time", "")
-        self.time_of_day = data.get("time_of_day", "")
-        self.time_to_go = data.get("time_to_go", "")
-        self.laps_to_go = data.get("laps_to_go", "")
-        self._is_qualifying = data.get("_is_qualifying", False)
-        self._seen_race_info = data.get("_seen_race_info", False)
-        self.last_updated = data.get("last_updated", time.time())
-        self._dirty = True
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
