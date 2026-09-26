@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.18](https://github.com/kylegordon/rmonitor/compare/v0.1.17...v0.1.18) (2026-09-26)
+
+## What's Changed
+* chore(relay): ignore the local :51738 capture directory by @kylegordon in https://github.com/kylegordon/rmonitor/pull/92
+* feat: show class codes read from the timing host's :51738 port by @kylegordon in https://github.com/kylegordon/rmonitor/pull/93
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.17...v0.1.18
+
+
 ## [0.1.17](https://github.com/kylegordon/rmonitor/compare/v0.1.16...v0.1.17) (2026-09-13)
 
 ## What's Changed
