@@ -10,6 +10,7 @@ build/
 venv/
 .env
 captures/*.log
+captures/*/
 data/
 docker-compose.override.yml
 relay/_version.py
