@@ -80,7 +80,7 @@ async def test_post_message_exits_on_timeout():
 @pytest.mark.asyncio
 async def test_post_message_retries_on_5xx_then_succeeds():
     session = FakeSession([503, 200])
-    await relay_main.post_message(session, {"type": "heartbeat"})
+    assert await relay_main.post_message(session, {"type": "heartbeat"}) is True
     assert session.calls == 2
 
 
@@ -94,7 +94,7 @@ async def test_post_message_retries_on_429_then_succeeds():
 @pytest.mark.asyncio
 async def test_post_message_drops_on_400_without_retry_or_exit():
     session = FakeSession([400])
-    await relay_main.post_message(session, {"type": "heartbeat"})
+    assert await relay_main.post_message(session, {"type": "heartbeat"}) is False
     assert session.calls == 1
 
 
@@ -216,6 +216,20 @@ async def test_main_does_not_start_the_class_code_client_when_disabled(fake_sour
         relay_main.main(_relay_config(class_codes_enabled=False)), timeout=2.0
     )
     assert fake_sources["codes_clients"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_class_code_post_is_a_failed_delivery(fake_sources, monkeypatch):
+    """A 401 (say) is dropped for a feed message, but a class-code roster is
+    pushed once, so its rejection must surface for ClassCodeClient to retry."""
+    post = AsyncMock(return_value=False)
+    monkeypatch.setattr(relay_main, "post_message", post)
+    fake_sources["batch"] = {"type": "class_codes", "run_id": "r", "entries": []}
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    assert isinstance(fake_sources["batch_error"], ConnectionError)
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
 
 
 @pytest.mark.asyncio

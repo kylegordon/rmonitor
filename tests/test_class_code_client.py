@@ -552,6 +552,27 @@ async def test_retry_delay_doubles_while_delivery_fails_and_resets_on_success(mo
 
 
 @pytest.mark.asyncio
+async def test_undelivered_entries_are_dropped_once_older_than_the_server_would_keep(monkeypatch):
+    """A batch the server keeps rejecting is not retried for ever."""
+    monkeypatch.setattr(ccc, "MAX_ENTRY_AGE", 0.15)
+    client, _, calls, opened, _ = _failing_client(
+        monkeypatch, set(range(1, 100)), retry_initial=0.03, retry_max=0.03
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+        tried = len(calls)
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert tried >= 2
+    assert len(calls) == tried  # no attempts once the entry aged out
+    assert client._pending == {}
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_slow_delivery_does_not_hold_up_the_keepalive(monkeypatch):
     """``on_batch`` can spend minutes in HTTP retries; the socket must stay alive."""
     gate = asyncio.Event()

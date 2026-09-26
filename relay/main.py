@@ -91,11 +91,13 @@ async def post_message(
     config: RelayConfig | None = None,
     *,
     on_attempt=None,
-) -> None:
+) -> bool:
     """POST a parsed message to the server, retrying on transient HTTP failures.
 
-    Non-retriable responses (400, 401, …) are logged and dropped so that
-    a poison message cannot stall the relay indefinitely. Connection-level
+    Return whether the server accepted it.  Non-retriable responses (400,
+    401, …) are logged and dropped so that a poison message cannot stall the
+    relay indefinitely; the feed path ignores the result, while the class-code
+    path treats ``False`` as a failed delivery and keeps the batch. Connection-level
     failures (DNS, refused connections, timeouts) are not retried here –
     they exit the process so the container restart policy can recover.
 
@@ -127,7 +129,7 @@ async def post_message(
                             resp.status,
                             msg.get("type"),
                         )
-                    return
+                    return resp.status == 200
                 attempt += 1
                 if attempt >= cfg.retry_max_attempts:
                     log.error(
@@ -196,12 +198,16 @@ async def main(
             # an ordinary error, on which ClassCodeClient keeps the batch and
             # retries it.  The :50000 path still exits on the same outage, so
             # nothing is masked.
+            # A rejected POST (a 401 while the relay secret is being corrected,
+            # say) is a failure too: the roster is pushed once and never again.
             try:
-                await post_message(http, msg, cfg, on_attempt=on_server_attempt)
+                accepted = await post_message(http, msg, cfg, on_attempt=on_server_attempt)
             except SystemExit:
+                accepted = False
+            if not accepted:
                 raise ConnectionError(
                     f"could not deliver class codes for run {msg.get('run_id')}"
-                ) from None
+                )
 
         client = RMonitorClient(
             cfg.host,

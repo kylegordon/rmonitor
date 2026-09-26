@@ -88,6 +88,11 @@ IP_SLOT = 71
 
 _IDENTITY_FRAME_PREFIX = b"\x00\x00\x01\x04"
 
+# A kept entry older than this is dropped rather than retried: the server
+# would discard it anyway (its registry TTL is the same 12 hours), and a batch
+# the server keeps rejecting must not be retried for ever.
+MAX_ENTRY_AGE = 12 * 3600
+
 _PUSH_MARKER = b"datamanager"
 # A length beyond this is not a real record: the marker literal turned up
 # inside binary bytes, so the scan skips past it.
@@ -486,6 +491,18 @@ class ClassCodeClient:
         failed = False
         for run_id, by_entrant in pending.items():
             now = time.monotonic()
+            expired = [
+                k for k, e in by_entrant.items() if now - e["_observed"] > MAX_ENTRY_AGE
+            ]
+            if expired:
+                log.warning(
+                    "Dropping %d undelivered class codes for run %s – older than %.0fh",
+                    len(expired), run_id, MAX_ENTRY_AGE / 3600,
+                )
+                for k in expired:
+                    del by_entrant[k]
+            if not by_entrant:
+                continue
             msg = {
                 "type": "class_codes",
                 "run_id": run_id,
