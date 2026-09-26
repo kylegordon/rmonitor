@@ -133,13 +133,24 @@ _PUSH_HEADER = re.compile(
     r"^Competitor (added|automatically added|modified) \[([^\]]*)\]:"
 )
 
-# A registry record opens with its id as a length-prefixed string of 1-8
-# lowercase hex characters, then the constants 0 and 1; the length byte must
-# equal the id's length, which the parser checks.
+# A registry record opens with its id as a length-prefixed string, then the
+# constants 0 and 1; the length byte must equal the id's length, which the
+# parser checks.  Ids are usually 1-8 lowercase hex characters, and some are
+# ``Competitio<n>``, so any alphanumeric id of up to 32 characters is accepted.
 _REGISTRY_ANCHOR = re.compile(
-    rb"([\x01-\x08])\x00\x00\x00([0-9a-f]{1,8})\x00\x00\x00\x00\x01\x00\x00\x00"
+    rb"([\x01-\x20])\x00\x00\x00([0-9A-Za-z]{1,32})\x00\x00\x00\x00\x01\x00\x00\x00"
 )
 _MAX_REGISTRY_STR = 255
+
+# A run-table record in the model: u32 1, 12 bytes, the run id (0x4000xxxx),
+# u32 flags, the group id (0x8000xxxx), then the run name as a ``str``.
+_RUN_ANCHOR = re.compile(
+    rb"\x01\x00\x00\x00.{12}(..\x00\x40)(....)(..\x00\x80)", re.DOTALL
+)
+
+# The run-state notice the host announces on the live stream; see RunStateParser.
+_RUN_STATE_MARKER = b"\x0e\x00\x00\x00runstatechange"
+_RUN_STATE_TEXT = re.compile(r"^Run '(.*)' \[(0x[0-9A-Fa-f]+)\] is (started|stopped)")
 
 
 class HandshakeError(Exception):
@@ -277,6 +288,62 @@ class PushParser:
         return out
 
 
+class RunState(NamedTuple):
+    """One run-state change the host announced."""
+
+    run_id: str
+    name: str
+    state: str
+
+
+class RunStateParser:
+    """Incrementally parse run-state notices out of the ``:51738`` byte stream.
+
+    Each notice is the length-prefixed literal ``runstatechange``, a u32
+    little-endian length, then that many bytes of text such as ``Run 'Race 6
+    - AMENDED GRID' [0x40002805] is started - Event '…'``; the id is uppercase
+    hex, as in the pushes' run tags.  Notices travel outside the
+    ``datamanager`` framing, so :class:`PushParser` never sees them, and the
+    model a pull returns holds none.  The started run's name equals the
+    rMonitor feed's ``$B`` description, whereas the model's run table can
+    still hold an older name for the same run.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def feed(self, data: bytes) -> list[RunState]:
+        """Absorb *data* and return every run-state notice now complete."""
+        self._buf += data
+        out: list[RunState] = []
+        while True:
+            i = self._buf.find(_RUN_STATE_MARKER)
+            if i < 0:
+                # Keep a tail that may hold the start of a straddling marker.
+                del self._buf[:-(len(_RUN_STATE_MARKER) - 1)]
+                break
+            start = i + len(_RUN_STATE_MARKER)
+            if len(self._buf) < start + 4:
+                del self._buf[:i]
+                break
+            (n,) = struct.unpack_from("<I", self._buf, start)
+            if n > _MAX_RECORD_LEN:
+                del self._buf[:i + 1]
+                continue
+            end = start + 4 + n
+            if len(self._buf) < end:
+                del self._buf[:i]
+                break
+            text = bytes(self._buf[start + 4:end]).decode("utf-8", errors="replace")
+            del self._buf[:end]
+            m = _RUN_STATE_TEXT.match(text)
+            if m is None:
+                log.debug("Skipping an unrecognised run-state notice: %.60r", text)
+                continue
+            out.append(RunState(m.group(2), m.group(1), m.group(3)))
+        return out
+
+
 def _parse_body(body: bytes) -> PushRecord | None:
     # The same decoding RMonitorClient applies to :50000, so the server's
     # exact class-name gate compares like with like.
@@ -291,10 +358,11 @@ def _parse_body(body: bytes) -> PushRecord | None:
 def record_entry(rec: PushRecord) -> dict | None:
     """Return the join fields of *rec*, or *None* if it has no usable code.
 
-    The fields, 0-indexed: 0 entrant id, 1 a second id, 2 car number,
-    3 class name, 4 transponder, 5 ``'0'``, 6 transponder again, 7 first
-    name, 8 last name, 9 car model, 10 engine capacity, 11 class code, 12-18
-    empty.  Records have been 19 fields in every capture.  The code is taken
+    The fields, 0-indexed: 0 entrant id (the Car/Bike Reg, the entrant's
+    registration id), 1 Driver Reg (per registration, not per person), 2 car
+    number, 3 class name, 4 transponder, 5 ``'0'``, 6 transponder again,
+    7 first name, 8 last name, 9 car model, 10 engine capacity, 11 class
+    code, 12-18 empty.  Records have been 19 fields in every capture.  The code is taken
     only from field 11 — never derived from the class name, whose mapping to
     codes is many-to-many.
     """
@@ -352,7 +420,7 @@ def parse_registry(buf: bytes) -> list[dict]:
     records.  Each registry record is laid out as below — integers are u32
     little-endian, and a ``str`` is a u32 length then that many bytes::
 
-        str   registry id     1-8 lowercase hex characters
+        str   Car/Bike Reg    the registration id; 1-32 alphanumeric characters
         u32   0
         u32   1
         u32   transponder
@@ -365,8 +433,15 @@ def parse_registry(buf: bytes) -> list[dict]:
         5 bytes
         str   car number
         str   class name      exact text, as the feed's class description
+        8 bytes               zero in every pull measured; not read
+        str   Driver Reg      not read
+        str   first name      not read
+        str   last name       not read
+        str   driver code     not read
         ...                   not read
 
+    The Car/Bike Reg is unique within a pull and names one registration,
+    which the host edits in place, so its number and class are current.
     Records are found by scanning for the id and the two constants after it,
     so binary around them is skipped; a record that runs past the buffer or
     carries a string longer than 255 bytes is skipped too.  The class code is
@@ -375,10 +450,11 @@ def parse_registry(buf: bytes) -> list[dict]:
     transponder 0 is dropped.  A record with no code is kept, its code
     ``""``: the server accepts a registry code only when every record in the
     class carries it, and a codeless record is one that does not.  The rest
-    are returned deduplicated as ``{"transponder", "class_name",
-    "class_code"}`` dicts in order of first appearance.
+    are returned deduplicated as ``{"registration_id", "number",
+    "transponder", "class_name", "class_code"}`` dicts in order of first
+    appearance.
     """
-    seen: dict[tuple[str, str, str], None] = {}
+    seen: dict[tuple[str, str, str, str, str], None] = {}
     for m in _REGISTRY_ANCHOR.finditer(buf):
         if m.group(1)[0] != len(m.group(2)):
             continue
@@ -394,17 +470,69 @@ def parse_registry(buf: bytes) -> list[dict]:
             for _ in range(6):
                 cur.string()
             cur.skip(5)
-            cur.string()  # car number
+            number = cur.string()
             class_name = cur.string()
         except _ShortRecord:
             continue
         if not class_name or transponder == 0:
             continue
-        seen[(str(transponder), class_name, code)] = None
+        reg_id = m.group(2).decode("ascii")
+        seen[(reg_id, number, str(transponder), class_name, code)] = None
     return [
-        {"transponder": tx, "class_name": name, "class_code": code}
-        for tx, name, code in seen
+        {
+            "registration_id": reg_id,
+            "number": number,
+            "transponder": tx,
+            "class_name": name,
+            "class_code": code,
+        }
+        for reg_id, number, tx, name, code in seen
     ]
+
+
+def parse_runs(buf: bytes) -> list[dict]:
+    """Return the run table records found anywhere in *buf*.
+
+    *buf* is the same model :func:`parse_registry` reads.  Each run record
+    is laid out as below, integers u32 little-endian::
+
+        u32   1
+        12 bytes              not read
+        u32   run id          0x4000xxxx
+        u32   flags           not read
+        u32   group id        0x8000xxxx: the championship the run belongs to
+        str   run name
+
+    The table spans many past meetings, and run names repeat across them —
+    one name can belong to dozens of runs — so a name alone rarely picks one
+    run.  A run's name can also be edited after the table was pulled.  Ids
+    are returned as ``0x`` plus eight uppercase hex digits, the form the
+    pushes' run tags take.  A name that is empty, longer than 255 bytes or
+    not printable is skipped, as is a record running past the buffer.  The
+    rest are returned as ``{"run_id", "group_id", "name"}`` dicts, one per
+    run id, the first kept, in order of first appearance.
+    """
+    runs: dict[str, dict] = {}
+    for m in _RUN_ANCHOR.finditer(buf):
+        (rid,) = struct.unpack("<I", m.group(1))
+        (gid,) = struct.unpack("<I", m.group(3))
+        cur = _Cursor(buf, m.end())
+        try:
+            name = cur.string()
+        except _ShortRecord:
+            continue
+        if not name or not name.isprintable():
+            continue
+        run_id = f"0x{rid:08X}"
+        runs.setdefault(
+            run_id, {"run_id": run_id, "group_id": f"0x{gid:08X}", "name": name}
+        )
+    return list(runs.values())
+
+
+def _parse_model(buf: bytes) -> tuple[list[dict], list[dict]]:
+    # Both parses in one worker-thread hop.
+    return parse_registry(buf), parse_runs(buf)
 
 
 async def _backoff_sleep(delay: float) -> None:
@@ -467,6 +595,12 @@ class ClassCodeClient:
     raises anything but cancellation, so it can run beside the ``:50000``
     feed without taking it down.  The timing knobs exist so tests run fast.
 
+    The host also announces on the stream each run it starts
+    (:class:`RunStateParser`).  The latest started run is handed to
+    *on_batch* as a ``class_code_run`` message, after any preload and before
+    the pushes of the same burst, and retried like them; the server uses it
+    to keep only the running run's pushes.  A stopped run is not forwarded.
+
     *on_status*, if given, is called with a :class:`ClassCodeStatus` on each
     connect attempt, completed handshake, connection failure, delivery and
     failed delivery; an exception it raises is logged and ignored.
@@ -520,7 +654,10 @@ class ClassCodeClient:
         self._retry_at = 0.0
         self._delivery: asyncio.Task | None = None
         self._parser = PushParser()
+        self._run_parser = RunStateParser()
         self._pending: dict[str, dict[str, dict]] = {}
+        # The last run announced as started and not yet delivered.
+        self._run: dict | None = None
         # The preload not yet delivered: its entries and the monotonic time
         # its pull finished.
         self._preload: dict | None = None
@@ -540,6 +677,7 @@ class ClassCodeClient:
             survived = False
             reason = "connection closed by the timing host"
             self._parser = PushParser()
+            self._run_parser = RunStateParser()
             try:
                 log.info("Connecting to class codes at %s:%s", self.host, self.port)
                 self._status("connecting")
@@ -649,7 +787,7 @@ class ClassCodeClient:
             log.warning("Class-code registry pull incomplete – not forwarding a preload")
             return
         pulled_at = time.monotonic()
-        entries = await asyncio.to_thread(parse_registry, bytes(model))
+        entries, runs = await asyncio.to_thread(_parse_model, bytes(model))
         if not entries:
             log.warning(
                 "Class-code registry pull of %d bytes held no usable records – "
@@ -659,7 +797,7 @@ class ClassCodeClient:
         # Measured as the POST body will be, with an age as wide as a
         # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({
-            "type": "class_code_preload", "entries": entries,
+            "type": "class_code_preload", "entries": entries, "runs": runs,
             "age_seconds": MAX_ENTRY_AGE - 0.001,
         }))
         if size > MAX_PRELOAD_BYTES:
@@ -670,10 +808,10 @@ class ClassCodeClient:
             )
             return
         log.info(
-            "Class-code registry: %d bytes pulled, %d records with a class",
-            len(model), len(entries),
+            "Class-code registry: %d bytes pulled, %d records with a class, %d runs",
+            len(model), len(entries), len(runs),
         )
-        self._preload = {"entries": entries, "_observed": pulled_at}
+        self._preload = {"entries": entries, "runs": runs, "_observed": pulled_at}
 
     async def _exchange(
         self, reader, writer, record: bytes, idle: float, *, limit: int | None = None
@@ -740,7 +878,7 @@ class ClassCodeClient:
         return self._delivery is not None and not self._delivery.done()
 
     def _has_pending(self) -> bool:
-        return bool(self._pending) or self._preload is not None
+        return bool(self._pending) or self._preload is not None or self._run is not None
 
     def _absorb(self, data: bytes) -> None:
         for rec in self._parser.feed(data):
@@ -750,13 +888,22 @@ class ClassCodeClient:
                 continue
             entry["_observed"] = time.monotonic()
             self._pending.setdefault(rec.run_id, {})[entry["entrant_id"]] = entry
+        for run in self._run_parser.feed(data):
+            if run.state != "started":
+                log.debug("Run %s %r is %s", run.run_id, run.name, run.state)
+                continue
+            log.info("Timing host started run %s %r", run.run_id, run.name)
+            self._run = {"run_id": run.run_id, "name": run.name, "_observed": time.monotonic()}
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}
         preload, self._preload = self._preload, None
         failed = False
+        run, self._run = self._run, None
         if preload is not None:
             failed = not await self._deliver_preload(preload)
+        if run is not None:
+            failed = not await self._deliver_run(run) or failed
         for run_id, by_entrant in pending.items():
             now = time.monotonic()
             expired = [
@@ -817,6 +964,7 @@ class ClassCodeClient:
             await self.on_batch({
                 "type": "class_code_preload",
                 "entries": entries,
+                "runs": preload.get("runs", []),
                 "age_seconds": round(age, 3),
             })
         except Exception:
@@ -824,6 +972,33 @@ class ClassCodeClient:
             self._preload = preload
             return False
         self._preloaded = len(entries)
+        self._delivered()
+        return True
+
+    async def _deliver_run(self, run: dict) -> bool:
+        """Hand the started *run* to *on_batch*; return whether nothing is left to retry.
+
+        A failed delivery is kept for the retry unless a newer run has been
+        announced meanwhile, which replaces it.
+        """
+        age = time.monotonic() - run["_observed"]
+        if age > MAX_ENTRY_AGE:
+            log.warning(
+                "Dropping an undelivered run state – older than %.0fh", MAX_ENTRY_AGE / 3600
+            )
+            return True
+        try:
+            await self.on_batch({
+                "type": "class_code_run",
+                "run_id": run["run_id"],
+                "name": run["name"],
+                "age_seconds": round(age, 3),
+            })
+        except Exception:
+            log.exception("Could not forward the started run %s", run["run_id"])
+            if self._run is None:
+                self._run = run
+            return False
         self._delivered()
         return True
 
