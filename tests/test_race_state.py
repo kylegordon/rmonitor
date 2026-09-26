@@ -1431,6 +1431,25 @@ def test_class_code_is_blank_when_number_and_class_match_disagreeing_codes(state
     assert snap["class_code_missing"] == 1
 
 
+def test_class_code_transponder_match_requires_the_same_class(state, monkeypatch):
+    """A driver in two classes on one transponder gets each class's own code."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    now[0] += 60  # the later push is for the driver's other class
+    _codes(state, "0x4000BBBB", _code_entry("e9", "44", "Hot Hatch", "HH", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # With only the other class's push, the transponder alone is not enough.
+    state.class_codes = {k: v for k, v in state.class_codes.items() if v["class_code"] == "HH"}
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_code_missing"] == 1
+
+
 def test_class_code_is_never_matched_on_a_class_name_prefix(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Modsports A2"})
     _add_car(state, "7")

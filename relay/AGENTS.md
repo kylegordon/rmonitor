@@ -29,5 +29,6 @@ one season the mapping from names to codes is many-to-many. A record without a c
 dropped, and the join to rMonitor competitors lives in the server, where a miss is blank.
 Guarded by `test_record_entry_skips_short_or_codeless_records` in
 `tests/test_class_code_client.py`, and by
-`test_class_code_is_blank_when_number_and_class_match_disagreeing_codes` and
-`test_class_code_is_never_matched_on_a_class_name_prefix` in `tests/test_race_state.py`.
+`test_class_code_is_blank_when_number_and_class_match_disagreeing_codes`,
+`test_class_code_is_never_matched_on_a_class_name_prefix` and
+`test_class_code_transponder_match_requires_the_same_class` in `tests/test_race_state.py`.

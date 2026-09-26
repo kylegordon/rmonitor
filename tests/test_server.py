@@ -273,14 +273,15 @@ async def test_feed_restored_reset_keeps_class_codes(client, app):
     resp = await client.post("/api/ingest", json=_CLASS_CODES_MSG, headers=headers)
     assert resp.status == 200
     app[feed_state_key]["feed_lost"] = True
-    resp = await client.post(
-        "/api/ingest",
-        json={"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
-              "first_name": "Ann", "last_name": "Example", "nationality": "",
-              "class_number": "1"},
-        headers=headers,
-    )
-    assert resp.status == 200
+    # The first message after the outage triggers the reset; the feed then
+    # repopulates the class and the car.
+    for msg in (
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
     assert app[feed_state_key]["feed_lost"] is False
     # The reset dropped the fixture's car 1, so car 7 is the only entry.
     (car,) = app[race_state_key].snapshot()["entries"]

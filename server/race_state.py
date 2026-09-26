@@ -454,12 +454,10 @@ class RaceState:
 
         The registry is keyed by run id and entrant id, last push wins, and it
         accumulates across runs: pushes cover runs other than the one on the
-        rMonitor feed.  What keeps another run's record off a car differs by
-        layer in :meth:`_resolve_class_codes` — a transponder match takes the
-        latest push for that transponder whatever its run or class, and only
-        the number match is gated on the class name.  It survives :meth:`reset`
-        for the reason given there, and expires by
-        :data:`_CLASS_CODE_TTL_SECONDS` instead.
+        rMonitor feed, and :meth:`_resolve_class_codes` gates both of its
+        layers on an exact class-name match.  It survives :meth:`reset` for the
+        reason given there, and expires by :data:`_CLASS_CODE_TTL_SECONDS`
+        instead.
 
         ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
         so every item is checked and coerced here, and one without an entrant
@@ -501,42 +499,47 @@ class RaceState:
     def _resolve_class_codes(self, entries: list[dict]) -> int:
         """Write ``class_code`` onto every entry; return how many have none.
 
-        Two layers, each failing to blank — never to a guess:
+        Two layers, each failing to blank — never to a guess, and each gated
+        on the push's class name equalling ``class_description`` exactly and
+        non-empty.  A prefix would bind a ``Modsports A`` record to an ``A2``
+        session; without the gate on layer 1, a driver entered in two classes
+        at one meeting on one transponder would be shown the other class's
+        code, since the registry accumulates across runs.
 
-        1. **Transponder** (not ``""`` or ``"0"``) → the latest push carrying
-           it, from any run and with no class-name check.  First because it
-           survives an operator's mid-session renumber, which reaches the push
-           side before the rMonitor feed: seen twice on one day, ``231`` →
-           ``23`` and ``190`` → ``90``.
+        1. **Transponder** (not ``""`` or ``"0"``) and class → the latest push
+           carrying both.  First because it survives an operator's mid-session
+           renumber, which reaches the push side before the rMonitor feed: seen
+           twice on one day, ``231`` → ``23`` and ``190`` → ``90``, each with
+           the class unchanged.
         2. **Exact** ``(number, class_description)`` → a code only when every
            matching record carries one distinct code.  Distinct codes, not
            records, because the same entrant is pushed under several run ids.
-           The class name must match exactly and be non-empty: a prefix would
-           bind a ``Modsports A`` record to an ``A2`` session.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
         self._prune_class_codes(time.time())
-        by_tx: dict[str, dict] = {}
+        by_tx: dict[tuple[str, str], dict] = {}
         by_nc: dict[tuple[str, str], set[str]] = {}
         for rec in self.class_codes.values():
-            tx = rec["transponder"]
+            tx, cls = rec["transponder"], rec["class_name"]
             if tx not in ("", "0"):
-                best = by_tx.get(tx)
+                best = by_tx.get((tx, cls))
                 if best is None or rec["received_at"] >= best["received_at"]:
-                    by_tx[tx] = rec
-            by_nc.setdefault((rec["number"], rec["class_name"]), set()).add(rec["class_code"])
+                    by_tx[(tx, cls)] = rec
+            by_nc.setdefault((rec["number"], cls), set()).add(rec["class_code"])
         missing = 0
         for e in entries:
             code = ""
             tx = e.get("transponder", "")
-            if tx not in ("", "0") and tx in by_tx:
-                code = by_tx[tx]["class_code"]
-            elif e.get("class_description"):
-                codes = by_nc.get((e.get("number", ""), e["class_description"]), set())
-                if len(codes) == 1:
-                    code = next(iter(codes))
+            desc = e.get("class_description", "")
+            if desc:
+                if tx not in ("", "0") and (tx, desc) in by_tx:
+                    code = by_tx[(tx, desc)]["class_code"]
+                else:
+                    codes = by_nc.get((e.get("number", ""), desc), set())
+                    if len(codes) == 1:
+                        code = next(iter(codes))
             e["class_code"] = code
             if not code:
                 missing += 1
