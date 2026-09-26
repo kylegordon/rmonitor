@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.20](https://github.com/kylegordon/rmonitor/compare/v0.1.19...v0.1.20) (2026-09-26)
+
+## What's Changed
+* feat: match the class-code preload by registration and scope pushes to the running run by @kylegordon in https://github.com/kylegordon/rmonitor/pull/99
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.19...v0.1.20
+
+
 ## [0.1.19](https://github.com/kylegordon/rmonitor/compare/v0.1.18...v0.1.19) (2026-09-26)
 
 ## What's Changed
