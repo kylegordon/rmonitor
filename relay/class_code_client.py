@@ -659,8 +659,10 @@ class ClassCodeClient:
         self._parser = PushParser()
         self._run_parser = RunStateParser()
         self._pending: dict[str, dict[str, dict]] = {}
-        # The last run announced as started and not yet delivered.
+        # The last run announced as started and not yet delivered, and the
+        # id of the last run announced as stopped.
         self._run: dict | None = None
+        self._stopped_run_id: str | None = None
         # The preload not yet delivered: its entries and the monotonic time
         # its pull finished.
         self._preload: dict | None = None
@@ -895,10 +897,14 @@ class ClassCodeClient:
             if run.state != "started":
                 log.debug("Run %s %r is %s", run.run_id, run.name, run.state)
                 # A run that stopped before its start was delivered is not
-                # running; a newer started run is left alone.
+                # running; a newer started run is left alone.  The id is kept
+                # so a delivery in flight is not retried for it either.
+                self._stopped_run_id = run.run_id
                 if self._run is not None and self._run["run_id"] == run.run_id:
                     self._run = None
                 continue
+            if run.run_id == self._stopped_run_id:
+                self._stopped_run_id = None
             log.info("Timing host started run %s %r", run.run_id, run.name)
             self._run = {"run_id": run.run_id, "name": run.name, "_observed": time.monotonic()}
 
@@ -986,7 +992,7 @@ class ClassCodeClient:
         """Hand the started *run* to *on_batch*; return whether nothing is left to retry.
 
         A failed delivery is kept for the retry unless a newer run has been
-        announced meanwhile, which replaces it.
+        announced meanwhile, which replaces it, or the run has stopped.
         """
         age = time.monotonic() - run["_observed"]
         if age > MAX_ENTRY_AGE:
@@ -1003,7 +1009,7 @@ class ClassCodeClient:
             })
         except Exception:
             log.exception("Could not forward the started run %s", run["run_id"])
-            if self._run is None:
+            if self._run is None and run["run_id"] != self._stopped_run_id:
                 self._run = run
             return False
         self._delivered()

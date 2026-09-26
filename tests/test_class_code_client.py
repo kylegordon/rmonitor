@@ -1272,3 +1272,32 @@ async def test_a_run_stopped_before_its_start_was_delivered_is_not_forwarded(
     finally:
         await _finish(task)
     assert [c["run_id"] for c in calls] == forwarded
+
+
+@pytest.mark.asyncio
+async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retried(monkeypatch):
+    gate = asyncio.Event()
+    reader = ChunkReader([IDENT_FRAME, gate, _run_state()])
+    _harness(monkeypatch, [(reader, FakeWriter())])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["run_id"])
+        if len(calls) == 1:
+            reader._items.append(_run_state(state="stopped"))
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch,
+        **{**FAST, "keepalive_interval": 0.05, "retry_initial": 0.05},
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        gate.set()
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+    finally:
+        await _finish(task)
+    assert calls == ["0x40002805"]
+    assert client._run is None
