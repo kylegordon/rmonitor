@@ -33,13 +33,18 @@ here by `test_record_entry_skips_short_or_codeless_records` in
 
 ## The registry preload is trusted only under the class-uniform guard
 
-Every connect also pulls the host's competitor registry and forwards its codes raw as one
-preload. The server uses a registry code only when every registry record with that exact class
-name carries the same code, because the registry holds a competitor's *registered* code and a
-meeting's entry can override it; pushes always win, and a class whose pushes show another code
-is withheld. The guard reads the whole registry, so a pull cut short by its time or size cap is
-never forwarded (completeness is otherwise inferred from the stream going quiet). Guarded by
-`test_preload_code_is_withheld_when_the_class_name_spans_several_codes` in
-`tests/test_race_state.py` and
+Every connect also pulls the host's competitor registry and forwards it raw as one preload:
+each registration's id, number, transponder, class and code, plus the host's run table. The
+server matches a car to one registration by number and exact class, or by transponder and
+class, and a conflict between the two blanks the cell. It then uses the registration's code
+only when every registry record with that class name carries the same code, because a feed car
+can still land on someone else's registration — a transponder that changed hands, a number
+reused within a class — and a registry code may disagree with the meeting's pushes; pushes
+always win, and a class whose pushes show another code is withheld. The guard reads the whole
+registry, so a pull cut short by its time or size cap is never forwarded (completeness is
+otherwise inferred from the stream going quiet). Guarded by
+`test_preload_code_is_withheld_when_the_class_name_spans_several_codes` and
+`test_preload_is_blank_when_transponder_and_number_name_different_registrations` in
+`tests/test_race_state.py`, and
 `test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_preload` in
 `tests/test_class_code_client.py`.
