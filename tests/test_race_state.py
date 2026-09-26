@@ -2336,3 +2336,14 @@ def test_load_class_codes_tolerates_a_store_that_is_not_a_mapping(state, data):
     state.load_class_codes(data)
     assert state.class_codes == {}
     assert state.class_code_run is None and state.class_code_run_next is None
+
+
+def test_a_run_started_after_a_cold_session_ends_waits_for_its_own(state):
+    """With nothing bound, a start arriving once the shown session has closed
+    is the next session's, even under the same name."""
+    _session(state)
+    _closing(state)
+    _started(state)
+    assert state.snapshot()["class_code_scope"] == ""
+    _session(state, number="28")
+    assert state.snapshot()["class_code_scope"] == "0x40002806"

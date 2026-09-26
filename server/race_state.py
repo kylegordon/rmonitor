@@ -266,8 +266,9 @@ class RaceState:
         """Record the run description from ``$B``.
 
         ``unique_number`` 95 marks a session's end, carrying the closing
-        session's description (see :func:`relay.rmonitor_client._parse_run`).
-        It is read only to end the started run below.
+        session's description (see :func:`relay.rmonitor_client._parse_run`);
+        any other number names the session current.  Both are read only to
+        bind and end the started runs below.
 
         A started run is announced into ``class_code_run_next`` and bound to
         a session here, because run names repeat: a later session of the
@@ -715,9 +716,10 @@ class RaceState:
             return None
         run_id = None
         run = self.class_code_run
-        if run is None:
+        if run is None and self._run_number != "95":
             # No session bound yet — a cold start — so a waiting run may
-            # stand in; while one is bound, a waiting run is the next session's.
+            # stand in.  While one is bound, or once the shown session has
+            # closed, a waiting run is the next session's.
             run = self.class_code_run_next
         if (
             run is not None
