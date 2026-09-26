@@ -236,6 +236,57 @@ async def test_ingest_updates_race_state(client, app):
     assert app[race_state_key].track_name == "Brands Hatch"
 
 
+_CLASS_CODES_MSG = {
+    "type": "class_codes",
+    "run_id": "0x4000AAAA",
+    "entries": [{
+        "entrant_id": "e1", "kind": "added", "number": "7",
+        "class_name": "Saloon Cup", "transponder": "1234567", "class_code": "SC",
+    }],
+}
+
+
+@pytest.mark.asyncio
+async def test_ingested_class_codes_reach_the_snapshot(client, app):
+    from server.server import race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    for msg in (
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+        _CLASS_CODES_MSG,
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    snap = app[race_state_key].snapshot()
+    car = next(e for e in snap["entries"] if e["reg_number"] == "7")
+    assert car["class_code"] == "SC"
+    assert snap["class_codes_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_feed_restored_reset_keeps_class_codes(client, app):
+    from server.server import race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    resp = await client.post("/api/ingest", json=_CLASS_CODES_MSG, headers=headers)
+    assert resp.status == 200
+    app[feed_state_key]["feed_lost"] = True
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+              "first_name": "Ann", "last_name": "Example", "nationality": "",
+              "class_number": "1"},
+        headers=headers,
+    )
+    assert resp.status == 200
+    assert app[feed_state_key]["feed_lost"] is False
+    # The reset dropped the fixture's car 1, so car 7 is the only entry.
+    (car,) = app[race_state_key].snapshot()["entries"]
+    assert car["class_code"] == "SC"
+
+
 @pytest.mark.asyncio
 async def test_repeated_init_wipes_reach_clients_before_repopulation(client):
     """Three ``$I`` records in a row each wipe live state and tell the clients.

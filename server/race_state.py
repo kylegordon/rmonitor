@@ -56,6 +56,15 @@ _PRACTICE_KEYWORDS = (
     "untimed",
 )
 
+# How long a pushed class code stays joinable after its last push.  Twelve
+# hours covers a meeting day, including a server restart; transponders are
+# reused across meetings, so a longer life would pair a reused transponder
+# with last meeting's code — a plausible wrong value, never shown.
+_CLASS_CODE_TTL_SECONDS = 12 * 3600
+
+# The registry fields a ``class_codes`` entry carries, all strings.
+_CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
+
 
 def _interval_seconds(value: str) -> float | None:
     """Convert a feed time field to seconds, or *None* if unusable.
@@ -120,9 +129,16 @@ class RaceState:
     """Holds the current state of the race, updated by parsed messages."""
 
     def __init__(self):
+        # Keyed ``"<run id>\t<entrant id>"``; see _class_codes.  Created here,
+        # not in reset(), because reset() must never clear it.
+        self.class_codes: dict[str, dict] = {}
         self.reset()
 
     def reset(self):
+        # self.class_codes is deliberately left alone: a roster is pushed once,
+        # at run load, and not re-sent while its session runs — and it may
+        # arrive before or a minute after the $I burst that starts it.
+        # Clearing it here would lose codes the server never gets again.
         self.competitors: dict[str, dict] = {}  # keyed by reg_number
         self.classes: dict[str, str] = {}  # class_number -> description
         self.leader_time_at_lap: dict[int, float] = {}
@@ -199,6 +215,8 @@ class RaceState:
             c["number"] = msg["number"]
         if msg.get("nationality"):
             c["nationality"] = msg["nationality"]
+        if msg.get("transponder"):
+            c["transponder"] = msg["transponder"]
         if msg.get("class_number"):
             c["class_number"] = msg["class_number"]
         if msg.get("additional_data"):
@@ -431,6 +449,95 @@ class RaceState:
         self.reset()
         return "init"
 
+    def _class_codes(self, msg: dict) -> str | None:
+        """Store the class codes the relay read from the timing host's ``:51738``.
+
+        The registry is keyed by run id and entrant id, last push wins, and it
+        accumulates across runs: pushes cover runs other than the one on the
+        rMonitor feed, and :meth:`_resolve_class_codes` gates every match on
+        the class name.  It survives :meth:`reset` for the reason given there,
+        and expires by :data:`_CLASS_CODE_TTL_SECONDS` instead.
+
+        ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
+        so every item is checked and coerced here, and one without an entrant
+        id or a code is skipped.
+        """
+        entries = msg.get("entries")
+        run_id = msg.get("run_id") or ""
+        now = time.time()
+        changed = False
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                entry = {
+                    k: str(item[k]) if item.get(k) is not None else ""
+                    for k in _CLASS_CODE_FIELDS
+                }
+                if not entry["entrant_id"] or not entry["class_code"]:
+                    continue
+                entry["received_at"] = now
+                self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
+                changed = True
+        changed = self._prune_class_codes(now) or changed
+        if not changed:
+            return None
+        self._dirty = True
+        return "class_codes"
+
+    def _prune_class_codes(self, now: float) -> bool:
+        """Drop registry entries past their TTL; return whether any went."""
+        expired = [
+            k for k, v in self.class_codes.items()
+            if now - v["received_at"] > _CLASS_CODE_TTL_SECONDS
+        ]
+        for k in expired:
+            del self.class_codes[k]
+        return bool(expired)
+
+    def _resolve_class_codes(self, entries: list[dict]) -> int:
+        """Write ``class_code`` onto every entry; return how many have none.
+
+        Two layers, each failing to blank — never to a guess:
+
+        1. **Transponder** (not ``""`` or ``"0"``) → the latest push carrying
+           it.  First because it survives an operator's mid-session renumber,
+           which reaches the push side before the rMonitor feed: seen twice on
+           one day, ``231`` → ``23`` and ``190`` → ``90``.
+        2. **Exact** ``(number, class_description)`` → a code only when every
+           matching record carries one distinct code.  Distinct codes, not
+           records, because the same entrant is pushed under several run ids.
+           The class name must match exactly and be non-empty: a prefix would
+           bind a ``Modsports A`` record to an ``A2`` session.
+
+        Nothing ever derives a code from a class name — the mapping between
+        them is many-to-many.
+        """
+        self._prune_class_codes(time.time())
+        by_tx: dict[str, dict] = {}
+        by_nc: dict[tuple[str, str], set[str]] = {}
+        for rec in self.class_codes.values():
+            tx = rec["transponder"]
+            if tx not in ("", "0"):
+                best = by_tx.get(tx)
+                if best is None or rec["received_at"] >= best["received_at"]:
+                    by_tx[tx] = rec
+            by_nc.setdefault((rec["number"], rec["class_name"]), set()).add(rec["class_code"])
+        missing = 0
+        for e in entries:
+            code = ""
+            tx = e.get("transponder", "")
+            if tx not in ("", "0") and tx in by_tx:
+                code = by_tx[tx]["class_code"]
+            elif e.get("class_description"):
+                codes = by_nc.get((e.get("number", ""), e["class_description"]), set())
+                if len(codes) == 1:
+                    code = next(iter(codes))
+            e["class_code"] = code
+            if not code:
+                missing += 1
+        return missing
+
     _HANDLERS: dict = {
         "heartbeat": _heartbeat,
         "competitor": _competitor,
@@ -442,6 +549,7 @@ class RaceState:
         "passing": _passing,
         "lap_info": _lap_info,
         "init": _init,
+        "class_codes": _class_codes,
     }
 
     # ---- serialisation ----
@@ -525,6 +633,7 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
+        class_code_missing = self._resolve_class_codes(entries)
         self._apply_intervals(entries, sort_mode=sort_mode)
         return {
             "track_name": self.track_name,
@@ -537,6 +646,8 @@ class RaceState:
             "time_of_day": self.time_of_day,
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
+            "class_codes_available": bool(self.class_codes),
+            "class_code_missing": class_code_missing,
             "entries": entries,
         }
 
@@ -640,6 +751,7 @@ class RaceState:
             "competitors": self.competitors,
             "classes": self.classes,
             "leader_time_at_lap": self.leader_time_at_lap,
+            "class_codes": self.class_codes,
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
@@ -663,7 +775,7 @@ class RaceState:
         :meth:`_time_behind_leader`, and both derived columns would go silently
         blank after a restart until the feed re-populated the index.  A
         hand-edited or truncated store degrades to an empty index rather than
-        failing startup.
+        failing startup, and the class-code registry the same way.
         """
         self.competitors = data.get("competitors", {})
         self.classes = data.get("classes", {})
@@ -674,6 +786,17 @@ class RaceState:
             }
         except (AttributeError, TypeError, ValueError):
             self.leader_time_at_lap = {}
+        try:
+            self.class_codes = {
+                k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
+                | {"received_at": float(v["received_at"])}
+                for k, v in (data.get("class_codes") or {}).items()
+                if isinstance(k, str) and isinstance(v, dict)
+                and isinstance(v.get("received_at"), (int, float))
+            }
+        except (AttributeError, TypeError, ValueError):
+            self.class_codes = {}
+        self._prune_class_codes(time.time())
         self.track_name = data.get("track_name", "")
         self.track_length_miles = data.get("track_length_miles")
         self.run_description = data.get("run_description", "")
@@ -753,6 +876,7 @@ def _empty_competitor(reg: str) -> dict:
         "first_name": "",
         "last_name": "",
         "nationality": "",
+        "transponder": "",
         "additional_data": "",
         "class_number": "",
         "position": "",

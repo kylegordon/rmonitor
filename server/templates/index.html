@@ -294,6 +294,7 @@
         <span><span class="label">Race Time:</span> <span id="race-time">—</span></span>
         <span id="time-to-go-wrap"><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
         <span id="laps-to-go-wrap"><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
+        <span id="class-code-missing-wrap" hidden><span class="label">Without class code:</span> <span id="class-code-missing">0</span></span>
         <span id="heartbeat" class="heartbeat" title="Data heartbeat">♥</span>
       </div>
     </div>
@@ -331,6 +332,8 @@
     const lapsToGoEl = document.getElementById('laps-to-go');
     const timeToGoWrapEl = document.getElementById('time-to-go-wrap');
     const lapsToGoWrapEl = document.getElementById('laps-to-go-wrap');
+    const classCodeMissingEl = document.getElementById('class-code-missing');
+    const classCodeMissingWrapEl = document.getElementById('class-code-missing-wrap');
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
     const connEl = document.getElementById('conn-status');
@@ -398,6 +401,7 @@
       raceTimeEl.textContent = '—';
       timeToGoEl.textContent = '—';
       lapsToGoEl.textContent = '—';
+      classCodeMissingWrapEl.hidden = true;
     }
 
     function hideNoFeedModal() {
@@ -440,6 +444,12 @@
       flagEl.textContent = data.flag || '—';
       flagEl.className = 'flag-indicator ' + flagClass(data.flag);
 
+      // Counted only once the server holds any class codes at all: with none,
+      // every car would be "without" one and the count says nothing.
+      const missing = data.class_code_missing || 0;
+      classCodeMissingEl.textContent = String(missing);
+      classCodeMissingWrapEl.hidden = !(data.class_codes_available && missing > 0);
+
       const entries = data.entries || [];
       if (entries.length === 0) {
         const hasClockFeed = !!(data.race_time && data.race_time !== '—');
@@ -460,7 +470,11 @@
           return cc + 'cc' + (suffix ? ' ' + suffix : '');
         }) : '';
         const vehicle = [e.nationality, extra].filter(Boolean).join(' — ');
-        const cls = e.class_description || '—';
+        // The column shows the class code or an em-dash, never the description:
+        // descriptions are too long for a narrow column on a phone, and a code is
+        // withheld rather than guessed.  The description stays as the hover title.
+        const cls = e.class_code || '—';
+        const clsTitle = e.class_description || '';
         // Under a best-lap sort the feed's own position field is track order,
         // not the order on screen, so POS counts the rows and keeps the track
         // position as the tooltip.  The movement arrows track the feed's order
@@ -483,7 +497,7 @@
           { text: name, title: vehicle },
           { text: intervalText(e.gap_ahead_seconds, e.gap_ahead_laps) },
           { text: intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
-          { text: cls },
+          { text: cls, title: clsTitle },
           { text: e.laps || '—' },
           { text: e.last_lap_time || '—' },
           { text: e.best_lap_time || '—' },
