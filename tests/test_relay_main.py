@@ -6,6 +6,9 @@ context manager yielding an object with a `.status` attribute.
 """
 
 import asyncio
+import pathlib
+import sys
+import types
 
 import aiohttp
 import pytest
@@ -246,3 +249,27 @@ async def test_a_class_code_post_failure_does_not_exit_the_relay(fake_sources, m
     assert not task.done()
     fake_sources["feed_done"].set()
     await asyncio.wait_for(task, timeout=2.0)
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _version_module(version):
+    module = types.ModuleType("relay._version")
+    module.CURRENT_VERSION = version
+    return module
+
+
+def test_release_version_prefers_the_version_file_over_a_stale_version_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "relay._version", _version_module("9.9.9"))
+    assert relay_main._read_release_version() == (ROOT / "VERSION").read_text().strip()
+
+
+def test_release_version_falls_back_to_the_version_module(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "relay._version", _version_module("9.9.9"))
+    assert relay_main._read_release_version(version_file=tmp_path / "VERSION") == "9.9.9"
+
+
+def test_release_version_falls_back_to_dev_with_neither_source(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "relay._version", None)
+    assert relay_main._read_release_version(version_file=tmp_path / "VERSION") == "0.0.0-dev"

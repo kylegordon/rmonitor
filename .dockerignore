@@ -25,3 +25,6 @@ docs
 
 .env
 docker-compose.override.yml
+# Gitignored and written only by the GUI binary builds, so any local copy is stale;
+# the images report their release from VERSION instead.
+relay/_version.py
