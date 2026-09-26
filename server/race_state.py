@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,18 @@ _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "clas
 
 # The fields a ``class_code_preload`` entry carries, all strings.
 _PRELOAD_FIELDS = ("transponder", "class_name", "class_code")
+# Carried by a relay that reads each registration's id and number; an entry
+# from an older relay or store lacks them and reads them as ``""``.
+_PRELOAD_OPTIONAL_FIELDS = ("registration_id", "number")
+
+# The fields of one run in a preload's ``runs`` table, all strings.
+_RUN_FIELDS = ("run_id", "group_id", "name")
+# A run id and a group id as the timing host writes them, ``0x40002805`` and
+# ``0x80000985``: the two never share a form, so a group id is never a run.
+_RUN_ID = re.compile(r"0x4000[0-9A-Fa-f]{4}")
+_GROUP_ID = re.compile(r"0x8000[0-9A-Fa-f]{4}")
+# The tag on every push, whatever its run; lowercased like a scope's tags.
+_ALL_PUSHES_TAG = "0x80000000"
 
 
 def _interval_seconds(value: str) -> float | None:
@@ -139,10 +152,18 @@ class RaceState:
         # The last registry preload; see _class_code_preload.  Never cleared
         # by reset(), for the same reason.
         self.class_code_preload: dict = _preload_store([], None)
-        # Bumped on every change to either class-code store, so the periodic
+        # The run the timing host last announced as started; see
+        # _class_code_run.  Never cleared by reset(), for the same reason.
+        # The first is bound to the current session; the second was announced
+        # since and waits for its own $B (see _run).
+        self.class_code_run: dict | None = None
+        self.class_code_run_next: dict | None = None
+        # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
         self.class_codes_revision = 0
+        # The push scope last logged, so a change is logged once; see snapshot.
+        self._logged_scope: str | None = None
         self.reset()
 
     def reset(self):
@@ -157,6 +178,8 @@ class RaceState:
         self.track_name: str = ""
         self.track_length_miles: float | None = None
         self.run_description: str = ""
+        # The last ``$B`` unique number; see _run.
+        self._run_number: str = ""
         self.flag: str = ""
         self.race_time: str = ""
         self.time_of_day: str = ""
@@ -242,12 +265,74 @@ class RaceState:
     def _run(self, msg: dict) -> str:
         """Record the run description from ``$B``.
 
-        ``unique_number`` is deliberately dropped: nothing here consumes it
-        yet.  It is not noise, though — 95 marks a session's end (see
-        :func:`relay.rmonitor_client._parse_run`), so this is where a reliable
-        session-boundary signal would be picked up if one is ever needed.
+        ``unique_number`` 95 marks a session's end, carrying the closing
+        session's description (see :func:`relay.rmonitor_client._parse_run`);
+        any other number names the session current.  Both are read only to
+        bind and end the started runs below.
+
+        A started run is announced into ``class_code_run_next`` and bound to
+        a session here, because run names repeat: a later session of the
+        same name must not inherit an earlier run's id, and the next run's
+        start can arrive before the current session's ``$B`` ends.
+
+        - A ``$B`` with any number but 95 opens a new session when there is
+          no current run, it is closed, it bears another name, or it is bound
+          to another number — a boundary is the number changing, with or
+          without a 95 between.  The current run is then discarded, and the
+          waiting run is promoted and bound to the number if it bears this
+          session's name.  Otherwise it is the same session, and binds a
+          current run not yet bound.  A waiting run is discarded once the
+          number changes to a session it does not name; it survives ``$B``
+          repeats, a 95, and the first ``$B`` after a restart.
+        - The number changing *into* 95 while the description names the
+          current run marks it closed, and changes nothing else: the board
+          still shows that session, so its run stays in scope until the next
+          session's ``$B``.  With none bound, a waiting run bearing the name
+          stands in for it, as it does for the scope, and becomes the
+          current run, closed.  95 repeats between sessions, so only the
+          change counts.
         """
-        self.run_description = msg["description"]
+        desc = msg["description"]
+        number = msg.get("unique_number") or ""
+        cur, nxt = self.class_code_run, self.class_code_run_next
+        before = (cur, nxt, cur and dict(cur))
+        if (
+            nxt is not None
+            and number not in ("95", self._run_number)
+            and self._run_number
+            and nxt["name"] != desc
+        ):
+            # A session it does not name has begun, so it is not the next one.
+            self.class_code_run_next = nxt = None
+        if number == "95":
+            # With no run bound, a waiting run stands in for the session shown.
+            shown = cur if cur is not None else nxt
+            if (
+                shown is not None
+                and number != self._run_number
+                and shown["name"] == desc
+                and not shown.get("closed")
+            ):
+                if cur is None:
+                    self.class_code_run = nxt | {"closed": True}
+                    self.class_code_run_next = None
+                else:
+                    cur["closed"] = True
+        elif cur is None or cur.get("closed") or cur["name"] != desc or cur.get(
+            "session_number", number
+        ) != number:
+            if nxt is not None and nxt["name"] == desc:
+                self.class_code_run = nxt | {"session_number": number}
+                self.class_code_run_next = None
+            elif cur is not None:
+                self.class_code_run = None
+        elif "session_number" not in cur:
+            cur["session_number"] = number
+        cur = self.class_code_run
+        if (cur, self.class_code_run_next, cur and dict(cur)) != before:
+            self.class_codes_revision += 1
+        self._run_number = number
+        self.run_description = desc
         self._dirty = True
         return "run"
 
@@ -534,7 +619,11 @@ class RaceState:
         without a class name, or with transponder ``""`` or ``"0"``, is
         skipped, and a preload with nothing usable leaves the previous one in
         place.  An item with no code is kept, as ``""``: it takes part in the
-        class-uniform guard, and withholds its class's code.
+        class-uniform guard, and withholds its class's code.  An item without
+        ``registration_id`` or ``number`` — from an older relay — is kept with
+        them ``""``, and takes part only in the transponder join.
+        ``runs`` is the host's run table (:func:`_coerce_runs`), which
+        :meth:`_class_code_scope` reads.
         The store is dated from the pull — now minus the message's
         ``age_seconds`` — and a message already past the TTL is ignored.
         """
@@ -546,22 +635,117 @@ class RaceState:
             if not isinstance(item, dict):
                 continue
             entry = {
-                k: str(item[k]) if item.get(k) is not None else "" for k in _PRELOAD_FIELDS
+                k: str(item[k]) if item.get(k) is not None else ""
+                for k in _PRELOAD_FIELDS + _PRELOAD_OPTIONAL_FIELDS
             }
             if not entry["class_name"] or entry["transponder"] in ("", "0"):
                 continue
             usable.append(entry)
-        log.info("Class-code preload: %d usable of %d records", len(usable), len(entries))
+        runs = _coerce_runs(msg.get("runs"))
+        log.info(
+            "Class-code preload: %d usable of %d records, %d runs",
+            len(usable), len(entries), len(runs),
+        )
         age = _entry_age(msg.get("age_seconds"))
         if not usable or age > _CLASS_CODE_TTL_SECONDS:
             return None
-        self.class_code_preload = _preload_store(usable, time.time() - age)
+        self.class_code_preload = _preload_store(usable, time.time() - age, runs)
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
 
+    def _class_code_run(self, msg: dict) -> str | None:
+        """Store the run the timing host announced as started on ``:51738``.
+
+        It waits in ``class_code_run_next`` until a ``$B`` binds it to its
+        session (:meth:`_run`); :meth:`_class_code_scope` reads it only
+        while its name equals the running session's ``$B`` description.  Like the other
+        class-code stores it survives :meth:`reset` — the ``$I`` burst that
+        opens a session can follow the announcement — and it is dated from
+        the relay's read, now minus ``age_seconds``.  A message with no name,
+        a run id not of the host's ``0x4000xxxx`` form, or already past
+        :data:`_CLASS_CODE_TTL_SECONDS` is ignored.
+        """
+        run_id, name = msg.get("run_id"), msg.get("name")
+        age = _entry_age(msg.get("age_seconds"))
+        # _coerce_scalars leaves lists and dicts as they are.
+        if (
+            not isinstance(run_id, str)
+            or not isinstance(name, str)
+            or not name
+            or not _RUN_ID.fullmatch(run_id)
+            or age > _CLASS_CODE_TTL_SECONDS
+        ):
+            return None
+        # A relay retries a delivery whose answer it lost, so a repeat of a
+        # run already held changes nothing; one that closed is a restart.
+        for held in (self.class_code_run, self.class_code_run_next):
+            if held is not None and held["run_id"] == run_id and not held.get("closed"):
+                return None
+        log.info("Timing host started run %s %r", run_id, name)
+        self.class_code_run_next = {
+            "run_id": run_id, "name": name, "received_at": time.time() - age,
+        }
+        self.class_codes_revision += 1
+        self._dirty = True
+        return "class_codes"
+
+    def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:
+        """Return the running run's id and the push tags in scope, or *None*.
+
+        The running session's ``$B`` description decides the run, never the
+        run state alone: the started run bound to the session — or, with none
+        bound, the one waiting — counts only while its name equals the
+        description exactly, so a stale "started" from the previous session
+        is harmless.  Failing that — a relay that connected mid-run, or a
+        grid loaded before its run starts — the description is looked up in
+        the preload's run table by exact name.  Names repeat across meetings,
+        so the newest run id with that name is taken; a wrong pick only
+        filters pushes out, so it costs blanks, never a wrong code.  The tags
+        are the run id and its group id, lowercased: pushes are tagged with
+        either, and a save fans out one push per tag.  *None* — no
+        description, or no run by that name — leaves pushes unscoped.
+
+        A closing ``$B,95`` keeps its session in scope until the next
+        session's ``$B``: the board still shows that session's cars, so its
+        own run is the right filter, and going unscoped would readmit every
+        other run's pushes.
+        """
+        desc = self.run_description
+        if not desc:
+            return None
+        run_id = None
+        run = self.class_code_run
+        if run is None and self._run_number != "95":
+            # No session bound yet — a cold start — so a waiting run may
+            # stand in.  While one is bound, or once the shown session has
+            # closed, a waiting run is the next session's.
+            run = self.class_code_run_next
+        if (
+            run is not None
+            and run["name"] == desc
+            and time.time() - run["received_at"] <= _CLASS_CODE_TTL_SECONDS
+        ):
+            run_id = run["run_id"]
+        else:
+            ids = self.class_code_preload["runs_by_name"].get(desc)
+            if ids:
+                run_id = max(ids, key=lambda r: int(r, 16))
+        if run_id is None:
+            return None
+        tags = {run_id.lower()}
+        group = self.class_code_preload["run_group"].get(run_id.lower())
+        if group:
+            tags.add(group)
+        # It tags every push, so it would admit them all.
+        tags.discard(_ALL_PUSHES_TAG)
+        if not tags:
+            # Scoping to nothing would blank every pushed code.
+            return None
+        return run_id, frozenset(tags)
+
     def prune_expired_class_codes(self) -> bool:
-        """Drop expired pushed codes and an expired preload; return whether any went.
+        """Drop expired pushed codes, preload and started run; return whether any went.
 
         A snapshot calls this too, but snapshots run only once something else
         dirtied the state: an idle page would otherwise show a code past its
@@ -571,6 +755,12 @@ class RaceState:
         now = time.time()
         expired = self._prune_class_codes(now)
         expired = self._prune_class_code_preload(now) or expired
+        # A started run's expiry changes the scope, so an idle page must hear of it.
+        for slot in ("class_code_run", "class_code_run_next"):
+            run = getattr(self, slot)
+            if run is not None and now - run["received_at"] > _CLASS_CODE_TTL_SECONDS:
+                setattr(self, slot, None)
+                expired = True
         if expired:
             self.class_codes_revision += 1
             self._dirty = True
@@ -594,7 +784,9 @@ class RaceState:
             del self.class_codes[k]
         return bool(expired)
 
-    def _resolve_class_codes(self, entries: list[dict]) -> int:
+    def _resolve_class_codes(
+        self, entries: list[dict], *, scope: tuple[str, frozenset[str]] | None = None
+    ) -> int:
         """Write ``class_code`` onto every entry; return how many have none.
 
         Three layers, each failing to blank — never to a guess, and each gated
@@ -613,31 +805,48 @@ class RaceState:
            matching record carries one distinct code.  Distinct codes, not
            records, because the same entrant is pushed under several run ids.
         3. **The registry preload**, only when neither push layer gives a
-           code: transponder and class → a code only when that pair carries
-           one distinct code *and* every preload record with that exact class
-           name carries that same code — a codeless one does not — *and* so
-           does every pushed record with
-           that class name — pushes are the meeting's own entries, so one
-           showing another code is proof the class is not uniform here.  The
-           guard is there because the
-           registry holds a competitor's *registered* code, and a meeting's
-           entry can override it: measured against pushes, the pair alone was
-           wrong 2 times in 24 in a class whose name spans several codes, and
-           0 times with the guard.  The preload never takes part in the number
-           layer — the registry spans seasons, and numbers change between them.
+           code.  Each registry record is one registration (its Car/Bike Reg,
+           ``registration_id``), edited in place, so its number and class are
+           current rather than an archived season's.  First, number and class
+           → a registration only when exactly one carries that pair; two
+           registrations sharing it are two possible entrants, so neither is
+           picked.  If the car's transponder and class also match preload
+           records and that registration is not among them, the cell is
+           blank: a transponder changes hands between drivers, and following
+           it lands on another driver's registration.  With no unique
+           registration, transponder and class → a code only when that pair
+           carries one distinct code.  Either candidate is then kept only
+           when every preload record with that exact class name carries the
+           same code — a codeless one does not — *and* so does every pushed
+           record with that class name — pushes are the meeting's own
+           entries, so one showing another code is proof the class is not
+           uniform here.  That guard stays because a feed car can still land
+           on the wrong registration — a transponder that changed hands, a
+           number reused within a class: measured against pushes, the
+           transponder pair alone was wrong 2 times in 24, each time another
+           driver's registration, and 0 times with the guard.
+
+        The caller prunes expired codes first, as :meth:`snapshot` does.
+
+        *scope*, from :meth:`_class_code_scope`, limits the push layers — and
+        the guard's view of pushes — to pushes tagged with the running run
+        or its group.  It is applied here, when codes are read, never on
+        ingest: every push is stored, so one arriving before its scope is
+        known is filtered once it is.  Pushes from other runs are other meetings' or finished
+        runs' edits, not this session's entries.  ``0x80000000`` tags every
+        push, so it is never a scope.  *None* keeps every push.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
-        # Marks the state dirty on an expiry: a snapshot for one client must
-        # not expire a code that other clients' pages then never hear about.
-        self.prune_expired_class_codes()
-        pre_tx = self.class_code_preload["by_tx"]
-        pre_class = self.class_code_preload["by_class"]
+        pre = self.class_code_preload
+        pre_tx, pre_class = pre["by_tx"], pre["by_class"]
         by_tx: dict[tuple[str, str], dict] = {}
         by_nc: dict[tuple[str, str], set[str]] = {}
         pushed_class: dict[str, set[str]] = {}
-        for rec in self.class_codes.values():
+        for key, rec in self.class_codes.items():
+            if scope is not None and key.split("\t", 1)[0].lower() not in scope[1]:
+                continue
             pushed_class.setdefault(rec["class_name"], set()).add(rec["class_code"])
             tx, cls = rec["transponder"], rec["class_name"]
             if tx not in ("", "0"):
@@ -657,8 +866,8 @@ class RaceState:
                     codes = by_nc.get((e.get("number", ""), desc), set())
                     if len(codes) == 1:
                         code = next(iter(codes))
-                if not code and tx not in ("", "0"):
-                    codes = pre_tx.get((tx, desc), set())
+                if not code:
+                    codes = self._preload_candidate(e.get("number", ""), tx, desc)
                     if (
                         len(codes) == 1
                         and "" not in codes
@@ -670,6 +879,25 @@ class RaceState:
             if not code:
                 missing += 1
         return missing
+
+    def _preload_candidate(self, number: str, tx: str, desc: str) -> set[str]:
+        """Return the codes layer 3 of :meth:`_resolve_class_codes` may use.
+
+        The guard is applied by the caller; this picks the registration.
+        """
+        pre = self.class_code_preload
+        tx_usable = tx not in ("", "0")
+        ids = pre["nc_regs"].get((number, desc), set()) if number else set()
+        if len(ids) == 1:
+            (reg,) = ids
+            if tx_usable and (tx, desc) in pre["by_tx"] and reg not in pre["tx_regs"].get(
+                (tx, desc), set()
+            ):
+                return set()
+            return pre["reg_codes"].get(reg, set())
+        if tx_usable:
+            return pre["by_tx"].get((tx, desc), set())
+        return set()
 
     _HANDLERS: dict = {
         "heartbeat": _heartbeat,
@@ -684,6 +912,7 @@ class RaceState:
         "init": _init,
         "class_codes": _class_codes,
         "class_code_preload": _class_code_preload,
+        "class_code_run": _class_code_run,
     }
 
     # ---- serialisation ----
@@ -767,7 +996,17 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
-        class_code_missing = self._resolve_class_codes(entries)
+        # Once per snapshot, before the scope is chosen — an expired started
+        # run changes it — and before the codes are resolved.  It marks the
+        # state dirty on an expiry: a snapshot for one client must not expire
+        # a code that other clients' pages then never hear about.
+        self.prune_expired_class_codes()
+        scope = self._class_code_scope()
+        scope_id = scope[0] if scope else ""
+        if scope_id != self._logged_scope:
+            log.info("Class-code pushes scoped to %s", scope_id or "no run (unscoped)")
+            self._logged_scope = scope_id
+        class_code_missing = self._resolve_class_codes(entries, scope=scope)
         self._apply_intervals(entries, sort_mode=sort_mode)
         return {
             "track_name": self.track_name,
@@ -784,6 +1023,7 @@ class RaceState:
                 self.class_codes or self.class_code_preload["has_codes"]
             ),
             "class_code_missing": class_code_missing,
+            "class_code_scope": scope_id,
             "entries": entries,
         }
 
@@ -945,14 +1185,19 @@ class RaceState:
         registry needs no such cutoff: every entry expires on its own
         :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
         The registry preload is saved beside it under ``"preload"``, for the
-        same reason and because the relay pulls it again only on a reconnect.
+        same reason and because the relay pulls it again only on a reconnect;
+        the started runs under ``"run"`` and ``"run_next"``, because the host
+        announces each once.
         """
         return {
             "class_codes": self.class_codes,
             "preload": {
                 "received_at": self.class_code_preload["received_at"],
                 "entries": self.class_code_preload["entries"],
+                "runs": self.class_code_preload["runs"],
             },
+            "run": self.class_code_run,
+            "run_next": self.class_code_run_next,
         }
 
     def load_class_codes(self, data: dict) -> None:
@@ -961,7 +1206,9 @@ class RaceState:
         A malformed store degrades to an empty registry rather than failing
         startup, and expired entries are pruned on the way in.  The preload
         is restored the same way and independently: a missing or malformed
-        ``"preload"`` leaves it empty without touching the pushed registry.
+        ``"preload"`` leaves it empty without touching the pushed registry.  A
+        preload saved before registration ids and runs were carried loads
+        with them empty.  The started run is restored likewise.
         """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
@@ -986,6 +1233,10 @@ class RaceState:
             stamp = _finite_stamp(preload.get("received_at"))
             entries = [
                 {f: str(item[f]) for f in _PRELOAD_FIELDS}
+                | {
+                    f: str(item[f]) if item.get(f) is not None else ""
+                    for f in _PRELOAD_OPTIONAL_FIELDS
+                }
                 for item in preload.get("entries") or []
                 if isinstance(item, dict)
                 and all(item.get(f) is not None for f in _PRELOAD_FIELDS)
@@ -993,10 +1244,15 @@ class RaceState:
                 and str(item["transponder"]) not in ("", "0")
             ]
             if stamp is not None and entries:
-                self.class_code_preload = _preload_store(entries, min(stamp, now))
+                self.class_code_preload = _preload_store(
+                    entries, min(stamp, now), _coerce_runs(preload.get("runs"))
+                )
         except (AttributeError, TypeError, ValueError):
             pass
         self._prune_class_code_preload(now)
+        runs = data if isinstance(data, dict) else {}
+        self.class_code_run = _restore_run(runs.get("run"), now)
+        self.class_code_run_next = _restore_run(runs.get("run_next"), now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -1039,26 +1295,101 @@ class RaceState:
         return ""
 
 
-def _preload_store(entries: list[dict], received_at: float | None) -> dict:
-    """Return a preload store: its *entries*, their date, and the join indexes.
+def _preload_store(
+    entries: list[dict], received_at: float | None, runs: list[dict] | None = None
+) -> dict:
+    """Return a preload store: its *entries*, *runs*, their date, and the indexes.
 
     ``by_tx`` maps ``(transponder, class name)`` and ``by_class`` a class name
-    to the set of codes the entries carry, ``""`` included; both, and
-    ``has_codes``, are built once per store so a snapshot does not rebuild
-    them.
+    to the set of codes the entries carry, ``""`` included.  ``tx_regs`` maps
+    ``(transponder, class name)`` and ``nc_regs`` ``(number, class name)`` to
+    the set of non-empty registration ids carrying the pair — ``nc_regs``
+    only from entries with both an id and a number — and ``reg_codes`` a
+    registration id to its codes.  ``run_group`` maps a lowercased run id to
+    its lowercased group id, and ``runs_by_name`` a run name to its run ids.
+    All of them, and ``has_codes``, are built once per store so a snapshot
+    does not rebuild them.
     """
+    runs = runs or []
     by_tx: dict[tuple[str, str], set[str]] = {}
     by_class: dict[str, set[str]] = {}
+    tx_regs: dict[tuple[str, str], set[str]] = {}
+    nc_regs: dict[tuple[str, str], set[str]] = {}
+    reg_codes: dict[str, set[str]] = {}
     for e in entries:
-        by_tx.setdefault((e["transponder"], e["class_name"]), set()).add(e["class_code"])
-        by_class.setdefault(e["class_name"], set()).add(e["class_code"])
+        cls, reg = e["class_name"], e["registration_id"]
+        by_tx.setdefault((e["transponder"], cls), set()).add(e["class_code"])
+        by_class.setdefault(cls, set()).add(e["class_code"])
+        if reg:
+            tx_regs.setdefault((e["transponder"], cls), set()).add(reg)
+            reg_codes.setdefault(reg, set()).add(e["class_code"])
+            if e["number"]:
+                nc_regs.setdefault((e["number"], cls), set()).add(reg)
+    runs_by_name: dict[str, list[str]] = {}
+    for r in runs:
+        runs_by_name.setdefault(r["name"], []).append(r["run_id"])
     return {
         "received_at": received_at,
         "entries": entries,
+        "runs": runs,
         "by_tx": by_tx,
         "by_class": by_class,
+        "tx_regs": tx_regs,
+        "nc_regs": nc_regs,
+        "reg_codes": reg_codes,
+        "run_group": {r["run_id"].lower(): r["group_id"].lower() for r in runs},
+        "runs_by_name": runs_by_name,
         "has_codes": any(e["class_code"] for e in entries),
     }
+
+
+def _restore_run(value, now: float) -> dict | None:
+    """Return a started run saved by :meth:`RaceState.class_codes_to_dict`, or *None*.
+
+    Its binding to a session and its closed mark come back with it; a
+    malformed, expired or future-dated one reads as none, the date capped
+    at *now*.
+    """
+    if not isinstance(value, dict):
+        return None
+    stamp = _finite_stamp(value.get("received_at"))
+    run_id, name = value.get("run_id"), value.get("name")
+    if (
+        stamp is None
+        or now - stamp > _CLASS_CODE_TTL_SECONDS
+        or not isinstance(run_id, str)
+        or not isinstance(name, str)
+        or not name
+        or not _RUN_ID.fullmatch(run_id)
+    ):
+        return None
+    run = {"run_id": run_id, "name": name, "received_at": min(stamp, now)}
+    if value.get("closed") is True:
+        run["closed"] = True
+    if isinstance(value.get("session_number"), str):
+        run["session_number"] = value["session_number"]
+    return run
+
+
+def _coerce_runs(value) -> list[dict]:
+    """Return a preload's untrusted ``runs`` as ``{"run_id", "group_id", "name"}`` dicts.
+
+    An item that is not a dict, lacks a field, or carries a run id not of the
+    form ``0x4000xxxx`` or a group id not of the form ``0x8000xxxx`` is
+    skipped; anything else not a list reads as none.
+    """
+    if not isinstance(value, list):
+        return []
+    runs = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        run = {k: str(item[k]) if item.get(k) is not None else "" for k in _RUN_FIELDS}
+        if run["name"] and _RUN_ID.fullmatch(run["run_id"]) and _GROUP_ID.fullmatch(
+            run["group_id"]
+        ):
+            runs.append(run)
+    return runs
 
 
 def _finite_stamp(value) -> float | None:

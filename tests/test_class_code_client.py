@@ -216,8 +216,12 @@ def _registry_record(reg_id="1a2b3c4d", tx=1234567, *, model="Test Car", capacit
     )
 
 
-def _triple(tx="1234567", class_name="Test Saloon Cup", code="TS"):
-    return {"transponder": tx, "class_name": class_name, "class_code": code}
+def _triple(tx="1234567", class_name="Test Saloon Cup", code="TS", *,
+            reg_id="1a2b3c4d", number="7"):
+    return {
+        "registration_id": reg_id, "number": number,
+        "transponder": tx, "class_name": class_name, "class_code": code,
+    }
 
 
 def test_registry_record_is_parsed():
@@ -253,13 +257,35 @@ def test_registry_keeps_codeless_records_and_skips_classless_and_zero_transponde
     assert ccc.parse_registry(buf) == [_triple(tx="11", code=""), _triple(tx="44")]
 
 
-def test_registry_triples_are_deduplicated():
+def test_registry_keeps_one_entry_per_registration():
+    """Two registrations sharing a transponder, class and code are two
+    entries; the server's number layer needs each one's id."""
     buf = (
         _registry_record("aaaa1111")
         + _registry_record("bbbb2222")
-        + _registry_record("cccc3333", code="TX")
+        + _registry_record("aaaa1111")
     )
-    assert ccc.parse_registry(buf) == [_triple(), _triple(code="TX")]
+    assert ccc.parse_registry(buf) == [
+        _triple(reg_id="aaaa1111"), _triple(reg_id="bbbb2222"),
+    ]
+
+
+def test_registry_carries_registration_id_and_number():
+    (rec,) = ccc.parse_registry(_registry_record("509ff32b", number="12X"))
+    assert rec["registration_id"] == "509ff32b"
+    assert rec["number"] == "12X"
+
+
+def test_registry_parses_non_hex_registration_ids():
+    long_id = "Ab" * 16
+    buf = (
+        _registry_record("Competitio1616", 11)
+        + _registry_record(long_id, 22)
+        + _registry_record(long_id + "c", 33)
+    )
+    assert [(r["registration_id"], r["transponder"]) for r in ccc.parse_registry(buf)] == [
+        ("Competitio1616", "11"), (long_id, "22"),
+    ]
 
 
 def test_registry_skips_a_truncated_record_and_binary_noise():
@@ -278,6 +304,43 @@ def test_registry_decodes_utf8_like_the_rmonitor_feed():
     (rec,) = ccc.parse_registry(_registry_record(class_name=raw_name))
     assert rec["class_name"] == raw_name.decode("utf-8", errors="replace")
     assert rec["class_name"] == "Zoë Cup�"
+
+
+def _run_record(run_id=0x40002806, group_id=0x80000985, name="Race 7 - 2nd Race",
+                flags=0x23C) -> bytes:
+    """One synthetic run-table record, followed by invented settings."""
+    return (
+        struct.pack("<I", 1) + struct.pack("<III", 0x6523A1B0, 0x6523A1B1, 0x6523A1B2)
+        + struct.pack("<III", run_id, flags, group_id) + _s(name) + bytes(8)
+    )
+
+
+def test_run_table_record_is_parsed():
+    buf = bytes(16) + _run_record() + bytes(16)
+    assert ccc.parse_runs(buf) == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
+
+
+def test_run_table_ids_are_uppercase_hex_like_push_tags():
+    (run,) = ccc.parse_runs(_run_record(0x400027FB, 0x8000098A, "Qualifying 4"))
+    assert (run["run_id"], run["group_id"]) == ("0x400027FB", "0x8000098A")
+
+
+def test_run_table_skips_noise_and_truncated_records():
+    good = _run_record(0x40002805, name="Race 6 - AMENDED GRID")
+    not_a_run = _run_record(0x10002806)
+    no_name = _run_record(0x40002807, name="")
+    unprintable = _run_record(0x40002808, name="\x07\x01")
+    repeat = _run_record(0x40002805, name="Race 6")
+    truncated = _run_record(0x40002809)[:-12]
+    buf = (
+        bytes(range(256)) + not_a_run + good + no_name + unprintable + repeat
+        + truncated
+    )
+    assert ccc.parse_runs(buf) == [
+        {"run_id": "0x40002805", "group_id": "0x80000985", "name": "Race 6 - AMENDED GRID"},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -775,8 +838,11 @@ class HostReader:
 
 REGISTRY = _registry_record("aaaa1111", 11) + _registry_record(
     "bbbb2222", 22, class_name="Test Sports Trophy", code="TT"
-)
-REGISTRY_ENTRIES = [_triple("11"), _triple("22", "Test Sports Trophy", "TT")]
+) + _run_record()
+REGISTRY_ENTRIES = [
+    _triple("11", reg_id="aaaa1111"),
+    _triple("22", "Test Sports Trophy", "TT", reg_id="bbbb2222"),
+]
 
 
 def _pulling(writer, registry=REGISTRY, then=()):
@@ -808,6 +874,9 @@ async def test_a_complete_registry_pull_is_forwarded_as_one_preload(monkeypatch)
     (msg,) = batches
     assert msg["type"] == "class_code_preload"
     assert msg["entries"] == REGISTRY_ENTRIES
+    assert msg["runs"] == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
     assert isinstance(msg["age_seconds"], float) and msg["age_seconds"] >= 0
     assert len(opened) == 1
     assert sleeps == []
@@ -893,7 +962,9 @@ async def test_a_failed_preload_is_retried_and_a_newer_pull_replaces_it(monkeypa
         await _finish(task)
     # Retried once on the first connection; the second connection's pull then
     # replaced the kept preload rather than queueing behind it.
-    assert calls == [REGISTRY_ENTRIES, REGISTRY_ENTRIES, [_triple("33", code="TN")]]
+    assert calls == [
+        REGISTRY_ENTRIES, REGISTRY_ENTRIES, [_triple("33", code="TN", reg_id="cccc3333")],
+    ]
     assert len(opened) == 2
     assert client._preload is None
 
@@ -1058,3 +1129,212 @@ async def test_a_preload_larger_than_the_server_accepts_is_not_forwarded(monkeyp
     assert "over the server's" in caplog.text
     assert len(opened) == 1
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# Run state
+# ---------------------------------------------------------------------------
+
+def _run_state(name="Race 6 - AMENDED GRID", run_id=0x40002805, state="started") -> bytes:
+    """One run-state notice as the host frames it on the stream."""
+    text = (
+        f"Run '{name}' [0x{run_id:08X}] is {state} - Event 'Test Meeting'"
+    ).encode()
+    return (
+        struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(text)) + text
+        + b"d" + struct.pack("<I", run_id)
+    )
+
+
+def test_run_state_parser_reads_a_started_run():
+    assert ccc.RunStateParser().feed(bytes(8) + _run_state() + bytes(8)) == [
+        ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "started"),
+    ]
+
+
+def test_run_state_parser_reads_a_name_containing_an_apostrophe():
+    """The match is anchored on the closing ``' [id] is``, so an apostrophe in
+    the run or event name does not end the run name early or late."""
+    (run,) = ccc.RunStateParser().feed(_run_state("Driver's Trophy - Collector's Race"))
+    assert run.name == "Driver's Trophy - Collector's Race"
+
+
+def test_run_state_parser_joins_a_frame_split_across_reads():
+    data = _run_state(state="stopped")
+    parser = ccc.RunStateParser()
+    out = parser.feed(data[:7]) + parser.feed(data[7:30]) + parser.feed(data[30:])
+    assert out == [ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "stopped")]
+
+
+def test_run_state_parser_ignores_other_text():
+    text = b"Autosave: 4184 runs saved"
+    data = struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(text)) + text
+    assert ccc.RunStateParser().feed(data) == []
+
+
+def _recording():
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+    return calls, on_batch
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_is_forwarded_before_the_pushes_of_its_burst(monkeypatch):
+    gate = asyncio.Event()
+    data = _push("added", "0x40002805", _fields()) + _run_state()
+    _harness(monkeypatch, [(ChunkReader([IDENT_FRAME, gate, data]), FakeWriter())])
+    calls, on_batch = _recording()
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.sleep(0.05)
+        gate.set()
+        await _until(lambda: len(calls) >= 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert [c["type"] for c in calls] == ["class_code_run", "class_codes"]
+    run = calls[0]
+    assert (run["run_id"], run["name"]) == ("0x40002805", "Race 6 - AMENDED GRID")
+    assert isinstance(run["age_seconds"], float) and run["age_seconds"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_is_not_forwarded(monkeypatch):
+    gate = asyncio.Event()
+    reader = ChunkReader([IDENT_FRAME, gate, _run_state(state="stopped")])
+    _harness(monkeypatch, [(reader, FakeWriter())])
+    calls, on_batch = _recording()
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert calls == []
+    assert client._run is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_delivery_is_retried_and_a_newer_run_replaces_it(monkeypatch):
+    gate = asyncio.Event()
+    reader = ChunkReader([IDENT_FRAME, gate, _run_state("Race 6")])
+    opened, sleeps = _harness(monkeypatch, [(reader, FakeWriter())])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["name"])
+        if len(calls) <= 2:
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch,
+        **{**FAST, "keepalive_interval": 0.05, "retry_initial": 0.1},
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        gate.set()
+        await _until(lambda: len(calls) >= 2)
+        reader._items.append(_run_state("Race 7", run_id=0x40002806))
+        await _until(lambda: len(calls) >= 3)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert calls == ["Race 6", "Race 6", "Race 7"]
+    assert client._run is None
+    assert len(opened) == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stopped_id, forwarded", [
+    (0x40002805, []),
+    (0x40002804, ["0x40002805"]),
+])
+async def test_a_run_stopped_before_its_start_was_delivered_is_not_forwarded(
+    monkeypatch, stopped_id, forwarded
+):
+    """Only the matching stop clears it; another run's stop leaves it alone."""
+    gate = asyncio.Event()
+    data = _run_state() + _run_state("Race 5", run_id=stopped_id, state="stopped")
+    _harness(monkeypatch, [(ChunkReader([IDENT_FRAME, gate, data]), FakeWriter())])
+    calls, on_batch = _recording()
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert [c["run_id"] for c in calls] == forwarded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stops", [
+    [0x40002805],
+    # A later, unrelated stop must not hide the in-flight run's own.
+    [0x40002805, 0x40002806],
+])
+async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retried(
+    monkeypatch, stops
+):
+    gate = asyncio.Event()
+    reader = ChunkReader([IDENT_FRAME, gate, _run_state()])
+    _harness(monkeypatch, [(reader, FakeWriter())])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["run_id"])
+        if len(calls) == 1:
+            reader._items.append(b"".join(
+                _run_state("Race", run_id=r, state="stopped") for r in stops
+            ))
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch,
+        **{**FAST, "keepalive_interval": 0.05, "retry_initial": 0.05},
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        gate.set()
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+    finally:
+        await _finish(task)
+    assert calls == ["0x40002805"]
+    assert client._run is None
+
+
+@pytest.mark.asyncio
+async def test_a_run_stopped_while_the_preload_is_delivered_is_not_forwarded(monkeypatch):
+    """The preload goes first in a flush; a stop read meanwhile must still
+    find the started run pending."""
+    writer = FakeWriter()
+    reader = _pulling(writer, registry=REGISTRY + _run_state())
+    _harness(monkeypatch, [(reader, writer)])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["type"])
+        if msg["type"] == "class_code_preload":
+            reader._then.append(_run_state(state="stopped"))
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch, **{**FAST, "keepalive_interval": 0.05}
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+    finally:
+        await _finish(task)
+    assert calls == ["class_code_preload"]
+    assert client._run is None
