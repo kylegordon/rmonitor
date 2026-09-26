@@ -173,7 +173,10 @@ class RaceState:
         handler = self._HANDLERS.get(msg.get("type"))
         if handler:
             event = handler(self, _coerce_scalars(msg))
-            if event is not None:
+            # last_updated dates the *race* state, and the store discards it by
+            # that age; class codes come from another source and live in a
+            # store of their own, so they must not make stale race state fresh.
+            if event is not None and event != "class_codes":
                 self.last_updated = time.time()
             return event
         return None
@@ -842,12 +845,10 @@ class RaceState:
         try:
             self.class_codes = {
                 k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
-                | {"received_at": min(float(v["received_at"]), now)}
+                | {"received_at": min(stamp, now)}
                 for k, v in (data.get("class_codes") or {}).items()
                 if isinstance(k, str) and isinstance(v, dict)
-                and isinstance(v.get("received_at"), (int, float))
-                and not isinstance(v["received_at"], bool)
-                and math.isfinite(v["received_at"])
+                and (stamp := _finite_stamp(v.get("received_at"))) is not None
             }
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
@@ -892,6 +893,21 @@ class RaceState:
         if self._seen_race_info or self.run_description:
             return "Race"
         return ""
+
+
+def _finite_stamp(value) -> float | None:
+    """Return a restored ``received_at`` as a finite float, or *None*.
+
+    ``json`` decodes ``NaN``, ``Infinity`` and integers too large for a float;
+    none of them is a usable time, and the last would raise ``OverflowError``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        stamp = float(value)
+    except OverflowError:
+        return None
+    return stamp if math.isfinite(stamp) else None
 
 
 def _entry_age(value) -> float:

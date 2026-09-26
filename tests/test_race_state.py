@@ -1562,7 +1562,7 @@ def test_load_class_codes_tolerates_a_malformed_store(state):
     assert list(state.class_codes) == ["r\te3"]
 
 
-@pytest.mark.parametrize("stamp", ["NaN", "Infinity", "-Infinity", "true"])
+@pytest.mark.parametrize("stamp", ["NaN", "Infinity", "-Infinity", "true", "1" + "0" * 400])
 def test_load_class_codes_drops_a_non_finite_timestamp(state, stamp):
     """``json`` decodes these, and a NaN or infinite stamp would never expire."""
     import json
@@ -1617,6 +1617,23 @@ def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path
     later = RaceState()
     later.load_class_codes(codes_store.load())
     assert later.class_codes == {}
+
+
+def test_class_codes_do_not_make_stale_race_state_look_fresh(state, monkeypatch):
+    """``last_updated`` dates the race state for ``STATE_MAX_AGE``; a class-code
+    push arriving long after the race went quiet must not reset that age."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _add_car(state, "7")
+    stale = state.last_updated
+    now[0] += 3600
+    state.mark_clean()
+    assert _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC")) == "class_codes"
+    assert state.last_updated == stale
+    assert state._to_dict()["last_updated"] == stale
+    assert state.dirty  # still broadcast
 
 
 def test_snapshot_reports_class_codes_available(state):
