@@ -336,6 +336,18 @@
     const classCodeMissingWrapEl = document.getElementById('class-code-missing-wrap');
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
+    // The ♥ means "data is flowing", not "a message arrived": messages land on the
+    // server's 0.25 s broadcast grid at irregular gaps, and pulsing on each restarted the
+    // 0.4 s animation mid-beat. So arrivals only raise a flag, and the beat samples it.
+    const HEARTBEAT_PERIOD_MS = 2000;
+    let dataArrived = false;
+    function heartbeatTick() {
+      if (!dataArrived) return;
+      dataArrived = false;
+      heartbeatEl.classList.remove('beating');
+      void heartbeatEl.offsetWidth; // reflow to restart animation
+      heartbeatEl.classList.add('beating');
+    }
     const connEl = document.getElementById('conn-status');
     const updateBannerEl = document.getElementById('update-banner');
     const noFeedEl = document.getElementById('no-feed-modal');
@@ -596,9 +608,6 @@
       ws.onerror = () => ws.close();
 
       ws.onmessage = (evt) => {
-        heartbeatEl.classList.remove('beating');
-        void heartbeatEl.offsetWidth; // reflow to restart animation
-        heartbeatEl.classList.add('beating');
         const msg = JSON.parse(evt.data);
 
         // Detect an outdated page. The server reports the version of the page it is
@@ -636,9 +645,11 @@
         }
 
         if (msg.event === 'full' || msg.event === 'update') {
+          dataArrived = true;
           hideNoFeedModal();
           render(msg.data);
         } else if (msg.event === 'init') {
+          dataArrived = true;
           hideNoFeedModal();
           previousRegs = new Set();
           rowMap = {};
@@ -651,6 +662,7 @@
 
     updateBannerEl.addEventListener('click', () => window.location.reload());
 
+    setInterval(heartbeatTick, HEARTBEAT_PERIOD_MS);
     connect();
   </script>
 </body>
