@@ -277,10 +277,15 @@ class ClassCodeClient:
 
     Each burst of pushes is deduplicated last-wins per run id and entrant,
     and handed to *on_batch* as one ``class_codes`` message per run id once
-    the stream has been quiet for *flush_quiet* seconds.  Failures of every
-    kind are logged and retried after a backoff; :meth:`run` never raises
-    anything but cancellation, so it can run beside the ``:50000`` feed
-    without taking it down.  The timing knobs exist so tests run fast.
+    the stream has been quiet for *flush_quiet* seconds.  A batch that
+    *on_batch* fails to deliver is kept and retried after *retry_initial*
+    seconds, doubling to *retry_max*: a roster is pushed once per run load,
+    so a dropped batch would stay missing for the rest of that run.  Entries
+    pushed since the failure win over the kept ones, and kept entries outlive
+    a reconnect.  Failures of every kind are logged and retried after a
+    backoff; :meth:`run` never raises anything but cancellation, so it can
+    run beside the ``:50000`` feed without taking it down.  The timing knobs
+    exist so tests run fast.
     """
 
     def __init__(
@@ -297,6 +302,8 @@ class ClassCodeClient:
         record_idle: float = 0.15,
         tail_idle: float = 0.6,
         handshake_cap: float = 30.0,
+        retry_initial: float = 5.0,
+        retry_max: float = 300.0,
     ) -> None:
         self.host = host
         self.port = port
@@ -309,6 +316,11 @@ class ClassCodeClient:
         self.record_idle = record_idle
         self.tail_idle = tail_idle
         self.handshake_cap = handshake_cap
+        self.retry_initial = retry_initial
+        self.retry_max = retry_max
+        self._retry_delay = retry_initial
+        # Event-loop time before which a failed batch is not re-sent.
+        self._retry_at = 0.0
         self._parser = PushParser()
         self._pending: dict[str, dict[str, dict]] = {}
         self._keepalive = b""
@@ -404,7 +416,7 @@ class ClassCodeClient:
         while True:
             deadline = next_keepalive
             if self._pending:
-                deadline = min(deadline, last_rx + self.flush_quiet)
+                deadline = min(deadline, max(last_rx + self.flush_quiet, self._retry_at))
             try:
                 data = await asyncio.wait_for(
                     reader.read(65536), timeout=max(0.0, deadline - loop.time())
@@ -415,7 +427,11 @@ class ClassCodeClient:
                     writer.write(self._keepalive)
                     await writer.drain()
                     next_keepalive = now + self.keepalive_interval
-                if self._pending and now - last_rx >= self.flush_quiet:
+                if (
+                    self._pending
+                    and now - last_rx >= self.flush_quiet
+                    and now >= self._retry_at
+                ):
                     await self._flush()
                 continue
             if not data:
@@ -434,6 +450,7 @@ class ClassCodeClient:
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}
+        failed = False
         for run_id, by_entrant in pending.items():
             msg = {
                 "type": "class_codes",
@@ -445,6 +462,18 @@ class ClassCodeClient:
                 await self.on_batch(msg)
             except Exception:
                 log.exception("Could not forward class codes for run %s", run_id)
+                failed = True
+                kept = self._pending.setdefault(run_id, {})
+                for entrant_id, entry in by_entrant.items():
+                    kept.setdefault(entrant_id, entry)
+        loop = asyncio.get_running_loop()
+        if failed:
+            self._retry_at = loop.time() + self._retry_delay
+            log.warning("Retrying class-code delivery in %.0fs", self._retry_delay)
+            self._retry_delay = min(self._retry_delay * 2, self.retry_max)
+        else:
+            self._retry_at = 0.0
+            self._retry_delay = self.retry_initial
 
     @staticmethod
     async def _close(writer) -> None:

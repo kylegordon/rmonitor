@@ -475,6 +475,11 @@
         // withheld rather than guessed.  The description stays as the hover title.
         const cls = e.class_code || '—';
         const clsTitle = e.class_description || '';
+        // A title reaches neither touch devices nor screen readers (see POS
+        // below), so the description also goes in the cell's accessible name.
+        const clsAria = clsTitle
+          ? (e.class_code ? 'Class ' + e.class_code + ', ' : 'No class code, ') + clsTitle
+          : '';
         // Under a best-lap sort the feed's own position field is track order,
         // not the order on screen, so POS counts the rows and keeps the track
         // position as the tooltip.  The movement arrows track the feed's order
@@ -497,7 +502,7 @@
           { text: name, title: vehicle },
           { text: intervalText(e.gap_ahead_seconds, e.gap_ahead_laps) },
           { text: intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
-          { text: cls, title: clsTitle },
+          { text: cls, title: clsTitle, aria: clsAria },
           { text: e.laps || '—' },
           { text: e.last_lap_time || '—' },
           { text: e.best_lap_time || '—' },

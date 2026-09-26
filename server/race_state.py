@@ -454,9 +454,12 @@ class RaceState:
 
         The registry is keyed by run id and entrant id, last push wins, and it
         accumulates across runs: pushes cover runs other than the one on the
-        rMonitor feed, and :meth:`_resolve_class_codes` gates every match on
-        the class name.  It survives :meth:`reset` for the reason given there,
-        and expires by :data:`_CLASS_CODE_TTL_SECONDS` instead.
+        rMonitor feed.  What keeps another run's record off a car differs by
+        layer in :meth:`_resolve_class_codes` — a transponder match takes the
+        latest push for that transponder whatever its run or class, and only
+        the number match is gated on the class name.  It survives :meth:`reset`
+        for the reason given there, and expires by
+        :data:`_CLASS_CODE_TTL_SECONDS` instead.
 
         ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
         so every item is checked and coerced here, and one without an entrant
@@ -501,9 +504,10 @@ class RaceState:
         Two layers, each failing to blank — never to a guess:
 
         1. **Transponder** (not ``""`` or ``"0"``) → the latest push carrying
-           it.  First because it survives an operator's mid-session renumber,
-           which reaches the push side before the rMonitor feed: seen twice on
-           one day, ``231`` → ``23`` and ``190`` → ``90``.
+           it, from any run and with no class-name check.  First because it
+           survives an operator's mid-session renumber, which reaches the push
+           side before the rMonitor feed: seen twice on one day, ``231`` →
+           ``23`` and ``190`` → ``90``.
         2. **Exact** ``(number, class_description)`` → a code only when every
            matching record carries one distinct code.  Distinct codes, not
            records, because the same entrant is pushed under several run ids.

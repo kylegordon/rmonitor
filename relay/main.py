@@ -192,15 +192,16 @@ async def main(
         async def on_class_codes(msg: dict) -> None:
             # post_message exits on a hard failure so the headless container
             # restarts, but a SystemExit leaving this sibling task would bypass
-            # RelayRunner._run_with_respawn (see its docstring).  The :50000
-            # path still exits on the same outage, so nothing is masked.
+            # RelayRunner._run_with_respawn (see its docstring).  So it becomes
+            # an ordinary error, on which ClassCodeClient keeps the batch and
+            # retries it.  The :50000 path still exits on the same outage, so
+            # nothing is masked.
             try:
                 await post_message(http, msg, cfg, on_attempt=on_server_attempt)
             except SystemExit:
-                log.error(
-                    "Could not deliver class codes for run %s – dropping them",
-                    msg.get("run_id"),
-                )
+                raise ConnectionError(
+                    f"could not deliver class codes for run {msg.get('run_id')}"
+                ) from None
 
         client = RMonitorClient(
             cfg.host,

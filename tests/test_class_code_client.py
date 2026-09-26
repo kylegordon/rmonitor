@@ -462,39 +462,76 @@ async def test_reconnect_delay_resets_after_a_connection_that_survived_a_keepali
     assert sleeps == [60, 120, 60]
 
 
-@pytest.mark.asyncio
-async def test_a_failing_batch_callback_does_not_end_the_connection(monkeypatch):
+def _failing_client(monkeypatch, fail_calls, **knobs):
+    """A client on one held connection whose *on_batch* fails on the call
+    numbers in *fail_calls*; return ``(client, reader, calls, opened, sleeps)``.
+
+    A short keepalive makes the idle hold re-poll the reader, so a chunk a
+    test queues later is picked up.
+    """
     gate = asyncio.Event()
-    reader = ChunkReader([
-        IDENT_FRAME, gate, _push("added", "0x4000AAAA", _fields("e1")),
-    ])
-    writer = FakeWriter()
-    opened, sleeps = _harness(monkeypatch, [(reader, writer)])
+    reader = ChunkReader([IDENT_FRAME, gate, _push("added", "0x4000AAAA", _fields("e1"))])
+    opened, sleeps = _harness(monkeypatch, [(reader, FakeWriter())])
     calls = []
 
     async def on_batch(msg):
-        calls.append(msg)
-        if len(calls) == 1:
-            raise RuntimeError("server rejected it")
+        calls.append((asyncio.get_running_loop().time(), msg))
+        if len(calls) in fail_calls:
+            raise ConnectionError("server unreachable")
 
-    # A short keepalive makes the idle hold re-poll the reader, so a chunk
-    # queued later is picked up.
     client = ccc.ClassCodeClient(
-        "timing-host", on_batch, **{**FAST, "keepalive_interval": 0.05}
+        "timing-host", on_batch, **{**FAST, "keepalive_interval": 0.05, **knobs}
+    )
+    gate.set()
+    return client, reader, calls, opened, sleeps
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_is_kept_and_retried_on_the_same_connection(monkeypatch):
+    client, _, calls, opened, sleeps = _failing_client(
+        monkeypatch, {1}, retry_initial=0.2
     )
     task = asyncio.ensure_future(client.run())
     try:
-        await asyncio.sleep(0.05)
-        gate.set()
-        await _until(lambda: calls)
-        # A later burst on the same connection is still delivered.
-        reader._items.append(_push("modified", "0x4000AAAA", _fields("e2")))
         await _until(lambda: len(calls) >= 2)
     finally:
         await _finish(task)
-    assert [c["entries"][0]["entrant_id"] for c in calls] == ["e1", "e2"]
+    (t1, first), (t2, retried) = calls[:2]
+    assert retried == first
+    assert retried["entries"] == [_entry("added")]
+    assert t2 - t1 >= 0.2
     assert len(opened) == 1
     assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_entries_pushed_after_a_failure_win_over_the_kept_ones(monkeypatch):
+    client, reader, calls, _, _ = _failing_client(monkeypatch, {1}, retry_initial=0.3)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: calls)
+        reader._items.append(_push("modified", "0x4000AAAA", _fields("e1", number="17")))
+        await _until(lambda: len(calls) >= 2)
+    finally:
+        await _finish(task)
+    assert calls[1][1]["entries"] == [_entry("modified", number="17")]
+
+
+@pytest.mark.asyncio
+async def test_retry_delay_doubles_while_delivery_fails_and_resets_on_success(monkeypatch):
+    client, _, calls, _, _ = _failing_client(
+        monkeypatch, {1, 2, 3}, retry_initial=0.02, retry_max=0.08
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(calls) >= 3)
+        assert client._retry_delay == 0.08
+        await _until(lambda: len(calls) >= 4)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    assert len(calls) == 4
+    assert client._retry_delay == client.retry_initial
 
 
 @pytest.mark.asyncio

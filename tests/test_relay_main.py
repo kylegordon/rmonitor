@@ -147,7 +147,7 @@ def fake_sources(monkeypatch):
 
     The feed's ``run()`` returns once ``state["feed_done"]`` is set; the
     class-code client's ``run()`` records its start, optionally delivers
-    ``state["batch"]`` through its callback, then waits to be cancelled.
+    ``state["batch"]`` through its callback (recording what it raised), then waits to be cancelled.
     """
     state = {
         "feed_done": asyncio.Event(),
@@ -155,7 +155,7 @@ def fake_sources(monkeypatch):
         "codes_clients": [],
         "codes_cancelled": False,
         "batch": None,
-        "batch_returned": False,
+        "batch_error": None,
     }
 
     class FakeFeed:
@@ -174,8 +174,10 @@ def fake_sources(monkeypatch):
 
         async def run(self):
             if state["batch"] is not None:
-                await self.on_batch(state["batch"])
-                state["batch_returned"] = True
+                try:
+                    await self.on_batch(state["batch"])
+                except Exception as exc:
+                    state["batch_error"] = exc
             state["codes_started"].set()
             try:
                 await asyncio.Event().wait()
@@ -223,7 +225,9 @@ async def test_a_class_code_post_failure_does_not_exit_the_relay(fake_sources, m
     fake_sources["batch"] = {"type": "class_codes", "run_id": "r", "entries": []}
     task = asyncio.ensure_future(relay_main.main(_relay_config()))
     await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
-    assert fake_sources["batch_returned"]
+    # An ordinary error, which ClassCodeClient keeps and retries — never the
+    # SystemExit that would bypass RelayRunner's respawn.
+    assert isinstance(fake_sources["batch_error"], ConnectionError)
     assert post.await_count == 1
     assert not task.done()
     fake_sources["feed_done"].set()

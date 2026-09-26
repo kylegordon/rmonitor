@@ -547,7 +547,7 @@ def test_the_class_cell_shows_the_code_or_a_dash_never_the_description() -> None
     then draw an em-dash, never fall back to ``class_description``: a description is too
     long for the column on a phone, and mixing the two in one column would make a car
     without a code look as though it had one. The description survives only as the
-    cell's title. As with ``sort_mode``, no test renders the template, so this guard is
+    cell's title and accessible name. As with ``sort_mode``, no test renders the template, so this guard is
     textual — it pins where the cell's text comes from and that the page reads the two
     header-count fields, and what the page draws beyond that is unguarded.
     """
@@ -558,6 +558,10 @@ def test_the_class_cell_shows_the_code_or_a_dash_never_the_description() -> None
     ]
     assert assignments == ["const cls = e.class_code || '—';"], (
         "the Class cell's text must be the class code or an em-dash, assigned once"
+    )
+    assert "{ text: cls, title: clsTitle, aria: clsAria }" in page, (
+        "the Class cell must carry the description in its accessible name as well as "
+        "its title, which touch devices and screen readers never expose"
     )
     assert "class_codes_available" in page and "class_code_missing" in page, (
         "the page no longer reads the header count of entrants without a class code"
