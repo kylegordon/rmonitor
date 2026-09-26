@@ -362,12 +362,14 @@ class ClassCodeClient:
                 log.exception("Class-code client: unexpected error – reconnecting after backoff")
             await self._close(writer)
             # A burst cut short by a disconnect is still delivered — after any
-            # delivery already in flight, never beside it.
+            # delivery already in flight, never beside it, and not before a
+            # failed delivery's retry time; entries held back then go out from
+            # the next connection's hold loop once that time has passed.
             try:
                 if self._delivery is not None:
                     await self._delivery
                     self._delivery = None
-                if self._pending:
+                if self._pending and asyncio.get_running_loop().time() >= self._retry_at:
                     await self._flush()
             except asyncio.CancelledError:
                 if self._delivery is not None:

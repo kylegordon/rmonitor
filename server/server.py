@@ -233,6 +233,27 @@ async def handle_ingest(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def broadcast_if_dirty(app: web.Application) -> bool:
+    """Send one ``update`` if the race state changed; return whether it did.
+
+    Nothing is sent while the feed is known lost.  The page dismisses its
+    no-feed notice on every ``update``, and the watchdog does not repeat
+    ``no_feed`` during an outage it has already announced — so an update
+    caused by something other than the feed (a class-code batch) would hide
+    the outage for good.  The state stays dirty meanwhile; feed recovery
+    broadcasts it whole.
+    """
+    state = app[race_state_key]
+    if not state.dirty or _feed_state(app)["feed_lost"]:
+        return False
+    # Cleared *before* awaiting the broadcast, not after, so a mutation that
+    # lands while the broadcast is in flight re-dirties the state instead of
+    # being silently discarded.
+    state.mark_clean()
+    await broadcast(app, "update", state.snapshot())
+    return True
+
+
 async def _feed_watchdog(app: web.Application) -> None:
     """Background task: broadcast 'no_feed' if ingest has been silent for too long."""
     fs = _feed_state(app)

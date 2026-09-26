@@ -590,6 +590,33 @@ async def test_a_slow_delivery_does_not_hold_up_the_keepalive(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_delivery_failing_as_the_connection_closes_waits_for_its_retry(monkeypatch):
+    """The disconnect path honours the delivery backoff instead of re-sending at once."""
+    gate = asyncio.Event()
+    closing = asyncio.Event()
+    reader = ChunkReader([
+        IDENT_FRAME, gate, _push("added", "0x4000AAAA", _fields()), closing, b"",
+    ])
+    _, sleeps = _harness(monkeypatch, [(reader, FakeWriter())])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+        closing.set()  # the connection drops while this delivery is failing
+        await asyncio.sleep(0.05)
+        raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "retry_initial": 10.0})
+    task = asyncio.ensure_future(client.run())
+    gate.set()
+    with pytest.raises(_Stop):
+        await asyncio.wait_for(task, timeout=2.0)
+    assert len(calls) == 1
+    assert sleeps == [client.reconnect_initial]
+    assert [list(v) for v in client._pending.values()] == [["e1"]]  # kept for later
+
+
+@pytest.mark.asyncio
 async def test_unexpected_exception_is_logged_and_retried_not_raised(monkeypatch, caplog):
     opened, sleeps = _harness(monkeypatch, [RuntimeError("boom")])
     client = ccc.ClassCodeClient("timing-host", _collect([]), **FAST)

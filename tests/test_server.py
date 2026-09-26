@@ -292,6 +292,55 @@ async def test_class_codes_arriving_while_the_feed_is_lost_are_not_a_recovery(cl
 
 
 @pytest.mark.asyncio
+async def test_class_codes_during_an_outage_do_not_broadcast_an_update(client, app):
+    """The production broadcast path sends no ``update`` while the feed is lost.
+
+    The page hides its no-feed notice on any ``update``, and the watchdog does
+    not repeat ``no_feed``, so a class-code batch broadcast mid-outage would
+    hide the outage for good.  Recovery then carries the codes in its ``full``.
+    """
+    from server.server import broadcast_if_dirty, race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    state = app[race_state_key]
+    state.mark_clean()
+    app[feed_state_key]["feed_lost"] = True
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        assert (await ws.receive_json())["event"] == "no_feed"
+        resp = await client.post("/api/ingest", json=_CLASS_CODES_MSG, headers=headers)
+        assert resp.status == 200
+        assert state.dirty
+        assert await broadcast_if_dirty(app) is False
+        with pytest.raises(asyncio.TimeoutError):
+            await ws.receive_json(timeout=0.2)
+        assert state.dirty  # kept for the recovery broadcast
+
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+            headers=headers,
+        )
+        assert resp.status == 200
+        assert (await ws.receive_json(timeout=1.0))["event"] == "full"
+    assert state.class_codes
+
+
+@pytest.mark.asyncio
+async def test_broadcast_if_dirty_sends_one_update_when_the_feed_is_live(client, app):
+    from server.server import broadcast_if_dirty, race_state_key
+
+    state = app[race_state_key]
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        state.process(_CLASS_CODES_MSG)
+        assert await broadcast_if_dirty(app) is True
+        assert (await ws.receive_json(timeout=1.0))["event"] == "update"
+        assert not state.dirty
+        assert await broadcast_if_dirty(app) is False
+
+
+@pytest.mark.asyncio
 async def test_feed_restored_reset_keeps_class_codes(client, app):
     from server.server import race_state_key
 

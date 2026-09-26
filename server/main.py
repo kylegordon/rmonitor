@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from server.race_state import RaceState
-from server.server import BROADCAST_INTERVAL, broadcast, create_app
+from server.server import BROADCAST_INTERVAL, broadcast_if_dirty, create_app
 from server.state_store import JsonFileStateStore
 
 log = logging.getLogger("server")
@@ -48,12 +48,7 @@ async def _broadcast_loop() -> None:
     while True:
         await asyncio.sleep(BROADCAST_INTERVAL)
         try:
-            if race_state.dirty:
-                # Clear the flag *before* awaiting the broadcast, not after,
-                # so a mutation that lands while the broadcast is in flight
-                # re-dirties the state instead of being silently discarded.
-                race_state.mark_clean()
-                await broadcast(app, "update", race_state.snapshot())
+            await broadcast_if_dirty(app)
         except Exception:
             log.exception("Broadcast loop iteration failed")
 
