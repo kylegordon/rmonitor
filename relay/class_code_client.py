@@ -282,7 +282,10 @@ class ClassCodeClient:
     seconds, doubling to *retry_max*: a roster is pushed once per run load,
     so a dropped batch would stay missing for the rest of that run.  Entries
     pushed since the failure win over the kept ones, and kept entries outlive
-    a reconnect.  Failures of every kind are logged and retried after a
+    a reconnect.  Every entry carries ``age_seconds``, its time since it was
+    read from the socket, so the server dates it from the push rather than
+    from a delayed retry's arrival — measured on this process's monotonic
+    clock, so the two hosts' clocks need not agree.  Failures of every kind are logged and retried after a
     backoff; :meth:`run` never raises anything but cancellation, so it can
     run beside the ``:50000`` feed without taking it down.  The timing knobs
     exist so tests run fast.
@@ -446,16 +449,22 @@ class ClassCodeClient:
             if entry is None:
                 log.debug("Skipping a record without a class code in run %s", rec.run_id)
                 continue
+            entry["_observed"] = time.monotonic()
             self._pending.setdefault(rec.run_id, {})[entry["entrant_id"]] = entry
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}
         failed = False
         for run_id, by_entrant in pending.items():
+            now = time.monotonic()
             msg = {
                 "type": "class_codes",
                 "run_id": run_id,
-                "entries": list(by_entrant.values()),
+                "entries": [
+                    {k: v for k, v in e.items() if k != "_observed"}
+                    | {"age_seconds": round(now - e["_observed"], 3)}
+                    for e in by_entrant.values()
+                ],
             }
             log.info("Forwarding %d class codes for run %s", len(by_entrant), run_id)
             try:

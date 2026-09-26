@@ -1490,6 +1490,35 @@ def test_expired_class_codes_are_not_joined(state, monkeypatch):
     assert snap["class_codes_available"] is False
 
 
+def test_a_class_code_is_dated_from_its_push_not_its_arrival(state, monkeypatch):
+    """A retried batch that lands hours late keeps the push's age, not a fresh TTL."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    ttl = rs._CLASS_CODE_TTL_SECONDS
+    late = {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": ttl - 60}
+    _codes(state, "r", late)
+    (rec,) = state.class_codes.values()
+    assert rec["received_at"] == now[0] - (ttl - 60)
+    now[0] += 120  # two minutes on, it is past the TTL counted from the push
+    assert state.snapshot()["class_codes_available"] is False
+    # Already past the TTL on arrival: never stored.
+    stale = {**_code_entry("e2", "8", "Saloon Cup", "SC"), "age_seconds": ttl + 1}
+    assert _codes(state, "r", stale) is None
+    assert state.class_codes == {}
+
+
+@pytest.mark.parametrize("age", [None, "soon", -5, float("nan"), float("inf"), True, [1]])
+def test_an_unusable_class_code_age_counts_as_zero(state, monkeypatch, age):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    _codes(state, "r", {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": age})
+    (rec,) = state.class_codes.values()
+    assert rec["received_at"] == 1_000_000.0
+
+
 def test_malformed_class_codes_entries_are_skipped(state):
     assert state.process({"type": "class_codes", "run_id": "r", "entries": "nonsense"}) is None
     assert state.process({"type": "class_codes", "run_id": "r"}) is None

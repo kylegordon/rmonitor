@@ -291,9 +291,24 @@ async def _finish(task):
         pass
 
 
+def _ages(msg):
+    """Return every entry's ``age_seconds``, checking each is a sane number."""
+    ages = [e["age_seconds"] for e in msg["entries"]]
+    assert all(isinstance(a, float) and a >= 0 for a in ages)
+    return ages
+
+
+def _without_age(msg):
+    """Return *msg* with each entry's ``age_seconds`` checked and removed."""
+    _ages(msg)
+    return {**msg, "entries": [
+        {k: v for k, v in e.items() if k != "age_seconds"} for e in msg["entries"]
+    ]}
+
+
 def _collect(batches):
     async def on_batch(msg):
-        batches.append(msg)
+        batches.append(_without_age(msg))
     return on_batch
 
 
@@ -475,7 +490,7 @@ def _failing_client(monkeypatch, fail_calls, **knobs):
     calls = []
 
     async def on_batch(msg):
-        calls.append((asyncio.get_running_loop().time(), msg))
+        calls.append((asyncio.get_running_loop().time(), _without_age(msg), _ages(msg)))
         if len(calls) in fail_calls:
             raise ConnectionError("server unreachable")
 
@@ -496,10 +511,12 @@ async def test_a_failed_batch_is_kept_and_retried_on_the_same_connection(monkeyp
         await _until(lambda: len(calls) >= 2)
     finally:
         await _finish(task)
-    (t1, first), (t2, retried) = calls[:2]
+    (t1, first, (age1,)), (t2, retried, (age2,)) = calls[:2]
     assert retried == first
     assert retried["entries"] == [_entry("added")]
     assert t2 - t1 >= 0.2
+    # The retry is dated from the push, not re-dated at the retry.
+    assert age2 - age1 >= 0.19
     assert len(opened) == 1
     assert sleeps == []
 

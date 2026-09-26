@@ -266,6 +266,32 @@ async def test_ingested_class_codes_reach_the_snapshot(client, app):
 
 
 @pytest.mark.asyncio
+async def test_class_codes_arriving_while_the_feed_is_lost_are_not_a_recovery(client, app):
+    """The class-code source is not the timing feed: its POSTs keep coming while
+    :50000 is down, and must neither clear the outage nor reset the race state."""
+    from server.server import race_state_key
+
+    fs = app[feed_state_key]
+    fs["feed_lost"] = True
+    fs["last_ingest_at"] = stale = time.monotonic() - 3600
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        assert (await ws.receive_json())["event"] == "no_feed"
+        resp = await client.post(
+            "/api/ingest", json=_CLASS_CODES_MSG,
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+        with pytest.raises(asyncio.TimeoutError):
+            await ws.receive_json(timeout=0.2)
+    assert fs["feed_lost"] is True
+    assert fs["last_ingest_at"] == stale
+    state = app[race_state_key]
+    assert "1" in state.competitors  # not reset
+    assert state.class_codes
+
+
+@pytest.mark.asyncio
 async def test_feed_restored_reset_keeps_class_codes(client, app):
     from server.server import race_state_key
 

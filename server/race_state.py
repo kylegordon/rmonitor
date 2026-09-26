@@ -10,6 +10,7 @@ Protocol as implemented by:
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 log = logging.getLogger(__name__)
@@ -462,6 +463,13 @@ class RaceState:
         ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
         so every item is checked and coerced here, and one without an entrant
         id or a code is skipped.
+
+        Each entry is dated from its push, not from its arrival: the relay
+        retries an undelivered batch, and a retry landing hours later must not
+        earn a fresh TTL.  So ``received_at`` is now minus the entry's
+        ``age_seconds`` — a duration on the relay's own clock, so the two
+        hosts' clocks need not agree — and an entry already past the TTL is
+        not stored.  A missing or unusable age counts as zero.
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
@@ -477,7 +485,10 @@ class RaceState:
                 }
                 if not entry["entrant_id"] or not entry["class_code"]:
                     continue
-                entry["received_at"] = now
+                age = _entry_age(item.get("age_seconds"))
+                if age > _CLASS_CODE_TTL_SECONDS:
+                    continue
+                entry["received_at"] = now - age
                 self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
                 changed = True
         changed = self._prune_class_codes(now) or changed
@@ -856,6 +867,21 @@ class RaceState:
         if self._seen_race_info or self.run_description:
             return "Race"
         return ""
+
+
+def _entry_age(value) -> float:
+    """Return a class-code entry's ``age_seconds`` as a finite non-negative float.
+
+    Anything else — absent, non-numeric, negative, NaN or infinite — reads as
+    zero, which is what the entry's age was before the relay sent one.
+    """
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return age if math.isfinite(age) and age > 0 else 0.0
 
 
 def _update_position(competitor: dict, new_position: str) -> None:

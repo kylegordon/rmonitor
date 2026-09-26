@@ -175,8 +175,19 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+# Ingest types that come from a source other than the rMonitor feed, so they
+# are no evidence the feed is alive.  A class-code push or retry arriving while
+# :50000 is down must not clear the outage, reset the race state and broadcast.
+_NON_FEED_TYPES = frozenset({"class_codes"})
+
+
 async def handle_ingest(request: web.Request) -> web.Response:
-    """Receive a parsed rMonitor message from the relay and apply it to state."""
+    """Receive a parsed rMonitor message from the relay and apply it to state.
+
+    Only rMonitor-feed messages feed the watchdog: a type in
+    :data:`_NON_FEED_TYPES` is applied without touching ``last_ingest_at`` or
+    ``feed_lost``.
+    """
     secret = request.app[relay_secret_key]
     auth = request.headers.get("Authorization", "")
     if secret and not hmac.compare_digest(auth, f"Bearer {secret}"):
@@ -189,9 +200,11 @@ async def handle_ingest(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(reason="Missing 'type' field")
 
     fs = _feed_state(request.app)
-    fs["last_ingest_at"] = time.monotonic()
-    was_lost = fs["feed_lost"]
     state = request.app[race_state_key]
+    was_lost = False
+    if msg["type"] not in _NON_FEED_TYPES:
+        fs["last_ingest_at"] = time.monotonic()
+        was_lost = fs["feed_lost"]
     if was_lost:
         fs["feed_lost"] = False
         log.warning(
