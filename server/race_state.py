@@ -804,17 +804,23 @@ class RaceState:
             }
         except (AttributeError, TypeError, ValueError):
             self.leader_time_at_lap = {}
+        # A timestamp must be finite — json accepts NaN and Infinity, and
+        # neither is ever pruned — and one in the future is capped at now, so
+        # a corrupt store can neither keep a code forever nor extend its life.
+        now = time.time()
         try:
             self.class_codes = {
                 k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
-                | {"received_at": float(v["received_at"])}
+                | {"received_at": min(float(v["received_at"]), now)}
                 for k, v in (data.get("class_codes") or {}).items()
                 if isinstance(k, str) and isinstance(v, dict)
                 and isinstance(v.get("received_at"), (int, float))
+                and not isinstance(v["received_at"], bool)
+                and math.isfinite(v["received_at"])
             }
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
-        self._prune_class_codes(time.time())
+        self._prune_class_codes(now)
         self.track_name = data.get("track_name", "")
         self.track_length_miles = data.get("track_length_miles")
         self.run_description = data.get("run_description", "")

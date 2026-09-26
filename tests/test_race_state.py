@@ -1560,6 +1560,30 @@ def test_load_dict_tolerates_a_malformed_class_code_store(state):
     assert list(state.class_codes) == ["r\te3"]
 
 
+@pytest.mark.parametrize("stamp", ["NaN", "Infinity", "-Infinity", "true"])
+def test_load_dict_drops_a_class_code_with_a_non_finite_timestamp(state, stamp):
+    """``json`` decodes these, and a NaN or infinite stamp would never expire."""
+    import json
+
+    raw = (
+        '{"class_codes": {"r\\te1": {"number": "7", "class_name": "Saloon Cup",'
+        ' "transponder": "1234567", "class_code": "SC", "received_at": %s}}}' % stamp
+    )
+    state._load_dict(json.loads(raw))
+    assert state.class_codes == {}
+
+
+def test_load_dict_caps_a_future_class_code_timestamp_at_now(state, monkeypatch):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    state._load_dict({"class_codes": {"r\te1": {
+        "number": "7", "class_name": "Saloon Cup", "transponder": "",
+        "class_code": "SC", "received_at": 9_000_000_000.0,
+    }}})
+    assert state.class_codes["r\te1"]["received_at"] == 1_000_000.0
+
+
 def test_snapshot_reports_class_codes_available(state):
     assert state.snapshot()["class_codes_available"] is False
     _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC"))
