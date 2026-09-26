@@ -10,6 +10,7 @@ Protocol as implemented by:
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,15 @@ _PRACTICE_KEYWORDS = (
     "sighting",
     "untimed",
 )
+
+# How long a pushed class code stays joinable after its last push.  Twelve
+# hours covers a meeting day, including a server restart; transponders are
+# reused across meetings, so a longer life would pair a reused transponder
+# with last meeting's code — a plausible wrong value, never shown.
+_CLASS_CODE_TTL_SECONDS = 12 * 3600
+
+# The registry fields a ``class_codes`` entry carries, all strings.
+_CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
 
 
 def _interval_seconds(value: str) -> float | None:
@@ -120,9 +130,16 @@ class RaceState:
     """Holds the current state of the race, updated by parsed messages."""
 
     def __init__(self):
+        # Keyed ``"<run id>\t<entrant id>"``; see _class_codes.  Created here,
+        # not in reset(), because reset() must never clear it.
+        self.class_codes: dict[str, dict] = {}
         self.reset()
 
     def reset(self):
+        # self.class_codes is deliberately left alone: a roster is pushed once,
+        # at run load, and not re-sent while its session runs — and it may
+        # arrive before or a minute after the $I burst that starts it.
+        # Clearing it here would lose codes the server never gets again.
         self.competitors: dict[str, dict] = {}  # keyed by reg_number
         self.classes: dict[str, str] = {}  # class_number -> description
         self.leader_time_at_lap: dict[int, float] = {}
@@ -156,7 +173,10 @@ class RaceState:
         handler = self._HANDLERS.get(msg.get("type"))
         if handler:
             event = handler(self, _coerce_scalars(msg))
-            if event is not None:
+            # last_updated dates the *race* state, and the store discards it by
+            # that age; class codes come from another source and live in a
+            # store of their own, so they must not make stale race state fresh.
+            if event is not None and event != "class_codes":
                 self.last_updated = time.time()
             return event
         return None
@@ -199,6 +219,8 @@ class RaceState:
             c["number"] = msg["number"]
         if msg.get("nationality"):
             c["nationality"] = msg["nationality"]
+        if msg.get("transponder"):
+            c["transponder"] = msg["transponder"]
         if msg.get("class_number"):
             c["class_number"] = msg["class_number"]
         if msg.get("additional_data"):
@@ -431,6 +453,112 @@ class RaceState:
         self.reset()
         return "init"
 
+    def _class_codes(self, msg: dict) -> str | None:
+        """Store the class codes the relay read from the timing host's ``:51738``.
+
+        The registry is keyed by run id and entrant id, last push wins, and it
+        accumulates across runs: pushes cover runs other than the one on the
+        rMonitor feed, and :meth:`_resolve_class_codes` gates both of its
+        layers on an exact class-name match.  It survives :meth:`reset` for the
+        reason given there, and expires by :data:`_CLASS_CODE_TTL_SECONDS`
+        instead.
+
+        ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
+        so every item is checked and coerced here, and one without an entrant
+        id or a code is skipped.
+
+        Each entry is dated from its push, not from its arrival: the relay
+        retries an undelivered batch, and a retry landing hours later must not
+        earn a fresh TTL.  So ``received_at`` is now minus the entry's
+        ``age_seconds`` — a duration on the relay's own clock, so the two
+        hosts' clocks need not agree — and an entry already past the TTL is
+        not stored.  A missing or unusable age counts as zero.
+        """
+        entries = msg.get("entries")
+        run_id = msg.get("run_id") or ""
+        now = time.time()
+        changed = False
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                entry = {
+                    k: str(item[k]) if item.get(k) is not None else ""
+                    for k in _CLASS_CODE_FIELDS
+                }
+                if not entry["entrant_id"] or not entry["class_code"]:
+                    continue
+                age = _entry_age(item.get("age_seconds"))
+                if age > _CLASS_CODE_TTL_SECONDS:
+                    continue
+                entry["received_at"] = now - age
+                self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
+                changed = True
+        changed = self._prune_class_codes(now) or changed
+        if not changed:
+            return None
+        self._dirty = True
+        return "class_codes"
+
+    def _prune_class_codes(self, now: float) -> bool:
+        """Drop registry entries past their TTL; return whether any went."""
+        expired = [
+            k for k, v in self.class_codes.items()
+            if now - v["received_at"] > _CLASS_CODE_TTL_SECONDS
+        ]
+        for k in expired:
+            del self.class_codes[k]
+        return bool(expired)
+
+    def _resolve_class_codes(self, entries: list[dict]) -> int:
+        """Write ``class_code`` onto every entry; return how many have none.
+
+        Two layers, each failing to blank — never to a guess, and each gated
+        on the push's class name equalling ``class_description`` exactly and
+        non-empty.  A prefix would bind a ``Modsports A`` record to an ``A2``
+        session; without the gate on layer 1, a driver entered in two classes
+        at one meeting on one transponder would be shown the other class's
+        code, since the registry accumulates across runs.
+
+        1. **Transponder** (not ``""`` or ``"0"``) and class → the latest push
+           carrying both.  First because it survives an operator's mid-session
+           renumber, which reaches the push side before the rMonitor feed: seen
+           twice on one day, ``231`` → ``23`` and ``190`` → ``90``, each with
+           the class unchanged.
+        2. **Exact** ``(number, class_description)`` → a code only when every
+           matching record carries one distinct code.  Distinct codes, not
+           records, because the same entrant is pushed under several run ids.
+
+        Nothing ever derives a code from a class name — the mapping between
+        them is many-to-many.
+        """
+        self._prune_class_codes(time.time())
+        by_tx: dict[tuple[str, str], dict] = {}
+        by_nc: dict[tuple[str, str], set[str]] = {}
+        for rec in self.class_codes.values():
+            tx, cls = rec["transponder"], rec["class_name"]
+            if tx not in ("", "0"):
+                best = by_tx.get((tx, cls))
+                if best is None or rec["received_at"] >= best["received_at"]:
+                    by_tx[(tx, cls)] = rec
+            by_nc.setdefault((rec["number"], cls), set()).add(rec["class_code"])
+        missing = 0
+        for e in entries:
+            code = ""
+            tx = e.get("transponder", "")
+            desc = e.get("class_description", "")
+            if desc:
+                if tx not in ("", "0") and (tx, desc) in by_tx:
+                    code = by_tx[(tx, desc)]["class_code"]
+                else:
+                    codes = by_nc.get((e.get("number", ""), desc), set())
+                    if len(codes) == 1:
+                        code = next(iter(codes))
+            e["class_code"] = code
+            if not code:
+                missing += 1
+        return missing
+
     _HANDLERS: dict = {
         "heartbeat": _heartbeat,
         "competitor": _competitor,
@@ -442,6 +570,7 @@ class RaceState:
         "passing": _passing,
         "lap_info": _lap_info,
         "init": _init,
+        "class_codes": _class_codes,
     }
 
     # ---- serialisation ----
@@ -525,6 +654,7 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
+        class_code_missing = self._resolve_class_codes(entries)
         self._apply_intervals(entries, sort_mode=sort_mode)
         return {
             "track_name": self.track_name,
@@ -537,6 +667,8 @@ class RaceState:
             "time_of_day": self.time_of_day,
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
+            "class_codes_available": bool(self.class_codes),
+            "class_code_missing": class_code_missing,
             "entries": entries,
         }
 
@@ -663,7 +795,8 @@ class RaceState:
         :meth:`_time_behind_leader`, and both derived columns would go silently
         blank after a restart until the feed re-populated the index.  A
         hand-edited or truncated store degrades to an empty index rather than
-        failing startup.
+        failing startup.  The class-code registry is not part of this dict; see
+        :meth:`class_codes_to_dict`.
         """
         self.competitors = data.get("competitors", {})
         self.classes = data.get("classes", {})
@@ -686,6 +819,42 @@ class RaceState:
         self._seen_race_info = data.get("_seen_race_info", False)
         self.last_updated = data.get("last_updated", time.time())
         self._dirty = True
+
+    def class_codes_to_dict(self) -> dict:
+        """Serialise the class-code registry for a store of its own.
+
+        It is kept out of :meth:`_to_dict` because the race-state store is
+        discarded whole once it is older than ``STATE_MAX_AGE`` — 15 minutes —
+        and a restart after a quiet gap between sessions would then lose codes
+        pushed for runs not yet started, which are never pushed again.  The
+        registry needs no such cutoff: every entry expires on its own
+        :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
+        """
+        return {"class_codes": self.class_codes}
+
+    def load_class_codes(self, data: dict) -> None:
+        """Restore the registry from :meth:`class_codes_to_dict`'s output.
+
+        A malformed store degrades to an empty registry rather than failing
+        startup, and expired entries are pruned on the way in.
+        """
+        # A timestamp must be finite — json accepts NaN and Infinity, and
+        # neither is ever pruned — and one in the future is capped at now, so
+        # a corrupt store can neither keep a code forever nor extend its life.
+        now = time.time()
+        try:
+            self.class_codes = {
+                k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
+                | {"received_at": min(stamp, now)}
+                for k, v in (data.get("class_codes") or {}).items()
+                if isinstance(k, str) and isinstance(v, dict)
+                # The invariant _class_codes holds on ingest: never a codeless record.
+                and v.get("class_code") not in (None, "")
+                and (stamp := _finite_stamp(v.get("received_at"))) is not None
+            }
+        except (AttributeError, TypeError, ValueError):
+            self.class_codes = {}
+        self._prune_class_codes(now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -728,6 +897,36 @@ class RaceState:
         return ""
 
 
+def _finite_stamp(value) -> float | None:
+    """Return a restored ``received_at`` as a finite float, or *None*.
+
+    ``json`` decodes ``NaN``, ``Infinity`` and integers too large for a float;
+    none of them is a usable time, and the last would raise ``OverflowError``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        stamp = float(value)
+    except OverflowError:
+        return None
+    return stamp if math.isfinite(stamp) else None
+
+
+def _entry_age(value) -> float:
+    """Return a class-code entry's ``age_seconds`` as a finite non-negative float.
+
+    Anything else — absent, non-numeric, negative, NaN or infinite — reads as
+    zero, which is what the entry's age was before the relay sent one.
+    """
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return age if math.isfinite(age) and age > 0 else 0.0
+
+
 def _update_position(competitor: dict, new_position: str) -> None:
     """Update position and track direction of change."""
     old = competitor["position"]
@@ -753,6 +952,7 @@ def _empty_competitor(reg: str) -> dict:
         "first_name": "",
         "last_name": "",
         "nationality": "",
+        "transponder": "",
         "additional_data": "",
         "class_number": "",
         "position": "",

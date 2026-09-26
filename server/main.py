@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from server.race_state import RaceState
-from server.server import BROADCAST_INTERVAL, broadcast, create_app
+from server.server import BROADCAST_INTERVAL, broadcast_if_dirty, create_app
 from server.state_store import JsonFileStateStore
 
 log = logging.getLogger("server")
@@ -29,10 +29,16 @@ STATE_MAX_AGE = float(os.environ.get("STATE_MAX_AGE", str(15 * 60)))
 RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 
 store = JsonFileStateStore(STATE_FILE, max_age_seconds=STATE_MAX_AGE)
+# The class-code registry is stored beside the race state with no whole-file
+# age cutoff: every entry carries its own expiry (RaceState.class_codes_to_dict).
+class_codes_store = JsonFileStateStore(
+    STATE_FILE.with_name(STATE_FILE.stem + "-class-codes.json")
+)
 race_state = RaceState()
 saved = store.load()
 if saved:
     race_state._load_dict(saved)
+race_state.load_class_codes(class_codes_store.load())
 
 app = create_app(race_state, relay_secret=RELAY_SECRET, restored=bool(saved))
 
@@ -42,22 +48,22 @@ async def _broadcast_loop() -> None:
     while True:
         await asyncio.sleep(BROADCAST_INTERVAL)
         try:
-            if race_state.dirty:
-                # Clear the flag *before* awaiting the broadcast, not after,
-                # so a mutation that lands while the broadcast is in flight
-                # re-dirties the state instead of being silently discarded.
-                race_state.mark_clean()
-                await broadcast(app, "update", race_state.snapshot())
+            await broadcast_if_dirty(app)
         except Exception:
             log.exception("Broadcast loop iteration failed")
 
 
+def _save_all() -> None:
+    store.save(race_state._to_dict())
+    class_codes_store.save(race_state.class_codes_to_dict())
+
+
 async def _save_loop() -> None:
-    """Periodically persist race state to the state store."""
+    """Periodically persist race state and the class-code registry."""
     while True:
         await asyncio.sleep(SAVE_INTERVAL)
         try:
-            await asyncio.to_thread(store.save, race_state._to_dict())
+            await asyncio.to_thread(_save_all)
         except Exception as exc:
             log.warning("Failed to save state: %s", exc)
 
@@ -69,7 +75,7 @@ async def start_background_tasks(_app: web.Application) -> None:
 
 async def cleanup_background_tasks(_app: web.Application) -> None:
     try:
-        await asyncio.to_thread(store.save, race_state._to_dict())
+        await asyncio.to_thread(_save_all)
     except Exception as exc:
         log.warning("Failed to save state on shutdown: %s", exc)
     for key in ("broadcast_task", "save_task"):

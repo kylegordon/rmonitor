@@ -1,7 +1,10 @@
 """Entry point for the relay.
 
 Connects to the on-premise rMonitor TCP feed, parses each message,
-and forwards it to the server via HTTP POST.
+and forwards it to the server via HTTP POST.  Beside it, unless disabled, a
+second source reads class codes from the timing host's port 51738 and
+forwards them too; it is failure-isolated, so nothing on that port can stop
+the rMonitor feed.
 
 Messages are delivered in order: each POST completes (or retries) before
 the next TCP message is read, preserving protocol ordering at the cost of
@@ -22,6 +25,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
+from relay.class_code_client import ClassCodeClient
 from relay.rmonitor_client import RMonitorClient
 
 log = logging.getLogger("relay")
@@ -35,6 +39,9 @@ POST_TIMEOUT = float(os.environ.get("POST_TIMEOUT", "5.0"))
 RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "1.0"))
 RETRY_MAX_DELAY = float(os.environ.get("RETRY_MAX_DELAY", "30.0"))
 RETRY_MAX_ATTEMPTS = int(os.environ.get("RETRY_MAX_ATTEMPTS", "30"))
+CLASS_CODES_ENABLED = os.environ.get("CLASS_CODES_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no", "off"
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,7 @@ class RelayConfig:
     retry_delay: float
     retry_max_delay: float
     retry_max_attempts: int
+    class_codes_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "RelayConfig":
@@ -69,6 +77,7 @@ class RelayConfig:
             retry_delay=RETRY_DELAY,
             retry_max_delay=RETRY_MAX_DELAY,
             retry_max_attempts=RETRY_MAX_ATTEMPTS,
+            class_codes_enabled=CLASS_CODES_ENABLED,
         )
 
 
@@ -82,11 +91,13 @@ async def post_message(
     config: RelayConfig | None = None,
     *,
     on_attempt=None,
-) -> None:
+) -> bool:
     """POST a parsed message to the server, retrying on transient HTTP failures.
 
-    Non-retriable responses (400, 401, …) are logged and dropped so that
-    a poison message cannot stall the relay indefinitely. Connection-level
+    Return whether the server accepted it.  Non-retriable responses (400,
+    401, …) are logged and dropped so that a poison message cannot stall the
+    relay indefinitely; the feed path ignores the result, while the class-code
+    path treats ``False`` as a failed delivery and keeps the batch. Connection-level
     failures (DNS, refused connections, timeouts) are not retried here –
     they exit the process so the container restart policy can recover.
 
@@ -118,7 +129,7 @@ async def post_message(
                             resp.status,
                             msg.get("type"),
                         )
-                    return
+                    return resp.status == 200
                 attempt += 1
                 if attempt >= cfg.retry_max_attempts:
                     log.error(
@@ -154,6 +165,10 @@ async def main(
 ) -> None:
     """Run the relay loop: connect to the feed, POST each message to the server.
 
+    Unless `config.class_codes_enabled` is false, a `ClassCodeClient` runs
+    beside the feed as a task this function owns: it is cancelled when the
+    feed loop ends, and it never raises into it.
+
     `config` defaults to `RelayConfig.from_env()` when omitted (the headless
     Docker/console path, unchanged); a caller that restarts the relay
     in-process (e.g. the GUI build's Save/Apply) passes an explicit config.
@@ -176,6 +191,24 @@ async def main(
         async def on_message(msg: dict) -> None:
             await post_message(http, msg, cfg, on_attempt=on_server_attempt)
 
+        async def on_class_codes(msg: dict) -> None:
+            # post_message exits on a hard failure so the headless container
+            # restarts, but a SystemExit leaving this sibling task would bypass
+            # RelayRunner._run_with_respawn (see its docstring).  So it becomes
+            # an ordinary error, on which ClassCodeClient keeps the batch and
+            # retries it.  The :50000 path still exits on the same outage, so
+            # nothing is masked.
+            # A rejected POST (a 401 while the relay secret is being corrected,
+            # say) is a failure too: the roster is pushed once and never again.
+            try:
+                accepted = await post_message(http, msg, cfg, on_attempt=on_server_attempt)
+            except SystemExit:
+                accepted = False
+            if not accepted:
+                raise ConnectionError(
+                    f"could not deliver class codes for run {msg.get('run_id')}"
+                )
+
         client = RMonitorClient(
             cfg.host,
             cfg.port,
@@ -185,7 +218,18 @@ async def main(
             on_disconnect=on_feed_disconnect,
             on_raw_line=on_feed_line,
         )
-        await client.run()
+        if not cfg.class_codes_enabled:
+            log.info("Class codes are disabled")
+            await client.run()
+            return
+        codes_client = ClassCodeClient(cfg.host, on_class_codes)
+        log.info("Reading class codes from %s:%s", codes_client.host, codes_client.port)
+        codes = asyncio.create_task(codes_client.run())
+        try:
+            await client.run()
+        finally:
+            codes.cancel()
+            await asyncio.gather(codes, return_exceptions=True)
 
 
 class RelayRunner:

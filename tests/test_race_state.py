@@ -1347,3 +1347,309 @@ def test_a_state_file_without_the_stamped_pair_restores_and_self_heals(state):
     entries = _by_reg(restored.snapshot())
     assert entries["64"]["diff_leader_seconds"] == pytest.approx(53.106, abs=1e-3)
     assert entries["88"]["diff_leader_seconds"] == pytest.approx(74.793, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Class codes from the relay's :51738 source
+# ---------------------------------------------------------------------------
+
+def _add_car(state, reg, *, number=None, transponder="", class_number="1"):
+    state.process({
+        "type": "competitor",
+        "reg_number": reg,
+        "number": number or reg,
+        "transponder": transponder,
+        "first_name": "Ann",
+        "last_name": "Example",
+        "nationality": "",
+        "class_number": class_number,
+    })
+
+
+def _codes(state, run_id, *entries):
+    return state.process({"type": "class_codes", "run_id": run_id, "entries": list(entries)})
+
+
+def _code_entry(entrant, number, class_name, code, transponder=""):
+    return {
+        "entrant_id": entrant, "kind": "added", "number": number,
+        "class_name": class_name, "transponder": transponder, "class_code": code,
+    }
+
+
+def _entry_for(snap, reg):
+    return next(e for e in snap["entries"] if e["reg_number"] == reg)
+
+
+def test_competitor_transponder_is_stored_and_not_blanked_by_comp(state):
+    _add_car(state, "7", transponder="1234567")
+    state.process({
+        "type": "competitor", "reg_number": "7", "number": "7",
+        "first_name": "Ann", "last_name": "Example", "class_number": "1",
+        "nationality": "", "additional_data": "",
+    })
+    assert state.competitors["7"]["transponder"] == "1234567"
+
+
+def test_class_codes_survive_init(state):
+    assert _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567")) == "class_codes"
+    state.process({"type": "init"})
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_class_code_joined_by_transponder_even_after_a_renumber(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "190", transponder="1234567")
+    # The operator renumbered 190 to 90; the push side saw it first.
+    _codes(state, "0x4000AAAA", _code_entry("e1", "90", "Saloon Cup", "SC", "1234567"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "190")["class_code"] == "SC"
+    assert snap["class_code_missing"] == 0
+
+
+def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7")
+    # The same entrant pushed under two run ids is still one distinct code.
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC"))
+    _codes(state, "0x8000BBBB", _code_entry("e1", "7", "Saloon Cup", "SC"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_class_code_is_blank_when_number_and_class_match_disagreeing_codes(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7")
+    _codes(
+        state, "0x4000AAAA",
+        _code_entry("e1", "7", "Saloon Cup", "SC"),
+        _code_entry("e2", "7", "Saloon Cup", "SCR"),
+    )
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_code_missing"] == 1
+
+
+def test_class_code_transponder_match_requires_the_same_class(state, monkeypatch):
+    """A driver in two classes on one transponder gets each class's own code."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    now[0] += 60  # the later push is for the driver's other class
+    _codes(state, "0x4000BBBB", _code_entry("e9", "44", "Hot Hatch", "HH", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # With only the other class's push, the transponder alone is not enough.
+    state.class_codes = {k: v for k, v in state.class_codes.items() if v["class_code"] == "HH"}
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_code_missing"] == 1
+
+
+def test_class_code_is_never_matched_on_a_class_name_prefix(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Modsports A2"})
+    _add_car(state, "7")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Modsports A", "A"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_class_code_is_blank_not_the_description_when_unmatched(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _add_car(state, "8", transponder="7654321")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    snap = state.snapshot()
+    unmatched = _entry_for(snap, "8")
+    assert unmatched["class_code"] == ""
+    assert unmatched["class_description"] == "Saloon Cup"
+    assert snap["class_code_missing"] == 1
+
+
+def test_an_unknown_class_does_not_match_an_empty_class_name(state):
+    _add_car(state, "7", class_number="9")  # no $C for class 9
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "", "SC"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_expired_class_codes_are_not_joined(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_codes_available"] is False
+
+
+def test_a_class_code_is_dated_from_its_push_not_its_arrival(state, monkeypatch):
+    """A retried batch that lands hours late keeps the push's age, not a fresh TTL."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    ttl = rs._CLASS_CODE_TTL_SECONDS
+    late = {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": ttl - 60}
+    _codes(state, "r", late)
+    (rec,) = state.class_codes.values()
+    assert rec["received_at"] == now[0] - (ttl - 60)
+    now[0] += 120  # two minutes on, it is past the TTL counted from the push
+    assert state.snapshot()["class_codes_available"] is False
+    # Already past the TTL on arrival: never stored.
+    stale = {**_code_entry("e2", "8", "Saloon Cup", "SC"), "age_seconds": ttl + 1}
+    assert _codes(state, "r", stale) is None
+    assert state.class_codes == {}
+
+
+@pytest.mark.parametrize("age", [None, "soon", -5, float("nan"), float("inf"), True, [1]])
+def test_an_unusable_class_code_age_counts_as_zero(state, monkeypatch, age):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    _codes(state, "r", {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": age})
+    (rec,) = state.class_codes.values()
+    assert rec["received_at"] == 1_000_000.0
+
+
+def test_malformed_class_codes_entries_are_skipped(state):
+    assert state.process({"type": "class_codes", "run_id": "r", "entries": "nonsense"}) is None
+    assert state.process({"type": "class_codes", "run_id": "r"}) is None
+    assert _codes(
+        state, "r",
+        "not a dict",
+        ["nor", "this"],
+        _code_entry("e1", "7", "Saloon Cup", ""),
+        _code_entry("", "7", "Saloon Cup", "SC"),
+    ) is None
+    assert state.class_codes == {}
+    assert _codes(state, "r", {"entrant_id": 5, "number": 7, "class_code": "SC",
+                               "class_name": None, "transponder": 1234567}) == "class_codes"
+    (rec,) = state.class_codes.values()
+    assert (rec["number"], rec["class_name"], rec["transponder"]) == ("7", "", "1234567")
+
+
+def test_class_codes_round_trip_through_their_own_dict(state):
+    import json
+
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    restored = RaceState()
+    restored._load_dict(json.loads(json.dumps(state._to_dict())))
+    assert restored.class_codes == {}  # not part of the race-state dict
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_codes == state.class_codes
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_load_class_codes_tolerates_a_malformed_store(state):
+    state.load_class_codes({"class_codes": "nonsense"})
+    assert state.class_codes == {}
+    state.load_class_codes({"class_codes": {
+        "r\te1": {"number": "7", "received_at": "yesterday"},
+        "r\te2": "not a dict",
+        "r\te3": {"number": "7", "class_name": "Saloon Cup", "transponder": "",
+                  "class_code": "SC", "received_at": __import__("time").time()},
+    }})
+    assert list(state.class_codes) == ["r\te3"]
+
+
+@pytest.mark.parametrize("stamp", ["NaN", "Infinity", "-Infinity", "true", "1" + "0" * 400])
+def test_load_class_codes_drops_a_non_finite_timestamp(state, stamp):
+    """``json`` decodes these, and a NaN or infinite stamp would never expire."""
+    import json
+
+    raw = (
+        '{"class_codes": {"r\\te1": {"number": "7", "class_name": "Saloon Cup",'
+        ' "transponder": "1234567", "class_code": "SC", "received_at": %s}}}' % stamp
+    )
+    state.load_class_codes(json.loads(raw))
+    assert state.class_codes == {}
+
+
+def test_load_class_codes_caps_a_future_timestamp_at_now(state, monkeypatch):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    state.load_class_codes({"class_codes": {"r\te1": {
+        "number": "7", "class_name": "Saloon Cup", "transponder": "",
+        "class_code": "SC", "received_at": 9_000_000_000.0,
+    }}})
+    assert state.class_codes["r\te1"]["received_at"] == 1_000_000.0
+
+
+def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path, monkeypatch):
+    """A restart after a quiet gap drops the race state but keeps the codes.
+
+    The race-state store is discarded whole past ``STATE_MAX_AGE``; codes pushed
+    for runs not yet started are never pushed again, so they live in a store of
+    their own that only their per-entry TTL expires.
+    """
+    import server.race_state as rs
+    import server.state_store as ss
+    from server.state_store import JsonFileStateStore
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    monkeypatch.setattr(ss.time, "time", lambda: now[0])
+    race_store = JsonFileStateStore(tmp_path / "state.json", max_age_seconds=900)
+    codes_store = JsonFileStateStore(tmp_path / "state-class-codes.json")
+    _add_car(state, "7", transponder="1234567")
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    race_store.save(state._to_dict())
+    codes_store.save(state.class_codes_to_dict())
+
+    now[0] += 3600  # an hour between sessions, then a restart
+    restored = RaceState()
+    assert race_store.load() == {}
+    restored.load_class_codes(codes_store.load())
+    assert len(restored.class_codes) == 1
+
+    now[0] += rs._CLASS_CODE_TTL_SECONDS  # the entry's own expiry still applies
+    later = RaceState()
+    later.load_class_codes(codes_store.load())
+    assert later.class_codes == {}
+
+
+@pytest.mark.parametrize("code", [None, "", "absent"])
+def test_load_class_codes_skips_a_record_without_a_code(state, code):
+    """Live ingest never stores a codeless record, so a restore must not either:
+    one would make ``class_codes_available`` true with no usable code."""
+    rec = {"number": "7", "class_name": "Saloon Cup", "transponder": "",
+           "received_at": __import__("time").time()}
+    if code != "absent":
+        rec["class_code"] = code
+    state.load_class_codes({"class_codes": {"r\te1": rec}})
+    assert state.class_codes == {}
+    assert state.snapshot()["class_codes_available"] is False
+
+
+def test_class_codes_do_not_make_stale_race_state_look_fresh(state, monkeypatch):
+    """``last_updated`` dates the race state for ``STATE_MAX_AGE``; a class-code
+    push arriving long after the race went quiet must not reset that age."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _add_car(state, "7")
+    stale = state.last_updated
+    now[0] += 3600
+    state.mark_clean()
+    assert _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC")) == "class_codes"
+    assert state.last_updated == stale
+    assert state._to_dict()["last_updated"] == stale
+    assert state.dirty  # still broadcast
+
+
+def test_snapshot_reports_class_codes_available(state):
+    assert state.snapshot()["class_codes_available"] is False
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC"))
+    assert state.snapshot()["class_codes_available"] is True

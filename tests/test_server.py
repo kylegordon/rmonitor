@@ -236,6 +236,133 @@ async def test_ingest_updates_race_state(client, app):
     assert app[race_state_key].track_name == "Brands Hatch"
 
 
+_CLASS_CODES_MSG = {
+    "type": "class_codes",
+    "run_id": "0x4000AAAA",
+    "entries": [{
+        "entrant_id": "e1", "kind": "added", "number": "7",
+        "class_name": "Saloon Cup", "transponder": "1234567", "class_code": "SC",
+    }],
+}
+
+
+@pytest.mark.asyncio
+async def test_ingested_class_codes_reach_the_snapshot(client, app):
+    from server.server import race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    for msg in (
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+        _CLASS_CODES_MSG,
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    snap = app[race_state_key].snapshot()
+    car = next(e for e in snap["entries"] if e["reg_number"] == "7")
+    assert car["class_code"] == "SC"
+    assert snap["class_codes_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_class_codes_arriving_while_the_feed_is_lost_are_not_a_recovery(client, app):
+    """The class-code source is not the timing feed: its POSTs keep coming while
+    :50000 is down, and must neither clear the outage nor reset the race state."""
+    from server.server import race_state_key
+
+    fs = app[feed_state_key]
+    fs["feed_lost"] = True
+    fs["last_ingest_at"] = stale = time.monotonic() - 3600
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        assert (await ws.receive_json())["event"] == "no_feed"
+        resp = await client.post(
+            "/api/ingest", json=_CLASS_CODES_MSG,
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+        with pytest.raises(asyncio.TimeoutError):
+            await ws.receive_json(timeout=0.2)
+    assert fs["feed_lost"] is True
+    assert fs["last_ingest_at"] == stale
+    state = app[race_state_key]
+    assert "1" in state.competitors  # not reset
+    assert state.class_codes
+
+
+@pytest.mark.asyncio
+async def test_class_codes_during_an_outage_do_not_broadcast_an_update(client, app):
+    """The production broadcast path sends no ``update`` while the feed is lost.
+
+    The page hides its no-feed notice on any ``update``, and the watchdog does
+    not repeat ``no_feed``, so a class-code batch broadcast mid-outage would
+    hide the outage for good.  Recovery then carries the codes in its ``full``.
+    """
+    from server.server import broadcast_if_dirty, race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    state = app[race_state_key]
+    state.mark_clean()
+    app[feed_state_key]["feed_lost"] = True
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        assert (await ws.receive_json())["event"] == "no_feed"
+        resp = await client.post("/api/ingest", json=_CLASS_CODES_MSG, headers=headers)
+        assert resp.status == 200
+        assert state.dirty
+        assert await broadcast_if_dirty(app) is False
+        with pytest.raises(asyncio.TimeoutError):
+            await ws.receive_json(timeout=0.2)
+        assert state.dirty  # kept for the recovery broadcast
+
+        resp = await client.post(
+            "/api/ingest",
+            json={"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+            headers=headers,
+        )
+        assert resp.status == 200
+        assert (await ws.receive_json(timeout=1.0))["event"] == "full"
+    assert state.class_codes
+
+
+@pytest.mark.asyncio
+async def test_broadcast_if_dirty_sends_one_update_when_the_feed_is_live(client, app):
+    from server.server import broadcast_if_dirty, race_state_key
+
+    state = app[race_state_key]
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        state.process(_CLASS_CODES_MSG)
+        assert await broadcast_if_dirty(app) is True
+        assert (await ws.receive_json(timeout=1.0))["event"] == "update"
+        assert not state.dirty
+        assert await broadcast_if_dirty(app) is False
+
+
+@pytest.mark.asyncio
+async def test_feed_restored_reset_keeps_class_codes(client, app):
+    from server.server import race_state_key
+
+    headers = {"Authorization": "Bearer test-secret"}
+    resp = await client.post("/api/ingest", json=_CLASS_CODES_MSG, headers=headers)
+    assert resp.status == 200
+    app[feed_state_key]["feed_lost"] = True
+    # The first message after the outage triggers the reset; the feed then
+    # repopulates the class and the car.
+    for msg in (
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    assert app[feed_state_key]["feed_lost"] is False
+    # The reset dropped the fixture's car 1, so car 7 is the only entry.
+    (car,) = app[race_state_key].snapshot()["entries"]
+    assert car["class_code"] == "SC"
+
+
 @pytest.mark.asyncio
 async def test_repeated_init_wipes_reach_clients_before_repopulation(client):
     """Three ``$I`` records in a row each wipe live state and tell the clients.
@@ -319,6 +446,17 @@ async def test_ingest_missing_type_returns_400(client):
     resp = await client.post(
         "/api/ingest",
         json={"flag": "Green"},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_type", [["class_codes"], {"a": 1}, 7, None])
+async def test_ingest_non_string_type_returns_400(client, bad_type):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": bad_type},
         headers={"Authorization": "Bearer test-secret"},
     )
     assert resp.status == 400

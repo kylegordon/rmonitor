@@ -26,6 +26,7 @@ def _config(**overrides):
         retry_delay=1.0,
         retry_max_delay=30.0,
         retry_max_attempts=30,
+        class_codes_enabled=True,
     )
     values.update(overrides)
     return RelayConfig(**values)
@@ -41,6 +42,7 @@ def test_relay_config_from_env_reflects_current_module_globals(monkeypatch):
     monkeypatch.setattr(relay_main, "RETRY_DELAY", 0.5)
     monkeypatch.setattr(relay_main, "RETRY_MAX_DELAY", 10.0)
     monkeypatch.setattr(relay_main, "RETRY_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(relay_main, "CLASS_CODES_ENABLED", False)
 
     cfg = RelayConfig.from_env()
 
@@ -54,6 +56,7 @@ def test_relay_config_from_env_reflects_current_module_globals(monkeypatch):
         retry_delay=0.5,
         retry_max_delay=10.0,
         retry_max_attempts=5,
+        class_codes_enabled=False,
     )
 
 

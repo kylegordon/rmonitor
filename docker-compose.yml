@@ -8,6 +8,7 @@ services:
       - RMONITOR_PORT=${RMONITOR_PORT:-50000}
       - SERVER_URL=${SERVER_URL:-http://server:8080}
       - RELAY_SECRET=${RELAY_SECRET}
+      - CLASS_CODES_ENABLED=${CLASS_CODES_ENABLED:-1}
     depends_on:
       - server
     restart: unless-stopped
