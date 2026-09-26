@@ -403,6 +403,17 @@ async def test_ingest_missing_type_returns_400(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad_type", [["class_codes"], {"a": 1}, 7, None])
+async def test_ingest_non_string_type_returns_400(client, bad_type):
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": bad_type},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
 async def test_ingest_malformed_json_returns_400(client):
     resp = await client.post(
         "/api/ingest",

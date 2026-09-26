@@ -198,6 +198,10 @@ async def handle_ingest(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(reason="Invalid JSON body")
     if not isinstance(msg, dict) or "type" not in msg:
         raise web.HTTPBadRequest(reason="Missing 'type' field")
+    # Checked here, before any lookup: an unhashable type (a list or object)
+    # would otherwise raise out of the _NON_FEED_TYPES test as a 500.
+    if not isinstance(msg["type"], str):
+        raise web.HTTPBadRequest(reason="'type' must be a string")
 
     fs = _feed_state(request.app)
     state = request.app[race_state_key]
