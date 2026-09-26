@@ -119,3 +119,112 @@ async def test_post_message_calls_on_attempt_once_per_post_including_retries():
         session, {"type": "heartbeat"}, on_attempt=lambda: calls.append(1)
     )
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# main(): the class-code client runs beside the feed, isolated from it
+# ---------------------------------------------------------------------------
+
+def _relay_config(**overrides):
+    values = dict(
+        host="10.0.0.9",
+        port=50000,
+        feed_read_timeout=30.0,
+        server_url="http://localhost:8080",
+        relay_secret="s",
+        post_timeout=5.0,
+        retry_delay=1.0,
+        retry_max_delay=30.0,
+        retry_max_attempts=30,
+    )
+    values.update(overrides)
+    return relay_main.RelayConfig(**values)
+
+
+@pytest.fixture
+def fake_sources(monkeypatch):
+    """Replace both relay sources with fakes driven by events.
+
+    The feed's ``run()`` returns once ``state["feed_done"]`` is set; the
+    class-code client's ``run()`` records its start, optionally delivers
+    ``state["batch"]`` through its callback, then waits to be cancelled.
+    """
+    state = {
+        "feed_done": asyncio.Event(),
+        "codes_started": asyncio.Event(),
+        "codes_clients": [],
+        "codes_cancelled": False,
+        "batch": None,
+        "batch_returned": False,
+    }
+
+    class FakeFeed:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self):
+            await state["feed_done"].wait()
+
+    class FakeCodes:
+        def __init__(self, host, on_batch, **kwargs):
+            self.host = host
+            self.port = 51738
+            self.on_batch = on_batch
+            state["codes_clients"].append(self)
+
+        async def run(self):
+            if state["batch"] is not None:
+                await self.on_batch(state["batch"])
+                state["batch_returned"] = True
+            state["codes_started"].set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                state["codes_cancelled"] = True
+                raise
+
+    monkeypatch.setattr(relay_main, "RMonitorClient", FakeFeed)
+    monkeypatch.setattr(relay_main, "ClassCodeClient", FakeCodes)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_main_runs_the_class_code_client_beside_the_feed(fake_sources):
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    assert not task.done()
+    assert [c.host for c in fake_sources["codes_clients"]] == ["10.0.0.9"]
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_main_cancels_the_class_code_task_when_the_feed_loop_ends(fake_sources):
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert fake_sources["codes_cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_main_does_not_start_the_class_code_client_when_disabled(fake_sources):
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(
+        relay_main.main(_relay_config(class_codes_enabled=False)), timeout=2.0
+    )
+    assert fake_sources["codes_clients"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_class_code_post_failure_does_not_exit_the_relay(fake_sources, monkeypatch):
+    post = AsyncMock(side_effect=SystemExit(1))
+    monkeypatch.setattr(relay_main, "post_message", post)
+    fake_sources["batch"] = {"type": "class_codes", "run_id": "r", "entries": []}
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    assert fake_sources["batch_returned"]
+    assert post.await_count == 1
+    assert not task.done()
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)

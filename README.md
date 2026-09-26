@@ -131,6 +131,7 @@ remains fully supported and unchanged for headless/server deployments.
 | `RETRY_DELAY` | `1.0` | Initial delay between retries on transient (429/5xx) failure |
 | `RETRY_MAX_DELAY` | `30.0` | Cap on the exponential backoff delay between retries |
 | `RETRY_MAX_ATTEMPTS` | `30` | Give up and exit (for container restart) after this many transient-failure retries |
+| `CLASS_CODES_ENABLED` | `1` | Also read class codes from the timing host's port 51738 (same host as `RMONITOR_HOST`) and forward them to the server; set to `0` to disable. Each connection shows a notice on the timing operator's screen, so it reconnects slowly (60 s, doubling to 15 min) |
 
 The prebuilt GUI binary (see "Download a prebuilt binary" above) uses the
 same variable names, in the same `KEY=value` `.env` file format as
@@ -241,6 +242,7 @@ Nothing is installed on the host.
 ```
 relay/
 ├── rmonitor_client.py  # Async TCP client and protocol parser
+├── class_code_client.py  # Client for the timing host's :51738 class-code records
 ├── main.py             # Entry point — connects to feed, POSTs to server
 ├── gui.py              # Standalone GUI entry point (PyInstaller build) — config dialog + update check
 ├── env_config.py       # .env reader/writer for the GUI build's Save/Apply
