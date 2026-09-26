@@ -23,6 +23,30 @@ PAGE_VERSION_TOKEN = "{{PAGE_VERSION}}"
 BROADCAST_INTERVAL = float(os.environ.get("BROADCAST_INTERVAL", "0.25"))
 NO_FEED_TIMEOUT = float(os.environ.get("NO_FEED_TIMEOUT", "300"))  # seconds
 
+#: The repo-root ``VERSION`` file: ``/opt/app/VERSION`` in the image, which copies it
+#: beside the package, and the checkout's own copy everywhere else.
+_VERSION_FILE = pathlib.Path(__file__).resolve().parents[1] / "VERSION"
+
+
+def _read_release_version(*, version_file: pathlib.Path = _VERSION_FILE) -> str:
+    """Return the release this server was built from, e.g. ``"0.1.19"``.
+
+    This is the *release* number, reported on ``/healthz`` and in the startup log so a
+    deploy can confirm what is running. It is unrelated to ``page_version``, which is a
+    hash of the template and drives the reload prompt (see :func:`_load_page`).
+
+    :returns: the stripped contents of *version_file*, or ``"0.0.0-dev"`` if it is
+        missing, unreadable or empty.
+    """
+    try:
+        version = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0-dev"
+    return version or "0.0.0-dev"
+
+
+RELEASE_VERSION: str = _read_release_version()
+
 # Typed app keys (avoids NotAppKeyWarning)
 race_state_key = web.AppKey("race_state")
 ws_clients_key = web.AppKey("ws_clients", set)
@@ -125,14 +149,20 @@ async def handle_healthz(request: web.Request) -> web.Response:
         task = request.app.get(key)
         if task is not None and task.done():
             return web.json_response(
-                {"status": "error", "detail": f"{key} has stopped"}, status=503
+                {"status": "error", "detail": f"{key} has stopped", "version": RELEASE_VERSION},
+                status=503,
             )
     watchdog = _feed_state(request.app).get("watchdog_task")
     if watchdog is not None and watchdog.done():
         return web.json_response(
-            {"status": "error", "detail": "watchdog_task has stopped"}, status=503
+            {
+                "status": "error",
+                "detail": "watchdog_task has stopped",
+                "version": RELEASE_VERSION,
+            },
+            status=503,
         )
-    return web.json_response({"status": "ok"})
+    return web.json_response({"status": "ok", "version": RELEASE_VERSION})
 
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
