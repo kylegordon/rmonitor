@@ -10,7 +10,7 @@ build/
 venv/
 .env
 captures/*.log
-captures/orbits-remote-51738/
+captures/*/
 data/
 docker-compose.override.yml
 relay/_version.py
