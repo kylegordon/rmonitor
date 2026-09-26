@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.19](https://github.com/kylegordon/rmonitor/compare/v0.1.18...v0.1.19) (2026-09-26)
+
+## What's Changed
+* feat: beat heartbeat indicators on a fixed 2 s cadence by @kylegordon in https://github.com/kylegordon/rmonitor/pull/95
+* feat(deploy): deploy pinned, versioned releases from up.sh by @kylegordon in https://github.com/kylegordon/rmonitor/pull/97
+* feat: class codes on every relay connect via a registry preload by @kylegordon in https://github.com/kylegordon/rmonitor/pull/98
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.18...v0.1.19
+
+
 ## [0.1.18](https://github.com/kylegordon/rmonitor/compare/v0.1.17...v0.1.18) (2026-09-26)
 
 ## What's Changed
