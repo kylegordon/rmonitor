@@ -58,9 +58,19 @@ async def _broadcast_loop() -> None:
             log.exception("Broadcast loop iteration failed")
 
 
+_saved_class_codes_revision: int | None = None
+
+
 def _save_all() -> None:
+    global _saved_class_codes_revision
     store.save(race_state._to_dict())
-    class_codes_store.save(race_state.class_codes_to_dict())
+    # Rewritten only when it changed: with a registry preload it is some
+    # hundreds of KB, and this runs every SAVE_INTERVAL.  The revision is read
+    # first, so a change landing mid-save is saved next time.
+    revision = race_state.class_codes_revision
+    if revision != _saved_class_codes_revision:
+        class_codes_store.save(race_state.class_codes_to_dict())
+        _saved_class_codes_revision = revision
 
 
 async def _save_loop() -> None:

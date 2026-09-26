@@ -1912,3 +1912,31 @@ def test_an_expiry_found_by_a_snapshot_dirties_the_state(state, monkeypatch):
     now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
     state.snapshot()
     assert state.dirty
+
+
+def test_class_codes_revision_moves_only_when_a_store_changes(state, monkeypatch):
+    """The periodic save rewrites the class-code store only when this moves."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    revisions = [state.class_codes_revision]
+
+    def moved():
+        revisions.append(state.class_codes_revision)
+        return revisions[-1] != revisions[-2]
+
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC"))
+    assert moved()
+    _codes(state, "r", _code_entry("e2", "8", "Saloon Cup", ""))  # nothing stored
+    assert not moved()
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    assert moved()
+    _preload(state, _pre("0", "Saloon Cup", "SC"))  # nothing usable
+    assert not moved()
+    state.snapshot()
+    state.process({"type": "init"})
+    assert not moved()
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    state.prune_expired_class_codes()
+    assert moved()

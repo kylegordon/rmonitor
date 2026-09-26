@@ -139,6 +139,10 @@ class RaceState:
         # The last registry preload; see _class_code_preload.  Never cleared
         # by reset(), for the same reason.
         self.class_code_preload: dict = _preload_store([], None)
+        # Bumped on every change to either class-code store, so the periodic
+        # save can skip rewriting a store that has not changed — with a
+        # preload it is some hundreds of KB.
+        self.class_codes_revision = 0
         self.reset()
 
     def reset(self):
@@ -512,6 +516,7 @@ class RaceState:
         changed = self._prune_class_codes(now) or changed
         if not changed:
             return None
+        self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
 
@@ -551,6 +556,7 @@ class RaceState:
         if not usable or age > _CLASS_CODE_TTL_SECONDS:
             return None
         self.class_code_preload = _preload_store(usable, time.time() - age)
+        self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
 
@@ -566,6 +572,7 @@ class RaceState:
         expired = self._prune_class_codes(now)
         expired = self._prune_class_code_preload(now) or expired
         if expired:
+            self.class_codes_revision += 1
             self._dirty = True
         return expired
 
