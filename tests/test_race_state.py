@@ -2201,30 +2201,49 @@ def _closing(state, description="Race 7 - 2nd Race"):
     state.process({"type": "run", "unique_number": "95", "description": description})
 
 
-def test_a_session_end_discards_the_started_run_it_closes(state):
-    """95 keeps the closing description, so a later same-named session the
-    relay never saw start would otherwise inherit the run."""
+def test_a_session_end_keeps_its_run_in_scope_until_the_next_session(state):
+    """95 keeps the closing description and the board still shows that
+    session, so its run stays in scope; the next session's $B then discards
+    it, so a same-named session the relay never saw start cannot inherit it."""
     _session(state)
     _started(state)
     _closing(state)
-    assert state.class_code_run is None
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    _closing(state)  # repeated
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
     _session(state)
+    assert state.class_code_run is None
     assert state.snapshot()["class_code_scope"] == ""
 
 
-def test_only_the_edge_into_a_session_end_discards_a_started_run(state):
-    """95 repeats between sessions; a run announced meanwhile is kept, as is
-    one announced before another session's end."""
+def test_a_closed_run_survives_a_restart_still_closed(state):
+    import json
+
+    _session(state)
+    _started(state)
+    _closing(state)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run == state.class_code_run
+    _session(restored)
+    assert restored.class_code_run is None
+
+
+def test_only_the_edge_into_a_session_end_closes_a_started_run(state):
+    """95 repeats between sessions; a run announced meanwhile is kept into its
+    session, as is one announced before another session's end."""
     _session(state)
     _closing(state)
     _started(state)
     _closing(state)  # repeated, not an edge
-    assert state.class_code_run is not None
+    _session(state)
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
     other = RaceState()
     _session(other, "Race 6 - AMENDED GRID")
     _started(other)
     _closing(other, "Race 6 - AMENDED GRID")
-    assert other.class_code_run is not None
+    _session(other)
+    assert other.snapshot()["class_code_scope"] == "0x40002806"
 
 
 def test_a_run_table_row_with_its_ids_in_the_wrong_form_is_skipped(state):

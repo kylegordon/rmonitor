@@ -266,23 +266,28 @@ class RaceState:
         session's description (see :func:`relay.rmonitor_client._parse_run`).
         It is read only to end the started run below.
 
-        The started run is discarded once its session is over — on a change
-        of description to one other than its name, or on the number changing
-        to 95 while the description still names it.  Run names repeat, so a
-        later session of the same name that the relay never saw start must
-        not inherit its id.  Only changes count: ``$B`` repeats many times
-        within one session, 95 included, and a run can be announced before
-        its ``$B`` arrives.
+        The started run is discarded once its session is over, because run
+        names repeat and a later session of the same name that the relay
+        never saw start must not inherit its id.  A change of description to
+        one other than its name discards it at once.  The number changing to
+        95 while the description still names it only marks it closed: the
+        board still shows that session, so its run stays in scope until the
+        next session's ``$B`` — any number but 95 — discards it.  Only
+        changes into 95 count: ``$B`` repeats many times within one session,
+        95 included, and a run can be announced before its ``$B`` arrives.
         """
         desc = msg["description"]
         number = msg.get("unique_number") or ""
         run = self.class_code_run
-        if run is not None and (
-            (desc != self.run_description and run["name"] != desc)
-            or (number == "95" and number != self._run_number and run["name"] == desc)
-        ):
-            self.class_code_run = None
-            self.class_codes_revision += 1
+        if run is not None:
+            if (desc != self.run_description and run["name"] != desc) or (
+                number != "95" and run.get("closed")
+            ):
+                self.class_code_run = None
+                self.class_codes_revision += 1
+            elif number == "95" and number != self._run_number and run["name"] == desc:
+                run["closed"] = True
+                self.class_codes_revision += 1
         self._run_number = number
         self.run_description = desc
         self._dirty = True
@@ -1195,6 +1200,8 @@ class RaceState:
                     self.class_code_run = {
                         "run_id": run_id, "name": name, "received_at": min(stamp, now),
                     }
+                    if run.get("closed") is True:
+                        self.class_code_run["closed"] = True
         except (AttributeError, TypeError, ValueError):
             pass
 
