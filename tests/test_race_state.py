@@ -1619,6 +1619,19 @@ def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path
     assert later.class_codes == {}
 
 
+@pytest.mark.parametrize("code", [None, "", "absent"])
+def test_load_class_codes_skips_a_record_without_a_code(state, code):
+    """Live ingest never stores a codeless record, so a restore must not either:
+    one would make ``class_codes_available`` true with no usable code."""
+    rec = {"number": "7", "class_name": "Saloon Cup", "transponder": "",
+           "received_at": __import__("time").time()}
+    if code != "absent":
+        rec["class_code"] = code
+    state.load_class_codes({"class_codes": {"r\te1": rec}})
+    assert state.class_codes == {}
+    assert state.snapshot()["class_codes_available"] is False
+
+
 def test_class_codes_do_not_make_stale_race_state_look_fresh(state, monkeypatch):
     """``last_updated`` dates the race state for ``STATE_MAX_AGE``; a class-code
     push arriving long after the race went quiet must not reset that age."""

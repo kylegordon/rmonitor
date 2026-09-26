@@ -848,6 +848,8 @@ class RaceState:
                 | {"received_at": min(stamp, now)}
                 for k, v in (data.get("class_codes") or {}).items()
                 if isinstance(k, str) and isinstance(v, dict)
+                # The invariant _class_codes holds on ingest: never a codeless record.
+                and v.get("class_code") not in (None, "")
                 and (stamp := _finite_stamp(v.get("received_at"))) is not None
             }
         except (AttributeError, TypeError, ValueError):
