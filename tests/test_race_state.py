@@ -2118,11 +2118,12 @@ def test_class_code_run_survives_init_and_round_trips(state):
 
     assert _started(state, age_seconds=30.0) == "class_codes"
     state.process({"type": "init"})
-    assert state.class_code_run["run_id"] == "0x40002806"
+    assert state.class_code_run_next["run_id"] == "0x40002806"
     restored = RaceState()
     restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
-    assert restored.class_code_run == state.class_code_run
+    assert restored.class_code_run_next == state.class_code_run_next
     _session(restored)
+    assert restored.class_code_run["session_number"] == "27"
     assert restored.snapshot()["class_code_scope"] == "0x40002806"
 
 
@@ -2277,3 +2278,42 @@ def test_a_run_announced_just_before_its_same_named_session_is_kept(state):
     assert restored.class_code_run == state.class_code_run
     restored.process({"type": "run", "unique_number": "29", "description": "Race 7 - 2nd Race"})
     assert restored.class_code_run is None
+
+
+def test_a_same_named_run_starting_before_the_last_session_ends_waits_for_its_own(state):
+    """The next run's start can arrive before the shown session's 95; it must
+    not be scoped onto the old board, nor be closed by that 95."""
+    _session(state)
+    _started(state)
+    _session(state)  # binds 0x40002806 to 27
+    _started(state, "0x40002807")
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    _closing(state)
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    _session(state, number="28")
+    assert state.snapshot()["class_code_scope"] == "0x40002807"
+    assert state.class_code_run["session_number"] == "28"
+    assert state.class_code_run_next is None
+
+
+def test_a_repeated_class_code_run_keeps_its_session_binding(state):
+    """The relay retries a delivery whose answer it lost."""
+    _session(state)
+    _started(state)
+    _session(state)
+    assert _started(state) is None
+    assert state.class_code_run["session_number"] == "27"
+    assert state.class_code_run_next is None
+    _session(state, number="28")
+    assert state.snapshot()["class_code_scope"] == ""
+
+
+def test_a_closed_run_announced_again_is_a_restart(state):
+    _session(state)
+    _started(state)
+    _session(state)
+    _closing(state)
+    assert _started(state) == "class_codes"
+    _session(state, number="28")
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert state.class_code_run["session_number"] == "28"

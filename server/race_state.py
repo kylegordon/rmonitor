@@ -154,7 +154,10 @@ class RaceState:
         self.class_code_preload: dict = _preload_store([], None)
         # The run the timing host last announced as started; see
         # _class_code_run.  Never cleared by reset(), for the same reason.
+        # The first is bound to the current session; the second was announced
+        # since and waits for its own $B (see _run).
         self.class_code_run: dict | None = None
+        self.class_code_run_next: dict | None = None
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
@@ -266,40 +269,57 @@ class RaceState:
         session's description (see :func:`relay.rmonitor_client._parse_run`).
         It is read only to end the started run below.
 
-        The started run is discarded once its session is over, because run
-        names repeat and a later session of the same name that the relay
-        never saw start must not inherit its id.  A change of description to
-        one other than its name discards it at once.  The number changing to
-        95 while the description still names it only marks it closed: the
-        board still shows that session, so its run stays in scope until the
-        next session's ``$B`` — any number but 95 — discards it.  Only
-        changes into 95 count: ``$B`` repeats many times within one session,
-        95 included.  A same-named session may also follow under a new
-        number with no 95 between; a boundary is the number changing, so the
-        first non-95 number naming the run binds it, and a later one
-        discards it.  A run announced since — before its own ``$B``, which
-        the host may send in either order — is not yet bound, so it is kept
-        and binds to the new number.
+        A started run is announced into ``class_code_run_next`` and bound to
+        a session here, because run names repeat: a later session of the
+        same name must not inherit an earlier run's id, and the next run's
+        start can arrive before the current session's ``$B`` ends.
+
+        - A ``$B`` with any number but 95 opens a new session when there is
+          no current run, it is closed, it bears another name, or it is bound
+          to another number — a boundary is the number changing, with or
+          without a 95 between.  The current run is then discarded, and the
+          waiting run is promoted and bound to the number if it bears this
+          session's name.  Otherwise it is the same session, and binds a
+          current run not yet bound.
+        - The number changing *into* 95 while the description names the
+          current run marks it closed, and changes nothing else: the board
+          still shows that session, so its run stays in scope until the next
+          session's ``$B``.  With none bound, a waiting run bearing the name
+          stands in for it, as it does for the scope, and becomes the
+          current run, closed.  95 repeats between sessions, so only the
+          change counts.
         """
         desc = msg["description"]
         number = msg.get("unique_number") or ""
-        run = self.class_code_run
-        if run is not None:
-            if (desc != self.run_description and run["name"] != desc) or (
-                number != "95" and run.get("closed")
+        cur, nxt = self.class_code_run, self.class_code_run_next
+        before = (cur, nxt, cur and dict(cur))
+        if number == "95":
+            # With no run bound, a waiting run stands in for the session shown.
+            shown = cur if cur is not None else nxt
+            if (
+                shown is not None
+                and number != self._run_number
+                and shown["name"] == desc
+                and not shown.get("closed")
             ):
-                self.class_code_run = None
-                self.class_codes_revision += 1
-            elif number == "95":
-                if number != self._run_number and run["name"] == desc:
-                    run["closed"] = True
-                    self.class_codes_revision += 1
-            elif run["name"] == desc and run.get("session_number") != number:
-                if run.get("session_number"):
-                    self.class_code_run = None
+                if cur is None:
+                    self.class_code_run = nxt | {"closed": True}
+                    self.class_code_run_next = None
                 else:
-                    run["session_number"] = number
-                self.class_codes_revision += 1
+                    cur["closed"] = True
+        elif cur is None or cur.get("closed") or cur["name"] != desc or cur.get(
+            "session_number", number
+        ) != number:
+            if nxt is not None and nxt["name"] == desc:
+                self.class_code_run = nxt | {"session_number": number}
+                self.class_code_run_next = None
+            elif cur is not None:
+                self.class_code_run = None
+        elif "session_number" not in cur:
+            cur["session_number"] = number
+        cur = self.class_code_run
+        if (cur, self.class_code_run_next, cur and dict(cur)) != before:
+            self.class_codes_revision += 1
         self._run_number = number
         self.run_description = desc
         self._dirty = True
@@ -626,8 +646,9 @@ class RaceState:
     def _class_code_run(self, msg: dict) -> str | None:
         """Store the run the timing host announced as started on ``:51738``.
 
-        Only :meth:`_class_code_scope` reads it, and only while its name
-        equals the running session's ``$B`` description.  Like the other
+        It waits in ``class_code_run_next`` until a ``$B`` binds it to its
+        session (:meth:`_run`); :meth:`_class_code_scope` reads it only
+        while its name equals the running session's ``$B`` description.  Like the other
         class-code stores it survives :meth:`reset` — the ``$I`` burst that
         opens a session can follow the announcement — and it is dated from
         the relay's read, now minus ``age_seconds``.  A message with no name,
@@ -645,8 +666,15 @@ class RaceState:
             or age > _CLASS_CODE_TTL_SECONDS
         ):
             return None
+        # A relay retries a delivery whose answer it lost, so a repeat of a
+        # run already held changes nothing; one that closed is a restart.
+        for held in (self.class_code_run, self.class_code_run_next):
+            if held is not None and held["run_id"] == run_id and not held.get("closed"):
+                return None
         log.info("Timing host started run %s %r", run_id, name)
-        self.class_code_run = {"run_id": run_id, "name": name, "received_at": time.time() - age}
+        self.class_code_run_next = {
+            "run_id": run_id, "name": name, "received_at": time.time() - age,
+        }
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
@@ -655,7 +683,8 @@ class RaceState:
         """Return the running run's id and the push tags in scope, or *None*.
 
         The running session's ``$B`` description decides the run, never the
-        run state alone: a started run counts only while its name equals the
+        run state alone: the started run bound to the session — or, with none
+        bound, the one waiting — counts only while its name equals the
         description exactly, so a stale "started" from the previous session
         is harmless.  Failing that — a relay that connected mid-run, or a
         grid loaded before its run starts — the description is looked up in
@@ -676,6 +705,10 @@ class RaceState:
             return None
         run_id = None
         run = self.class_code_run
+        if run is None:
+            # No session bound yet — a cold start — so a waiting run may
+            # stand in; while one is bound, a waiting run is the next session's.
+            run = self.class_code_run_next
         if (
             run is not None
             and run["name"] == desc
@@ -710,11 +743,12 @@ class RaceState:
         now = time.time()
         expired = self._prune_class_codes(now)
         expired = self._prune_class_code_preload(now) or expired
-        run = self.class_code_run
-        if run is not None and now - run["received_at"] > _CLASS_CODE_TTL_SECONDS:
-            # Its expiry changes the scope, so an idle page must hear of it.
-            self.class_code_run = None
-            expired = True
+        # A started run's expiry changes the scope, so an idle page must hear of it.
+        for slot in ("class_code_run", "class_code_run_next"):
+            run = getattr(self, slot)
+            if run is not None and now - run["received_at"] > _CLASS_CODE_TTL_SECONDS:
+                setattr(self, slot, None)
+                expired = True
         if expired:
             self.class_codes_revision += 1
             self._dirty = True
@@ -1140,7 +1174,8 @@ class RaceState:
         :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
         The registry preload is saved beside it under ``"preload"``, for the
         same reason and because the relay pulls it again only on a reconnect;
-        the started run under ``"run"``, because the host announces it once.
+        the started runs under ``"run"`` and ``"run_next"``, because the host
+        announces each once.
         """
         return {
             "class_codes": self.class_codes,
@@ -1150,6 +1185,7 @@ class RaceState:
                 "runs": self.class_code_preload["runs"],
             },
             "run": self.class_code_run,
+            "run_next": self.class_code_run_next,
         }
 
     def load_class_codes(self, data: dict) -> None:
@@ -1202,22 +1238,8 @@ class RaceState:
         except (AttributeError, TypeError, ValueError):
             pass
         self._prune_class_code_preload(now)
-        self.class_code_run = None
-        try:
-            run = data.get("run") or {}
-            stamp = _finite_stamp(run.get("received_at"))
-            if stamp is not None and now - stamp <= _CLASS_CODE_TTL_SECONDS:
-                run_id, name = str(run.get("run_id") or ""), str(run.get("name") or "")
-                if name and _RUN_ID.fullmatch(run_id):
-                    self.class_code_run = {
-                        "run_id": run_id, "name": name, "received_at": min(stamp, now),
-                    }
-                    if run.get("closed") is True:
-                        self.class_code_run["closed"] = True
-                    if isinstance(run.get("session_number"), str) and run["session_number"]:
-                        self.class_code_run["session_number"] = run["session_number"]
-        except (AttributeError, TypeError, ValueError):
-            pass
+        self.class_code_run = _restore_run(data.get("run"), now)
+        self.class_code_run_next = _restore_run(data.get("run_next"), now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -1306,6 +1328,34 @@ def _preload_store(
         "runs_by_name": runs_by_name,
         "has_codes": any(e["class_code"] for e in entries),
     }
+
+
+def _restore_run(value, now: float) -> dict | None:
+    """Return a started run saved by :meth:`RaceState.class_codes_to_dict`, or *None*.
+
+    Its binding to a session and its closed mark come back with it; a
+    malformed, expired or future-dated one reads as none, the date capped
+    at *now*.
+    """
+    if not isinstance(value, dict):
+        return None
+    stamp = _finite_stamp(value.get("received_at"))
+    run_id, name = value.get("run_id"), value.get("name")
+    if (
+        stamp is None
+        or now - stamp > _CLASS_CODE_TTL_SECONDS
+        or not isinstance(run_id, str)
+        or not isinstance(name, str)
+        or not name
+        or not _RUN_ID.fullmatch(run_id)
+    ):
+        return None
+    run = {"run_id": run_id, "name": name, "received_at": min(stamp, now)}
+    if value.get("closed") is True:
+        run["closed"] = True
+    if isinstance(value.get("session_number"), str):
+        run["session_number"] = value["session_number"]
+    return run
 
 
 def _coerce_runs(value) -> list[dict]:

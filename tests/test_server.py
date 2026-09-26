@@ -417,7 +417,7 @@ async def test_a_class_code_run_arriving_while_the_feed_is_lost_is_not_a_recover
     assert fs["last_ingest_at"] == stale
     state = app[race_state_key]
     assert "1" in state.competitors  # not reset
-    assert state.class_code_run["run_id"] == "0x40002805"
+    assert state.class_code_run_next["run_id"] == "0x40002805"
 
 
 @pytest.mark.asyncio
