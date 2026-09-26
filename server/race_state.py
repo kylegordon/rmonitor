@@ -280,7 +280,9 @@ class RaceState:
           without a 95 between.  The current run is then discarded, and the
           waiting run is promoted and bound to the number if it bears this
           session's name.  Otherwise it is the same session, and binds a
-          current run not yet bound.
+          current run not yet bound.  A waiting run is discarded once the
+          number changes to a session it does not name; it survives ``$B``
+          repeats, a 95, and the first ``$B`` after a restart.
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
           still shows that session, so its run stays in scope until the next
@@ -293,6 +295,14 @@ class RaceState:
         number = msg.get("unique_number") or ""
         cur, nxt = self.class_code_run, self.class_code_run_next
         before = (cur, nxt, cur and dict(cur))
+        if (
+            nxt is not None
+            and number not in ("95", self._run_number)
+            and self._run_number
+            and nxt["name"] != desc
+        ):
+            # A session it does not name has begun, so it is not the next one.
+            self.class_code_run_next = nxt = None
         if number == "95":
             # With no run bound, a waiting run stands in for the session shown.
             shown = cur if cur is not None else nxt
@@ -1238,8 +1248,9 @@ class RaceState:
         except (AttributeError, TypeError, ValueError):
             pass
         self._prune_class_code_preload(now)
-        self.class_code_run = _restore_run(data.get("run"), now)
-        self.class_code_run_next = _restore_run(data.get("run_next"), now)
+        runs = data if isinstance(data, dict) else {}
+        self.class_code_run = _restore_run(runs.get("run"), now)
+        self.class_code_run_next = _restore_run(runs.get("run_next"), now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.

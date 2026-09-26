@@ -2317,3 +2317,22 @@ def test_a_closed_run_announced_again_is_a_restart(state):
     _session(state, number="28")
     assert state.snapshot()["class_code_scope"] == "0x40002806"
     assert state.class_code_run["session_number"] == "28"
+
+
+def test_a_waiting_run_is_discarded_when_a_session_it_does_not_name_begins(state):
+    _session(state, "Race 6 - AMENDED GRID", number="26")
+    _started(state)  # waiting for "Race 7 - 2nd Race"
+    _session(state, "Race 6 - AMENDED GRID", number="26")  # repeated
+    _closing(state, "Race 6 - AMENDED GRID")
+    assert state.class_code_run_next is not None
+    _session(state, "Race 8", number="28")
+    assert state.class_code_run_next is None
+    _session(state, number="29")
+    assert state.snapshot()["class_code_scope"] == ""
+
+
+@pytest.mark.parametrize("data", ["nonsense", [], None, 42])
+def test_load_class_codes_tolerates_a_store_that_is_not_a_mapping(state, data):
+    state.load_class_codes(data)
+    assert state.class_codes == {}
+    assert state.class_code_run is None and state.class_code_run_next is None
