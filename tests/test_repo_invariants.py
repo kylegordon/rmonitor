@@ -231,11 +231,12 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
 
 
 def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
-    """Line numbers, 1-based and inclusive, of the ``if`` block opened by *opener*.
+    """Line numbers, 1-based and inclusive, of the block opened by *opener*.
 
     The template is asserted about as text -- nothing in this repository renders it --
     so a block is found by indentation: the sole line containing *opener*, through the
-    next line that is a bare closing brace at the same indentation.
+    next line that is a bare closing brace at the same indentation -- ``}``, or ``};``
+    for an assigned function such as ``ws.onmessage = (evt) => { ... };``.
 
     :raises AssertionError: if *opener* does not appear on exactly one line.
     """
@@ -247,7 +248,7 @@ def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
         number
         for number, line in enumerate(lines, 1)
         if number > start
-        and line.strip() == "}"
+        and line.strip() in ("}", "};")
         and len(line) - len(line.lstrip()) == indent
     )
     return start, end
@@ -369,6 +370,71 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
     assert region < banner, (
         "the reload prompt must sit inside a persistent aria-live region, or its "
         "appearance is silent to assistive technology"
+    )
+
+
+def test_the_heartbeat_samples_arrivals_rather_than_pulsing_per_message() -> None:
+    """The page's heart beats on a fixed cadence while data flows, not once per message.
+
+    Reported as the heart beating "randomly and extremely often". Messages land on the
+    server's 0.25 s broadcast grid at irregular gaps -- measured over the committed
+    captures on 2026-09-26, about a quarter of them 0.5 s or less apart -- against a
+    0.4 s pulse animation, so pulsing per message restarted the animation mid-beat at
+    no steady rhythm. Arrivals now only raise a flag, and one interval samples it.
+
+    ``no_feed`` deliberately raises no flag, so the heart does not beat as the no-feed
+    notice appears. The interval is started once at top level rather than in
+    ``connect()``, which reruns on every reconnect and would stack another interval
+    each time, quickening the beat.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    lines = page.splitlines()
+
+    first, last = _js_block(lines, "ws.onmessage")
+    body = "\n".join(lines[first - 1 : last])
+    assert "beating" not in body and "offsetWidth" not in body, (
+        "ws.onmessage pulses the heart directly again; it must only raise dataArrived"
+    )
+
+    tick_first, tick_last = _js_block(lines, "function heartbeatTick()")
+    adds = [
+        number
+        for number, line in enumerate(lines, 1)
+        if "classList.add('beating')" in line
+    ]
+    assert len(adds) == 1 and tick_first < adds[0] < tick_last, (
+        f"the heart must be pulsed only from heartbeatTick, found pulses at {adds}"
+    )
+
+    connect_first, connect_last = _js_block(lines, "function connect()")
+    intervals = [
+        number
+        for number, line in enumerate(lines, 1)
+        if "setInterval(heartbeatTick" in line
+    ]
+    assert len(intervals) == 1, f"expected one heartbeat interval, found {intervals}"
+    assert not connect_first <= intervals[0] <= connect_last, (
+        "the heartbeat interval is started inside connect(), so every reconnect "
+        "stacks another one"
+    )
+
+    def sole(marker: str) -> int:
+        found = [number for number, line in enumerate(lines, 1) if marker in line]
+        assert len(found) == 1, f"expected one {marker!r} in index.html, found {found}"
+        return found[0]
+
+    data_branches = sole("msg.event === 'full'")
+    no_feed_branch = sole("msg.event === 'no_feed'")
+    flags = [
+        number
+        for number, line in enumerate(lines, 1)
+        if "dataArrived = true" in line
+    ]
+    assert len(flags) == 2 and all(
+        data_branches < number < no_feed_branch for number in flags
+    ), (
+        "dataArrived must be raised in the full/update and init branches only -- not "
+        f"for no_feed, nor above the event chain; found it at {flags}"
     )
 
 

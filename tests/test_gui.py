@@ -189,6 +189,66 @@ def test_pulse_sets_active_then_reverts_to_current_state(app):
     assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
 
 
+def test_feed_lines_pulse_once_per_heartbeat_tick(app):
+    # A burst of lines used to queue one pulse each, restarting the pulse
+    # mid-flash; now the lines only raise a flag the tick samples.
+    app._set_feed_connected(True)
+
+    for _ in range(50):
+        app._on_feed_line()
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
+
+    app._heartbeat_tick()
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.feed_status) == gui._PULSE_STYLE
+    assert app._feed_line_seen is False
+
+
+def test_server_attempts_pulse_once_per_heartbeat_tick(app):
+    app._set_server_connected(True)
+
+    for _ in range(50):
+        app._on_server_attempt()
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.server_status) == gui._CONNECTED_STYLE
+
+    app._heartbeat_tick()
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.server_status) == gui._PULSE_STYLE
+    assert app._server_attempt_seen is False
+
+
+def test_heartbeat_tick_without_arrivals_does_not_pulse_and_reschedules(app):
+    app._set_feed_connected(True)
+    app._set_server_connected(True)
+
+    app._heartbeat_tick()
+    app.root.update_idletasks()
+
+    assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
+    assert _bootstyle_of(app.server_status) == gui._CONNECTED_STYLE
+    assert app._heartbeat_after_id in _pending_after_timers(app.root)
+
+
+def test_finish_close_cancels_the_heartbeat_tick(app):
+    # A tick left pending comes due after root.destroy(), and Tk dumps
+    # `invalid command name ...` to stderr on exit (as in
+    # test_repeated_close_clicks_schedule_only_one_teardown).
+    tick = app._heartbeat_after_id
+    assert tick in _pending_after_timers(app.root)
+
+    # Keep the root alive to inspect its timers. Not monkeypatch: the fixture
+    # tears down before monkeypatch undoes, so a patched destroy would leak
+    # this root -- and ttkbootstrap's Style bound to it -- into later tests.
+    app.root.destroy = lambda: None
+    try:
+        app._finish_close()
+        assert tick not in _pending_after_timers(app.root)
+    finally:
+        del app.root.destroy
+
+
 def test_save_confirmation_shows_then_hides_after_save(app):
     assert not app.save_confirmation.winfo_ismapped()
 
