@@ -8,6 +8,7 @@ context manager yielding an object with a `.status` attribute.
 import asyncio
 import pathlib
 import sys
+import threading
 import types
 
 import aiohttp
@@ -15,6 +16,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from relay import main as relay_main
+from relay.class_code_client import ClassCodeStatus
 
 
 class FakeResponse:
@@ -150,7 +152,8 @@ def fake_sources(monkeypatch):
 
     The feed's ``run()`` returns once ``state["feed_done"]`` is set; the
     class-code client's ``run()`` records its start, optionally delivers
-    ``state["batch"]`` through its callback (recording what it raised), then waits to be cancelled.
+    ``state["batch"]`` through its callback (recording what it raised) and
+    ``state["status"]`` through its status hook, then waits to be cancelled.
     """
     state = {
         "feed_done": asyncio.Event(),
@@ -159,6 +162,7 @@ def fake_sources(monkeypatch):
         "codes_cancelled": False,
         "batch": None,
         "batch_error": None,
+        "status": None,
     }
 
     class FakeFeed:
@@ -173,9 +177,12 @@ def fake_sources(monkeypatch):
             self.host = host
             self.port = 51738
             self.on_batch = on_batch
+            self.on_status = kwargs.get("on_status")
             state["codes_clients"].append(self)
 
         async def run(self):
+            if state["status"] is not None:
+                self.on_status(state["status"])
             if state["batch"] is not None:
                 try:
                     await self.on_batch(state["batch"])
@@ -223,8 +230,8 @@ async def test_main_does_not_start_the_class_code_client_when_disabled(fake_sour
 
 @pytest.mark.asyncio
 async def test_a_rejected_class_code_post_is_a_failed_delivery(fake_sources, monkeypatch):
-    """A 401 (say) is dropped for a feed message, but a class-code roster is
-    pushed once, so its rejection must surface for ClassCodeClient to retry."""
+    """A 401 (say) is dropped for a feed message, but a class-code push is not
+    repeated, so its rejection must surface for ClassCodeClient to retry."""
     post = AsyncMock(return_value=False)
     monkeypatch.setattr(relay_main, "post_message", post)
     fake_sources["batch"] = {"type": "class_codes", "run_id": "r", "entries": []}
@@ -249,6 +256,63 @@ async def test_a_class_code_post_failure_does_not_exit_the_relay(fake_sources, m
     assert not task.done()
     fake_sources["feed_done"].set()
     await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_preload_is_a_failed_delivery(fake_sources, monkeypatch):
+    monkeypatch.setattr(relay_main, "post_message", AsyncMock(return_value=False))
+    fake_sources["batch"] = {"type": "class_code_preload", "entries": [], "age_seconds": 0.0}
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    assert isinstance(fake_sources["batch_error"], ConnectionError)
+    assert str(fake_sources["batch_error"]) == "could not deliver class_code_preload"
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_disabled_class_codes_report_a_disabled_status(fake_sources):
+    seen = []
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(
+        relay_main.main(_relay_config(class_codes_enabled=False), on_class_codes_status=seen.append),
+        timeout=2.0,
+    )
+    assert seen == [ClassCodeStatus("disabled")]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_disabled_status_hook_does_not_stop_the_feed(fake_sources, caplog):
+    def on_status(status):
+        raise RuntimeError("window closing")
+
+    task = asyncio.ensure_future(relay_main.main(
+        _relay_config(class_codes_enabled=False), on_class_codes_status=on_status,
+    ))
+    await asyncio.sleep(0.05)
+    assert not task.done()  # the feed is running
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert "status callback failed" in caplog.text
+
+
+def test_class_code_status_reaches_the_runner_callback(fake_sources):
+    status = ClassCodeStatus("connected", preloaded=3)
+    fake_sources["status"] = status
+    seen = []
+    arrived = threading.Event()
+
+    def on_status(s):
+        seen.append(s)
+        arrived.set()
+
+    runner = relay_main.RelayRunner(on_class_codes_status=on_status)
+    runner.start(_relay_config())
+    try:
+        assert arrived.wait(timeout=2.0)
+    finally:
+        runner.stop()
+    assert seen == [status]
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]

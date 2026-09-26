@@ -3,7 +3,9 @@
 Provides a small Tkinter dialog (feed IP, feed port, server URL, relay
 secret, Save/Apply) that persists to an `.env` file and reconfigures the
 relay's TCP-to-HTTP forwarding loop in-process, without relaunching the
-process.
+process.  Three status buttons show the feed, the server and the class-code
+source, and the whole relay log is copied to a rotating `relay.log` beside
+the `.env`, since the windowed build has no console.
 Also polls the repo's `VERSION` file on startup and every 6 hours, showing
 a notification with a link to the GitHub Releases page when a newer
 version is available (notify-only, no auto-update).
@@ -16,7 +18,10 @@ the runner's thread must marshal back via `root.after(...)`.
 
 import asyncio
 import logging
+import logging.handlers
 import os
+import pathlib
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import ttk
@@ -58,6 +63,10 @@ _THEME = "bootstrap-light"
 _CONNECTED_STYLE = "success"
 _DISCONNECTED_STYLE = "danger"
 _PULSE_STYLE = "info"
+_IDLE_STYLE = "secondary"
+_PENDING_STYLE = "warning"
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_LOG_MAX_BYTES = 2 * 1024 * 1024
 _HEARTBEAT_PULSE_MS = 400
 _HEARTBEAT_PERIOD_MS = 2000
 _SAVE_CONFIRMATION_MS = 1500
@@ -85,6 +94,9 @@ class RelayGuiApp:
         self._feed_line_seen = False
         self._server_attempt_seen = False
         self._closing = False
+        self.class_codes_var = tk.StringVar(value="Starting…")
+        self._class_codes_style = _IDLE_STYLE
+        self._class_codes_last_delivery = None
 
         self._configure_style()
         self._build_widgets()
@@ -97,6 +109,7 @@ class RelayGuiApp:
             on_server_attempt=self._on_server_attempt,
             on_server_connect=self._on_server_connect,
             on_server_disconnect=self._on_server_disconnect,
+            on_class_codes_status=self._on_class_codes_status,
         )
         # Deferred via `after(0, ...)` rather than called directly: start()
         # spins up the runner's background thread, which calls
@@ -140,8 +153,15 @@ class RelayGuiApp:
         )
         self.server_status.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
 
+        self.class_codes_status = ttb.Button(
+            frame, text="Class Codes", bootstyle=self._class_codes_style
+        )
+        self.class_codes_status.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.class_codes_label = ttk.Label(frame, textvariable=self.class_codes_var)
+        self.class_codes_label.grid(row=2, column=0, columnspan=2, pady=(2, 8))
+
         feed_frame = ttk.LabelFrame(frame, text="Feed")
-        feed_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        feed_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         feed_frame.columnconfigure(1, weight=1)
 
         ttk.Label(feed_frame, text="Feed IP:").grid(row=0, column=0, sticky="w")
@@ -151,7 +171,7 @@ class RelayGuiApp:
         ttk.Entry(feed_frame, textvariable=self.port_var).grid(row=1, column=1, sticky="ew")
 
         server_frame = ttk.LabelFrame(frame, text="Server")
-        server_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        server_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         server_frame.columnconfigure(1, weight=1)
 
         ttk.Label(server_frame, text="Server URL:").grid(row=0, column=0, sticky="w")
@@ -163,27 +183,27 @@ class RelayGuiApp:
         )
 
         ttb.Button(frame, text="Save / Apply", bootstyle="primary", command=self._on_save).grid(
-            row=3, column=0, columnspan=2, pady=(8, 0)
+            row=5, column=0, columnspan=2, pady=(8, 0)
         )
 
         self.save_confirmation = ttk.Label(frame, text="Saved", foreground="green")
-        self.save_confirmation.grid(row=4, column=0, columnspan=2, pady=(4, 0))
+        self.save_confirmation.grid(row=6, column=0, columnspan=2, pady=(4, 0))
         self.save_confirmation.grid_remove()
 
         self.closing_notice = ttk.Label(frame, text="Closing…", foreground="green")
-        self.closing_notice.grid(row=4, column=0, columnspan=2, pady=(4, 0))
+        self.closing_notice.grid(row=6, column=0, columnspan=2, pady=(4, 0))
         self.closing_notice.grid_remove()
 
         self.update_label = ttk.Label(
             frame, textvariable=self.update_var, foreground="blue", cursor="hand2"
         )
-        self.update_label.grid(row=5, column=0, columnspan=2, pady=(8, 0))
+        self.update_label.grid(row=7, column=0, columnspan=2, pady=(8, 0))
         self.update_label.bind("<Button-1>", lambda _event: webbrowser.open(update_check.RELEASES_URL))
         self.update_label.grid_remove()
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.root.minsize(380, 300)
+        self.root.minsize(380, 360)
 
     def _feed_style(self) -> str:
         return _CONNECTED_STYLE if self._feed_connected else _DISCONNECTED_STYLE
@@ -249,6 +269,28 @@ class RelayGuiApp:
 
     def _on_server_disconnect(self) -> None:
         self.root.after(0, self._set_server_connected, False)
+
+    def _on_class_codes_status(self, status) -> None:
+        # Runs on the runner's thread.
+        self.root.after(0, self._set_class_codes_status, status)
+
+    def _set_class_codes_status(self, status) -> None:
+        """Show a `ClassCodeStatus`, pulsing the button on a new delivery."""
+        self._class_codes_style, text = _class_codes_view(status)
+        self.class_codes_var.set(text)
+        delivered = (
+            status.last_delivery is not None
+            and status.last_delivery != self._class_codes_last_delivery
+        )
+        self._class_codes_last_delivery = status.last_delivery
+        if delivered:
+            self.class_codes_status.configure(bootstyle=_PULSE_STYLE)
+            self.root.after(
+                _HEARTBEAT_PULSE_MS,
+                lambda: self.class_codes_status.configure(bootstyle=self._class_codes_style),
+            )
+        else:
+            self.class_codes_status.configure(bootstyle=self._class_codes_style)
 
     def _load_initial_values(self) -> None:
         values = env_config.load_env_file(self.env_path)
@@ -349,11 +391,49 @@ class RelayGuiApp:
         self.root.destroy()
 
 
-def main_gui() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+def _class_codes_view(status) -> tuple[str, str]:
+    """Return the button style and label text for a `ClassCodeStatus`."""
+    if status.state == "disabled":
+        return _IDLE_STYLE, "Disabled"
+    if status.state == "connecting":
+        return _PENDING_STYLE, "Connecting…"
+    if status.state == "retrying":
+        return _PENDING_STYLE, f"Retrying in {status.retry_in:.0f}s: {status.detail}"
+    if status.state == "delivery_failed":
+        return _DISCONNECTED_STYLE, f"Delivery failed, retrying in {status.retry_in:.0f}s"
+    last = (
+        time.strftime("%H:%M", time.localtime(status.last_delivery))
+        if status.last_delivery is not None else "—"
     )
+    return (
+        _CONNECTED_STYLE,
+        f"{status.preloaded} preloaded · {status.pushed} pushed · last {last}",
+    )
+
+
+def _attach_log_file(path: pathlib.Path) -> logging.Handler | None:
+    """Copy the whole relay log to a rotating file at *path*; return its handler.
+
+    The windowed build has no console, so without this every log line is
+    lost.  An unwritable location logs a warning and returns *None*: the
+    relay runs on without the file.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=_LOG_MAX_BYTES, backupCount=1, encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning("Could not open the log file %s: %s", path, exc)
+        return None
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def main_gui() -> None:
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+    _attach_log_file(env_config.default_log_path())
     root = tk.Tk()
     root.title(f"rMonitor Relay v{CURRENT_VERSION}")
     app = RelayGuiApp(root)

@@ -6,6 +6,7 @@ codes — never from a capture.
 """
 
 import asyncio
+import json
 import struct
 
 import pytest
@@ -55,6 +56,8 @@ def test_constants_have_the_captured_lengths():
     assert len(ccc.RECORD_1B) == 249
     assert len(ccc.RECORD_2B) == 185
     assert len(ccc.KEEPALIVE) == 63
+    assert len(ccc.RECORD_3) == 63
+    assert len(ccc.RECORD_4) == 130
 
 
 def test_every_identity_and_session_slot_in_the_constants_is_zero():
@@ -64,6 +67,8 @@ def test_every_identity_and_session_slot_in_the_constants_is_zero():
     for rec, anchors, tokens in (
         (ccc.RECORD_1B, ccc.RECORD_1B_ANCHORS, ccc.RECORD_1B_TOKENS),
         (ccc.RECORD_2B, ccc.RECORD_2B_ANCHORS, ccc.RECORD_2B_TOKENS),
+        (ccc.RECORD_3, ccc.RECORD_3_ANCHORS, ccc.RECORD_3_TOKENS),
+        (ccc.RECORD_4, ccc.RECORD_4_ANCHORS, ccc.RECORD_4_TOKENS),
         (ccc.KEEPALIVE, ccc.KEEPALIVE_ANCHORS, ccc.KEEPALIVE_TOKENS),
     ):
         for a in anchors:
@@ -97,6 +102,8 @@ def test_session_records_substitute_handle_and_unit_at_every_anchor():
     for template, anchors, tokens, n_anchor, n_token in (
         (ccc.RECORD_1B, ccc.RECORD_1B_ANCHORS, ccc.RECORD_1B_TOKENS, 1, 2),
         (ccc.RECORD_2B, ccc.RECORD_2B_ANCHORS, ccc.RECORD_2B_TOKENS, 2, 3),
+        (ccc.RECORD_3, ccc.RECORD_3_ANCHORS, ccc.RECORD_3_TOKENS, 1, 1),
+        (ccc.RECORD_4, ccc.RECORD_4_ANCHORS, ccc.RECORD_4_TOKENS, 2, 2),
         (ccc.KEEPALIVE, ccc.KEEPALIVE_ANCHORS, ccc.KEEPALIVE_TOKENS, 1, 1),
     ):
         rec = _session(template, anchors, tokens, handle=handle, unit=unit)
@@ -191,6 +198,88 @@ def test_parser_decodes_utf8_like_the_rmonitor_feed():
     assert rec.fields[7] == "Zoë�"
 
 
+def _s(text) -> bytes:
+    """A length-prefixed registry string."""
+    raw = text.encode() if isinstance(text, str) else text
+    return struct.pack("<I", len(raw)) + raw
+
+
+def _registry_record(reg_id="1a2b3c4d", tx=1234567, *, model="Test Car", capacity="2000",
+                     code="TS", extras=("",) * 6, number="7",
+                     class_name="Test Saloon Cup") -> bytes:
+    """One synthetic registry record, followed by an invented person block."""
+    return (
+        _s(reg_id) + struct.pack("<III", 0, 1, tx) + bytes(8) + struct.pack("<I", 10)
+        + _s(model) + _s(capacity) + _s(code) + b"".join(_s(e) for e in extras)
+        + bytes(5) + _s(number) + _s(class_name)
+        + _s("Ann") + _s("EXAMPLE") + bytes(12)
+    )
+
+
+def _triple(tx="1234567", class_name="Test Saloon Cup", code="TS"):
+    return {"transponder": tx, "class_name": class_name, "class_code": code}
+
+
+def test_registry_record_is_parsed():
+    buf = bytes(16) + _registry_record() + bytes(16)
+    assert ccc.parse_registry(buf) == [_triple()]
+
+
+def test_registry_ids_shorter_than_eight_characters_are_parsed():
+    buf = b"".join(
+        _registry_record(reg_id, tx)
+        for reg_id, tx in (("a", 11), ("1b2", 22), ("abcdef0", 33))
+    )
+    assert [r["transponder"] for r in ccc.parse_registry(buf)] == ["11", "22", "33"]
+
+
+def test_registry_strings_between_code_and_number_are_skipped():
+    rec = _registry_record(
+        capacity="Example Racing Team",
+        extras=("", "", "", "", "Example Racing", "1:23.456"),
+        class_name="Test Sports Trophy", code="TT LT",
+    )
+    assert ccc.parse_registry(rec) == [_triple(class_name="Test Sports Trophy", code="TT LT")]
+
+
+def test_registry_keeps_codeless_records_and_skips_classless_and_zero_transponder_ones():
+    """A codeless record is kept: the server's class-uniform guard must see it."""
+    buf = (
+        _registry_record(tx=11, code="")
+        + _registry_record(tx=22, class_name="")
+        + _registry_record(tx=0)
+        + _registry_record(tx=44)
+    )
+    assert ccc.parse_registry(buf) == [_triple(tx="11", code=""), _triple(tx="44")]
+
+
+def test_registry_triples_are_deduplicated():
+    buf = (
+        _registry_record("aaaa1111")
+        + _registry_record("bbbb2222")
+        + _registry_record("cccc3333", code="TX")
+    )
+    assert ccc.parse_registry(buf) == [_triple(), _triple(code="TX")]
+
+
+def test_registry_skips_a_truncated_record_and_binary_noise():
+    good = _registry_record(tx=11)
+    # An id whose length byte disagrees with it, a string far too long to be
+    # real, and a record cut off at the end of the buffer.
+    mismatched = b"\x05\x00\x00\x00abc" + bytes(4) + struct.pack("<I", 1)
+    oversized = _registry_record(tx=22, model="x" * 300)
+    truncated = _registry_record(tx=33)[:40]
+    buf = bytes(range(256)) + mismatched + good + oversized + truncated
+    assert ccc.parse_registry(buf) == [_triple(tx="11")]
+
+
+def test_registry_decodes_utf8_like_the_rmonitor_feed():
+    raw_name = "Zoë Cup".encode() + b"\xff"
+    (rec,) = ccc.parse_registry(_registry_record(class_name=raw_name))
+    assert rec["class_name"] == raw_name.decode("utf-8", errors="replace")
+    assert rec["class_name"] == "Zoë Cup�"
+
+
 # ---------------------------------------------------------------------------
 # The connection loop
 # ---------------------------------------------------------------------------
@@ -244,7 +333,7 @@ class _Stop(BaseException):
 
 
 FAST = dict(
-    first_idle=0.01, record_idle=0.01, tail_idle=0.01, flush_quiet=0.05,
+    first_idle=0.01, record_idle=0.01, model_idle=0.01, flush_quiet=0.05,
     keepalive_interval=10.0,
 )
 
@@ -308,18 +397,19 @@ def _without_age(msg):
 
 def _collect(batches):
     async def on_batch(msg):
-        batches.append(_without_age(msg))
+        # A preload is dated as a whole, not per entry.
+        batches.append(msg if msg["type"] == "class_code_preload" else _without_age(msg))
     return on_batch
 
 
 @pytest.mark.asyncio
-async def test_handshake_sends_three_records_with_the_live_handle_and_unit(monkeypatch):
+async def test_handshake_sends_five_records_with_the_live_handle_and_unit(monkeypatch):
     writer = FakeWriter()
     _harness(monkeypatch, [(ChunkReader([IDENT_FRAME]), writer)])
     client = ccc.ClassCodeClient("timing-host", _collect([]), **FAST)
     task = asyncio.ensure_future(client.run())
     try:
-        await _until(lambda: len(writer.writes) >= 3)
+        await _until(lambda: len(writer.writes) >= 5)
         await asyncio.sleep(0.05)
     finally:
         await _finish(task)
@@ -327,6 +417,8 @@ async def test_handshake_sends_three_records_with_the_live_handle_and_unit(monke
         ccc.build_record_0(token=TOKEN, machine=MACHINE),
         _session(ccc.RECORD_1B, ccc.RECORD_1B_ANCHORS, ccc.RECORD_1B_TOKENS),
         _session(ccc.RECORD_2B, ccc.RECORD_2B_ANCHORS, ccc.RECORD_2B_TOKENS),
+        _session(ccc.RECORD_3, ccc.RECORD_3_ANCHORS, ccc.RECORD_3_TOKENS),
+        _session(ccc.RECORD_4, ccc.RECORD_4_ANCHORS, ccc.RECORD_4_TOKENS),
     ]
 
 
@@ -352,12 +444,12 @@ async def test_keepalive_is_sent_with_the_live_session_fields(monkeypatch):
     )
     task = asyncio.ensure_future(client.run())
     try:
-        await _until(lambda: len(writer.writes) >= 5)
+        await _until(lambda: len(writer.writes) >= 7)
     finally:
         await _finish(task)
     keepalive = _session(ccc.KEEPALIVE, ccc.KEEPALIVE_ANCHORS, ccc.KEEPALIVE_TOKENS)
-    assert writer.writes[3] == keepalive
-    assert writer.writes[4] == keepalive
+    assert writer.writes[5] == keepalive
+    assert writer.writes[6] == keepalive
 
 
 @pytest.mark.asyncio
@@ -372,7 +464,7 @@ async def test_silence_does_not_trigger_a_reconnect(monkeypatch):
         await _finish(task)
     assert len(opened) == 1
     assert sleeps == []
-    assert len(writer.writes) == 3
+    assert len(writer.writes) == 5
 
 
 @pytest.mark.asyncio
@@ -470,7 +562,7 @@ async def test_reconnect_delay_resets_after_a_connection_that_survived_a_keepali
         "timing-host", _collect([]), **{**FAST, "keepalive_interval": 0.05}
     )
     task = asyncio.ensure_future(client.run())
-    await _until(lambda: len(survivor.writes) >= 4)  # three records + a keepalive
+    await _until(lambda: len(survivor.writes) >= 6)  # five records + a keepalive
     gate.set()
     with pytest.raises(_Stop):
         await asyncio.wait_for(task, timeout=2.0)
@@ -554,14 +646,14 @@ async def test_retry_delay_doubles_while_delivery_fails_and_resets_on_success(mo
 @pytest.mark.asyncio
 async def test_undelivered_entries_are_dropped_once_older_than_the_server_would_keep(monkeypatch):
     """A batch the server keeps rejecting is not retried for ever."""
-    monkeypatch.setattr(ccc, "MAX_ENTRY_AGE", 0.15)
+    monkeypatch.setattr(ccc, "MAX_ENTRY_AGE", 0.3)
     client, _, calls, opened, _ = _failing_client(
         monkeypatch, set(range(1, 100)), retry_initial=0.03, retry_max=0.03
     )
     task = asyncio.ensure_future(client.run())
     try:
         await _until(lambda: calls)
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.6)
         tried = len(calls)
         await asyncio.sleep(0.2)
     finally:
@@ -645,3 +737,324 @@ async def test_unexpected_exception_is_logged_and_retried_not_raised(monkeypatch
         await asyncio.wait_for(client.run(), timeout=2.0)
     assert sleeps == [client.reconnect_initial]
     assert "unexpected error" in caplog.text
+
+
+class HostReader:
+    """A host that answers the records the client writes.
+
+    *replies* maps a record count to the bytes the host sends once the client
+    has written that many records — record 0 is the first write, record 3
+    the fourth.  Once every reply has gone, *then* is served as by
+    :class:`ChunkReader`, except that a float in it is a pause of that many
+    seconds; after that the stream hangs.
+    """
+
+    def __init__(self, writer, replies, then=()):
+        self._writer = writer
+        self._replies = dict(replies)
+        self._then = list(then)
+
+    async def read(self, n):
+        while self._replies:
+            due = min(self._replies)
+            if len(self._writer.writes) >= due:
+                return self._replies.pop(due)
+            await asyncio.sleep(0.002)
+        while self._then:
+            item = self._then[0]
+            if isinstance(item, float):
+                await asyncio.sleep(item)
+            elif isinstance(item, asyncio.Event):
+                await item.wait()
+            else:
+                return self._then.pop(0)
+            # Removed only once waited out, as ChunkReader does.
+            self._then.pop(0)
+        await asyncio.Event().wait()
+
+
+REGISTRY = _registry_record("aaaa1111", 11) + _registry_record(
+    "bbbb2222", 22, class_name="Test Sports Trophy", code="TT"
+)
+REGISTRY_ENTRIES = [_triple("11"), _triple("22", "Test Sports Trophy", "TT")]
+
+
+def _pulling(writer, registry=REGISTRY, then=()):
+    """A host that sends *registry* split across its answers to records 3 and 4."""
+    half = len(registry) // 2
+    return HostReader(writer, {1: IDENT_FRAME, 4: registry[:half], 5: registry[half:]}, then)
+
+
+def _preloads(batches):
+    return [b for b in batches if b["type"] == "class_code_preload"]
+
+
+@pytest.mark.asyncio
+async def test_a_complete_registry_pull_is_forwarded_as_one_preload(monkeypatch):
+    writer = FakeWriter()
+    opened, sleeps = _harness(monkeypatch, [(_pulling(writer), writer)])
+    batches = []
+
+    async def on_batch(msg):
+        batches.append(msg)
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: batches)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (msg,) = batches
+    assert msg["type"] == "class_code_preload"
+    assert msg["entries"] == REGISTRY_ENTRIES
+    assert isinstance(msg["age_seconds"], float) and msg["age_seconds"] >= 0
+    assert len(opened) == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_a_pull_with_no_registry_records_forwards_nothing(monkeypatch, caplog):
+    writer = FakeWriter()
+    _harness(monkeypatch, [(_pulling(writer, registry=bytes(range(200))), writer)])
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(writer.writes) >= 5)
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert batches == []
+    assert client._preload is None
+    assert "held no usable records" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut_short_by", ["model_cap", "buffer_cap"])
+async def test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_preload(
+    monkeypatch, caplog, cut_short_by
+):
+    """A partial registry would let the server's class-uniform guard pass a
+    code that a missing record contradicts, so it is never forwarded."""
+    writer = FakeWriter()
+    if cut_short_by == "model_cap":
+        # The model keeps coming, never idling, past the cap.
+        # Gaps a tenth of model_idle, so a scheduler stall can't idle it early.
+        reader = HostReader(writer, {1: IDENT_FRAME, 4: REGISTRY}, then=[0.02, b"\x00"] * 50)
+        knobs = {"model_idle": 0.2, "model_cap": 0.4}
+    else:
+        monkeypatch.setattr(ccc, "MODEL_BUFFER_CAP", len(REGISTRY) - 1)
+        reader = _pulling(writer)
+        knobs = {}
+    opened, sleeps = _harness(monkeypatch, [(reader, writer)])
+    batches = []
+    client = ccc.ClassCodeClient(
+        "timing-host", _collect(batches), **{**FAST, "keepalive_interval": 0.1, **knobs}
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await asyncio.sleep(1.4)
+    finally:
+        await _finish(task)
+    assert _preloads(batches) == []
+    assert "registry pull incomplete" in caplog.text
+    keepalive = _session(ccc.KEEPALIVE, ccc.KEEPALIVE_ANCHORS, ccc.KEEPALIVE_TOKENS)
+    assert keepalive in writer.writes  # still held
+    assert len(opened) == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preload_is_retried_and_a_newer_pull_replaces_it(monkeypatch):
+    closing = asyncio.Event()
+    first, second = FakeWriter(), FakeWriter()
+    newer = _registry_record("cccc3333", 33, code="TN")
+    connections = [
+        (_pulling(first, then=[closing, b""]), first),
+        (_pulling(second, registry=newer), second),
+    ]
+    opened, sleeps = _harness(monkeypatch, connections, stop_after=2)
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["entries"])
+        if len(calls) == 2:
+            closing.set()
+        if len(calls) <= 2:
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "retry_initial": 0.05})
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(calls) >= 3)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    # Retried once on the first connection; the second connection's pull then
+    # replaced the kept preload rather than queueing behind it.
+    assert calls == [REGISTRY_ENTRIES, REGISTRY_ENTRIES, [_triple("33", code="TN")]]
+    assert len(opened) == 2
+    assert client._preload is None
+
+
+@pytest.mark.asyncio
+async def test_a_preload_older_than_the_server_would_keep_is_dropped(monkeypatch, caplog):
+    monkeypatch.setattr(ccc, "MAX_ENTRY_AGE", 0.15)
+    writer = FakeWriter()
+    _harness(monkeypatch, [(_pulling(writer), writer)])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+        raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch,
+        **{**FAST, "keepalive_interval": 0.05, "retry_initial": 0.03, "retry_max": 0.03},
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+        tried = len(calls)
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert tried >= 2
+    assert len(calls) == tried
+    assert client._preload is None
+    assert "Dropping an undelivered class-code preload" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+def _statuses():
+    seen = []
+    return seen, seen.append
+
+
+@pytest.mark.asyncio
+async def test_status_reports_connecting_then_connected(monkeypatch):
+    writer = FakeWriter()
+    _harness(monkeypatch, [(HostReader(writer, {1: IDENT_FRAME}), writer)])
+    seen, on_status = _statuses()
+    client = ccc.ClassCodeClient("timing-host", _collect([]), on_status=on_status, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(seen) >= 2)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    assert [s.state for s in seen] == ["connecting", "connected"]
+    assert seen[-1] == ccc.ClassCodeStatus("connected")
+
+
+@pytest.mark.asyncio
+async def test_status_reports_a_failed_connection_with_its_retry_delay_and_reason(monkeypatch):
+    _harness(monkeypatch, [ConnectionRefusedError("connection refused")])
+    seen, on_status = _statuses()
+    client = ccc.ClassCodeClient("timing-host", _collect([]), on_status=on_status, **FAST)
+    with pytest.raises(_Stop):
+        await asyncio.wait_for(client.run(), timeout=2.0)
+    assert [s.state for s in seen] == ["connecting", "retrying"]
+    assert seen[-1].retry_in == client.reconnect_initial
+    assert seen[-1].detail == "connection refused"
+
+
+@pytest.mark.asyncio
+async def test_status_counts_preloaded_and_pushed_deliveries(monkeypatch):
+    gate = asyncio.Event()
+    writer = FakeWriter()
+    push = _push("added", "0x4000AAAA", _fields())
+    _harness(monkeypatch, [(_pulling(writer, then=[gate, push]), writer)])
+    seen, on_status = _statuses()
+    batches = []
+    client = ccc.ClassCodeClient(
+        "timing-host", _collect(batches), on_status=on_status,
+        **{**FAST, "keepalive_interval": 0.05},
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: batches)
+        after_preload = seen[-1]
+        gate.set()
+        await _until(lambda: len(batches) >= 2)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    assert after_preload.state == "connected"
+    assert (after_preload.preloaded, after_preload.pushed) == (2, 0)
+    assert after_preload.last_delivery is not None
+    assert (seen[-1].preloaded, seen[-1].pushed) == (2, 1)
+    assert seen[-1].last_delivery >= after_preload.last_delivery
+
+
+@pytest.mark.asyncio
+async def test_status_reports_a_failed_delivery_with_its_retry_delay(monkeypatch):
+    client, _, calls, _, _ = _failing_client(monkeypatch, {1}, retry_initial=0.2)
+    seen, client.on_status = _statuses()
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(calls) >= 2)
+        await asyncio.sleep(0.02)
+    finally:
+        await _finish(task)
+    failed = [s for s in seen if s.state == "delivery_failed"]
+    assert [s.retry_in for s in failed] == [0.2]
+    assert seen[-1].state == "connected"
+    assert seen[-1].pushed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_raising_status_callback_does_not_stop_the_client(monkeypatch, caplog):
+    writer = FakeWriter()
+    opened, sleeps = _harness(monkeypatch, [(_pulling(writer), writer)])
+
+    def on_status(status):
+        raise RuntimeError("display gone")
+
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), on_status=on_status, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: batches)
+    finally:
+        await _finish(task)
+    assert _preloads(batches)
+    assert len(opened) == 1
+    assert sleeps == []
+    assert "status callback failed" in caplog.text
+
+
+def test_a_marker_inside_model_bytes_is_not_taken_for_a_push():
+    """Model bytes go through the push parser so interleaved pushes are kept;
+    the marker alone, without a record's framing and header, yields nothing."""
+    body = b"\x00\x13model-internal\x00table\x01"
+    model = (
+        _registry_record() + b"datamanager" + struct.pack("<I", len(body)) + body
+        + b"datamanager\x02" + _registry_record(tx=22)
+    )
+    assert ccc.PushParser().feed(model) == []
+
+
+@pytest.mark.asyncio
+async def test_a_preload_larger_than_the_server_accepts_is_not_forwarded(monkeypatch, caplog):
+    """It would be answered with a 413 on every retry until it aged out."""
+    monkeypatch.setattr(ccc, "MAX_PRELOAD_BYTES", len(json.dumps(REGISTRY_ENTRIES)) - 1)
+    writer = FakeWriter()
+    opened, sleeps = _harness(monkeypatch, [(_pulling(writer), writer)])
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(writer.writes) >= 5)
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert batches == []
+    assert "over the server's" in caplog.text
+    assert len(opened) == 1
+    assert sleeps == []

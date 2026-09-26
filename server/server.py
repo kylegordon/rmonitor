@@ -102,7 +102,10 @@ def _if_none_match(request: web.Request, version: str) -> bool:
 
 
 def create_app(race_state, relay_secret: str = "", restored: bool = False) -> web.Application:
-    app = web.Application()
+    # A registry preload is ~400 KB today (4,821 entries) and grows with the
+    # timing host's archive.  aiohttp's default 1 MiB would one day answer it
+    # with a 413 — on every retry, so the preload would never land.
+    app = web.Application(client_max_size=4 * 1024 ** 2)
     app[race_state_key] = race_state
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
@@ -206,9 +209,10 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 
 # Ingest types that come from a source other than the rMonitor feed, so they
-# are no evidence the feed is alive.  A class-code push or retry arriving while
-# :50000 is down must not clear the outage, reset the race state and broadcast.
-_NON_FEED_TYPES = frozenset({"class_codes"})
+# are no evidence the feed is alive.  A class-code push, registry preload or
+# retry arriving while :50000 is down must not clear the outage, reset the race
+# state and broadcast.
+_NON_FEED_TYPES = frozenset({"class_codes", "class_code_preload"})
 
 
 async def handle_ingest(request: web.Request) -> web.Response:
@@ -224,6 +228,9 @@ async def handle_ingest(request: web.Request) -> web.Response:
         raise web.HTTPUnauthorized(reason="Invalid relay secret")
     try:
         msg = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        # Not bad JSON: let the 413 through, so the status and log say size.
+        raise
     except Exception:
         raise web.HTTPBadRequest(reason="Invalid JSON body")
     if not isinstance(msg, dict) or "type" not in msg:
@@ -274,6 +281,7 @@ async def broadcast_if_dirty(app: web.Application) -> bool:
     broadcasts it whole.
     """
     state = app[race_state_key]
+    state.prune_expired_class_codes()
     if not state.dirty or _feed_state(app)["feed_lost"]:
         return False
     # Cleared *before* awaiting the broadcast, not after, so a mutation that

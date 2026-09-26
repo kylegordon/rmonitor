@@ -30,6 +30,11 @@ def default_env_path() -> Path:
     return Path(config_dir) / ".env"
 
 
+def default_log_path() -> Path:
+    """Where the GUI build writes its log: `relay.log` beside the `.env`."""
+    return default_env_path().with_name("relay.log")
+
+
 def legacy_env_path() -> Path:
     """Where releases up to 0.1.13 put the file: platformdirs' defaults,
     i.e. `%LOCALAPPDATA%\\rmonitor-relay\\rmonitor-relay\\.env` on Windows.

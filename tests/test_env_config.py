@@ -50,6 +50,12 @@ def test_default_env_path_ends_in_app_dir_and_dotenv():
     assert path.parent.name == "rmonitor-relay"
 
 
+def test_default_log_path_sits_beside_the_env_file():
+    log_path = env_config.default_log_path()
+    assert log_path.name == "relay.log"
+    assert log_path.parent == env_config.default_env_path().parent
+
+
 def test_load_env_file_on_nonexistent_path_returns_empty_dict(tmp_path):
     assert env_config.load_env_file(tmp_path / "does-not-exist" / ".env") == {}
 
