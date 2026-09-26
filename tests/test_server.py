@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pathlib
 import time
 
 import pytest
@@ -11,12 +12,15 @@ from aiohttp import test_utils, web
 from server.race_state import RaceState
 from server.server import (
     PAGE_VERSION_TOKEN,
+    _read_release_version,
     broadcast,
     create_app,
     feed_state_key,
     page_version_key,
     ws_clients_key,
 )
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -115,6 +119,17 @@ async def test_healthz(client):
     assert resp.status == 200
     data = await resp.json()
     assert data["status"] == "ok"
+    assert data["version"] == (ROOT / "VERSION").read_text().strip()
+
+
+def test_release_version_falls_back_when_the_version_file_is_missing(tmp_path):
+    assert _read_release_version(version_file=tmp_path / "VERSION") == "0.0.0-dev"
+
+
+def test_release_version_falls_back_when_the_version_file_is_empty(tmp_path):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text("\n")
+    assert _read_release_version(version_file=version_file) == "0.0.0-dev"
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@
 #   - https://live.smart-timing.co.uk          (alias)
 #   - https://live-timing.smart-timing.co.uk   (alias)
 #
-# Usage: see up.sh
+# Usage: ./up.sh [VERSION] — see README "Deploying a release"
 
 networks:
   traefik_proxy:
@@ -16,7 +16,7 @@ networks:
 
 services:
   server:
-    image: ghcr.io/kylegordon/rmonitor-server:latest
+    image: ghcr.io/kylegordon/rmonitor-server:${IMAGE_VERSION:-latest}
     container_name: rmonitor-server
     environment:
       - RELAY_SECRET=${RELAY_SECRET}

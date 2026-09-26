@@ -19,6 +19,7 @@ connector, and resolver state rather than spinning in a stuck retry loop.
 import asyncio
 import logging
 import os
+import pathlib
 import sys
 import threading
 from dataclasses import dataclass
@@ -42,6 +43,38 @@ RETRY_MAX_ATTEMPTS = int(os.environ.get("RETRY_MAX_ATTEMPTS", "30"))
 CLASS_CODES_ENABLED = os.environ.get("CLASS_CODES_ENABLED", "1").strip().lower() not in (
     "0", "false", "no", "off"
 )
+
+#: The repo-root ``VERSION`` file: ``/opt/app/VERSION`` in the image, which copies it
+#: beside the package, and the checkout's own copy everywhere else.
+_VERSION_FILE = pathlib.Path(__file__).resolve().parents[1] / "VERSION"
+
+
+def _read_release_version(*, version_file: pathlib.Path = _VERSION_FILE) -> str:
+    """Return the release this relay was built from, e.g. ``"0.1.19"``.
+
+    The ``VERSION`` file is read first; ``relay._version`` is the fallback for the
+    PyInstaller builds, which bundle no ``VERSION`` file beside the package. The order
+    matters: ``relay/_version.py`` is gitignored and written only by those builds, so a
+    checkout can hold a stale copy, and reading it first would make the result depend
+    on the machine rather than the commit.
+
+    :returns: the stripped ``VERSION`` contents, else ``relay._version.CURRENT_VERSION``,
+        else ``"0.0.0-dev"``.
+    """
+    try:
+        version = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    if version:
+        return version
+    try:
+        from relay._version import CURRENT_VERSION
+    except ImportError:
+        return "0.0.0-dev"
+    return CURRENT_VERSION
+
+
+RELEASE_VERSION: str = _read_release_version()
 
 
 @dataclass(frozen=True)
@@ -182,7 +215,8 @@ async def main(
             "RELAY_SECRET is not set – ingest endpoint is unauthenticated"
         )
     log.info(
-        "Starting relay – feed=%s:%s  server=%s",
+        "Starting relay %s – feed=%s:%s  server=%s",
+        RELEASE_VERSION,
         cfg.host,
         cfg.port,
         cfg.server_url,

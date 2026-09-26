@@ -16,7 +16,12 @@ from pathlib import Path
 from aiohttp import web
 
 from server.race_state import RaceState
-from server.server import BROADCAST_INTERVAL, broadcast_if_dirty, create_app
+from server.server import (
+    BROADCAST_INTERVAL,
+    RELEASE_VERSION,
+    broadcast_if_dirty,
+    create_app,
+)
 from server.state_store import JsonFileStateStore
 
 log = logging.getLogger("server")
@@ -97,5 +102,5 @@ def main() -> None:
         log.warning(
             "RELAY_SECRET is not set – /api/ingest is unauthenticated"
         )
-    log.info("Starting server – web=%s:%s", WEB_HOST, WEB_PORT)
+    log.info("Starting server %s – web=%s:%s", RELEASE_VERSION, WEB_HOST, WEB_PORT)
     web.run_app(app, host=WEB_HOST, port=WEB_PORT)
