@@ -912,9 +912,11 @@ class ClassCodeClient:
         pending, self._pending = self._pending, {}
         preload, self._preload = self._preload, None
         failed = False
-        run, self._run = self._run, None
         if preload is not None:
             failed = not await self._deliver_preload(preload)
+        # Taken only now: a stop read while the preload was delivered must
+        # still find it pending.
+        run, self._run = self._run, None
         if run is not None:
             failed = not await self._deliver_run(run) or failed
         for run_id, by_entrant in pending.items():

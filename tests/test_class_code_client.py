@@ -1310,3 +1310,31 @@ async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retr
         await _finish(task)
     assert calls == ["0x40002805"]
     assert client._run is None
+
+
+@pytest.mark.asyncio
+async def test_a_run_stopped_while_the_preload_is_delivered_is_not_forwarded(monkeypatch):
+    """The preload goes first in a flush; a stop read meanwhile must still
+    find the started run pending."""
+    writer = FakeWriter()
+    reader = _pulling(writer, registry=REGISTRY + _run_state())
+    _harness(monkeypatch, [(reader, writer)])
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg["type"])
+        if msg["type"] == "class_code_preload":
+            reader._then.append(_run_state(state="stopped"))
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch, **{**FAST, "keepalive_interval": 0.05}
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: calls)
+        await asyncio.sleep(0.4)
+    finally:
+        await _finish(task)
+    assert calls == ["class_code_preload"]
+    assert client._run is None
