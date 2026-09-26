@@ -149,7 +149,7 @@ image from `docker-compose.yml`, which `IMAGE_VERSION` pins too.
 | `RETRY_DELAY` | `1.0` | Initial delay between retries on transient (429/5xx) failure |
 | `RETRY_MAX_DELAY` | `30.0` | Cap on the exponential backoff delay between retries |
 | `RETRY_MAX_ATTEMPTS` | `30` | Give up and exit (for container restart) after this many transient-failure retries |
-| `CLASS_CODES_ENABLED` | `1` | Also read class codes from the timing host's port 51738 (same host as `RMONITOR_HOST`) and forward them to the server; set to `0` to disable. Each connection shows a notice on the timing operator's screen, so it reconnects slowly (60 s, doubling to 15 min) |
+| `CLASS_CODES_ENABLED` | `1` | Also read class codes from the timing host's port 51738 (same host as `RMONITOR_HOST`) and forward them to the server — on every connect it also pulls the host's competitor registry, so entrants get codes without waiting for a push; set to `0` to disable both. Each connection shows a notice on the timing operator's screen, so it reconnects slowly (60 s, doubling to 15 min) |
 
 The prebuilt GUI binary (see "Download a prebuilt binary" above) uses the
 same variable names, in the same `KEY=value` `.env` file format as
@@ -165,6 +165,12 @@ The GUI build stores this file per-OS:
 |---|---|
 | Windows | `%APPDATA%\rmonitor-relay\.env` (Roaming AppData) |
 | Linux | `~/.config/rmonitor-relay/.env` (XDG config dir) |
+
+The GUI build also writes its whole log to `relay.log` in the same directory,
+since the windowed build has no console; it rotates at 2 MB and keeps one
+backup (`relay.log.1`). Its **Class Codes** button and the line under it show
+whether the port 51738 source is connected, how many codes it has delivered,
+and why it is retrying when it is.
 
 Releases up to 0.1.13 resolved the Windows path incorrectly and wrote to
 `%LOCALAPPDATA%\rmonitor-relay\rmonitor-relay\.env` instead. On first
@@ -260,7 +266,7 @@ Nothing is installed on the host.
 ```
 relay/
 ├── rmonitor_client.py  # Async TCP client and protocol parser
-├── class_code_client.py  # Client for the timing host's :51738 class-code records
+├── class_code_client.py  # Client for the timing host's :51738 class-code pushes and registry pull
 ├── main.py             # Entry point — connects to feed, POSTs to server
 ├── gui.py              # Standalone GUI entry point (PyInstaller build) — config dialog + update check
 ├── env_config.py       # .env reader/writer for the GUI build's Save/Apply
