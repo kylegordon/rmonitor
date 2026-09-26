@@ -605,6 +605,67 @@ def test_the_smart_timing_aliases_are_routed_over_tls() -> None:
     assert "web" in _label_values(routers["timing-smart-http"], "entrypoints")
 
 
+#: An rmonitor image reference in a compose file, capturing the image and its tag.
+_RMONITOR_IMAGE = re.compile(r"image:\s*ghcr\.io/kylegordon/rmonitor-(relay|server):(\S+)")
+
+
+def test_rmonitor_images_are_tagged_by_image_version() -> None:
+    """Guards versioned deploys: every rmonitor image is tagged ``${IMAGE_VERSION:-latest}``.
+
+    A bare ``:latest`` makes a deploy unreproducible. With no ``build:`` key compose's
+    default ``pull_policy`` is ``missing``, so ``up`` reuses whatever ``:latest`` is already
+    cached on the host and never fetches a newer one, so publishing a release changed
+    nothing a redeploy ran.  ``up.sh`` exports ``IMAGE_VERSION`` to pin a
+    release; the ``latest`` default keeps README's Quick start ``docker compose up`` working
+    unchanged.
+    """
+    found = []
+    for name in ("docker-compose.yml", "docker-compose-deepcore.yaml"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for image, tag in _RMONITOR_IMAGE.findall(text):
+            assert tag == "${IMAGE_VERSION:-latest}", (
+                f"{name} tags rmonitor-{image} as {tag!r}, not ${{IMAGE_VERSION:-latest}}"
+            )
+            found.append((name, image))
+
+    assert sorted(found) == [
+        ("docker-compose-deepcore.yaml", "server"),
+        ("docker-compose.yml", "relay"),
+        ("docker-compose.yml", "server"),
+    ]
+
+
+def test_both_images_carry_the_version_file() -> None:
+    """Guards the runtime self-report: both images copy ``VERSION``, and never ``_version.py``.
+
+    The server's ``/healthz`` and both startup logs read ``VERSION`` from beside the
+    package; without the copy they report ``0.0.0-dev``.  ``relay/_version.py`` is
+    gitignored and written only by the GUI binary builds, so any copy in a checkout is
+    stale -- one said 0.1.10 at 0.1.18 -- and ``relay/Dockerfile`` copies all of
+    ``relay/``, so only ``.dockerignore`` keeps it out of the image.
+    """
+    for name in ("server/Dockerfile", "relay/Dockerfile"):
+        lines = (ROOT / name).read_text(encoding="utf-8").splitlines()
+        assert "COPY VERSION ." in lines, f"{name} no longer copies VERSION into the image"
+
+    ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "relay/_version.py" in ignored
+
+
+def test_up_sh_pulls_a_release_and_never_builds() -> None:
+    """Guards the deploy script's shape: a pinned release, never ``--build``.
+
+    ``--build`` against the deepcore compose file, which has no ``build:`` key, was a
+    silent no-op that left the cached ``:latest`` running.  The script instead resolves
+    the latest release and confirms the running image's OCI version label.  This is a
+    cheap textual check; ``tests/test_up_sh.py`` exercises the behaviour.
+    """
+    text = (ROOT / "up.sh").read_text(encoding="utf-8")
+    assert "--build" not in text
+    assert "releases/latest" in text
+    assert "org.opencontainers.image.version" in text
+
+
 def test_the_class_cell_shows_the_code_or_a_dash_never_the_description() -> None:
     """Guards the withhold-rather-than-guess rule on the page: no code, no class text.
 
