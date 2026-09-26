@@ -46,6 +46,8 @@ Then open <http://localhost:8080>.
 
 This pulls the latest pre-built images from GHCR
 (`ghcr.io/kylegordon/rmonitor-relay` and `ghcr.io/kylegordon/rmonitor-server`).
+Set `IMAGE_VERSION=0.1.18` (in the shell or `.env`) to run a specific release
+instead of `latest`.
 
 #### Building from local source
 
@@ -115,6 +117,22 @@ installed automatically; you decide when to grab the new version.
 
 This is a second, GUI-based distribution method alongside Docker — Docker
 remains fully supported and unchanged for headless/server deployments.
+
+## Deploying a release
+
+`./up.sh` deploys the latest GitHub release of the server to deepcore;
+`./up.sh 0.1.17` deploys that release instead, which is also how to roll back. It
+pulls the image before restarting anything, so a release with no published image
+aborts with nothing changed. It then checks the running container's version label
+and <https://timing.glasgownet.com/healthz>, which reports the running version from
+0.1.19 on:
+
+```bash
+curl https://timing.glasgownet.com/healthz
+```
+
+`up.sh` deploys only the server. Relays are the GUI binaries above, or the relay
+image from `docker-compose.yml`, which `IMAGE_VERSION` pins too.
 
 ## Configuration
 
