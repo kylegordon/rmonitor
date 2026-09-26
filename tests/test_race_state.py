@@ -1653,3 +1653,191 @@ def test_snapshot_reports_class_codes_available(state):
     assert state.snapshot()["class_codes_available"] is False
     _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SC"))
     assert state.snapshot()["class_codes_available"] is True
+
+
+def test_a_class_codes_batch_is_logged_with_its_stored_count(state, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="server.race_state")
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC"),
+           _code_entry("e2", "8", "Saloon Cup", ""))
+    assert "Class codes for run 0x4000AAAA: stored 1 of 2 entries" in caplog.text
+    # A batch of codeless records stores nothing, and is logged all the same.
+    assert _codes(state, "0x4000BBBB", _code_entry("e3", "9", "Saloon Cup", "")) is None
+    assert "Class codes for run 0x4000BBBB: stored 0 of 1 entries" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The registry preload
+# ---------------------------------------------------------------------------
+
+def _preload(state, *entries, age_seconds=0.0):
+    return state.process({
+        "type": "class_code_preload", "entries": list(entries), "age_seconds": age_seconds,
+    })
+
+
+def _pre(transponder, class_name, code):
+    return {"transponder": transponder, "class_name": class_name, "class_code": code}
+
+
+def _car_in_class(state, reg, transponder, description, *, number=None, class_number="1"):
+    state.process({"type": "class_info", "unique_number": class_number, "description": description})
+    _add_car(state, reg, number=number, transponder=transponder, class_number=class_number)
+
+
+def test_preload_code_is_used_when_the_class_is_uniform(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    assert _preload(state, _pre("1234567", "Saloon Cup", "SC"),
+                    _pre("7654321", "Saloon Cup", "SC")) == "class_codes"
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert snap["class_code_missing"] == 0
+
+
+def test_preload_code_is_withheld_when_the_class_name_spans_several_codes(state):
+    """The registry holds a registered code that a meeting entry can override."""
+    _car_in_class(state, "7", "1234567", "Legends")
+    _preload(state, _pre("1234567", "Legends", "LG"), _pre("7654321", "Legends", "LX"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_preload_code_is_withheld_when_the_transponder_has_two_codes_in_the_class(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"), _pre("1234567", "Saloon Cup", "SX"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_preload_requires_an_exact_class_name(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup A")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_a_pushed_code_overrides_the_preload_by_transponder(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SP", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SP"
+
+
+def test_a_pushed_code_overrides_the_preload_by_number(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    _codes(state, "r", _code_entry("e1", "7", "Saloon Cup", "SP"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SP"
+
+
+def test_preload_is_never_matched_by_number(state):
+    # A car with no transponder: only the number could match, and the preload
+    # carries none.
+    _car_in_class(state, "7", "", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_an_expired_preload_is_not_joined(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_codes_available"] is False
+
+
+def test_a_preload_is_dated_from_its_pull_not_its_arrival(state, monkeypatch):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"), age_seconds=600.0)
+    assert state.class_code_preload["received_at"] == 1_000_000.0 - 600.0
+    # One already past the TTL is not stored at all.
+    assert _preload(state, _pre("7654321", "Saloon Cup", "SX"),
+                    age_seconds=rs._CLASS_CODE_TTL_SECONDS + 1) is None
+    assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+
+
+def test_a_new_preload_replaces_the_previous_one(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    _preload(state, _pre("7654321", "Saloon Cup", "SC"))
+    assert state.class_code_preload["entries"] == [_pre("7654321", "Saloon Cup", "SC")]
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_malformed_preload_entries_are_skipped(state):
+    assert _preload(state, "not a dict", _pre("", "Saloon Cup", "SC"),
+                    _pre("0", "Saloon Cup", "SC"), _pre("11", "", "SC"),
+                    _pre("22", "Saloon Cup", ""), {"transponder": 33, "class_name": "Saloon Cup"},
+                    {"transponder": 44, "class_name": "Saloon Cup", "class_code": "SC"},
+                    ) == "class_codes"
+    assert state.class_code_preload["entries"] == [_pre("44", "Saloon Cup", "SC")]
+    # Nothing usable leaves the previous preload in place.
+    assert _preload(state, _pre("0", "Saloon Cup", "SX")) is None
+    assert state.process({"type": "class_code_preload", "entries": "nonsense"}) is None
+    assert state.class_code_preload["entries"] == [_pre("44", "Saloon Cup", "SC")]
+
+
+def test_preload_survives_init(state):
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    state.process({"type": "init"})
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_preload_does_not_make_stale_race_state_look_fresh(state, monkeypatch):
+    import server.race_state as rs
+
+    stale = state.last_updated
+    monkeypatch.setattr(rs.time, "time", lambda: stale + 3600)
+    assert _preload(state, _pre("1234567", "Saloon Cup", "SC")) == "class_codes"
+    assert state.last_updated == stale
+
+
+def test_snapshot_reports_class_codes_available_from_a_preload_alone(state):
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    assert state.class_codes == {}
+    assert state.snapshot()["class_codes_available"] is True
+
+
+def test_preload_round_trips_through_the_class_code_store(state):
+    import json
+
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"), age_seconds=60.0)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_preload == state.class_code_preload
+    _car_in_class(restored, "7", "1234567", "Saloon Cup")
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == "SC"
+
+
+@pytest.mark.parametrize("preload", [
+    "nonsense",
+    {"received_at": "yesterday", "entries": [_pre("1", "Saloon Cup", "SC")]},
+    {"received_at": float("nan"), "entries": [_pre("1", "Saloon Cup", "SC")]},
+    {"received_at": 1.0e9, "entries": "nonsense"},
+    {"received_at": 1.0e9, "entries": [None, {"transponder": "1"}]},
+])
+def test_load_class_codes_tolerates_a_malformed_preload(state, preload):
+    import time as _time
+
+    pushed = {"r\te1": {"number": "7", "class_name": "Saloon Cup", "transponder": "",
+                        "class_code": "SC", "received_at": _time.time()}}
+    state.load_class_codes({"class_codes": pushed, "preload": preload})
+    assert state.class_code_preload["entries"] == []
+    assert list(state.class_codes) == ["r\te1"]
+
+
+def test_load_class_codes_without_a_preload_key_still_loads_pushes(state):
+    import time as _time
+
+    state.load_class_codes({"class_codes": {"r\te1": {
+        "number": "7", "class_name": "Saloon Cup", "transponder": "",
+        "class_code": "SC", "received_at": _time.time(),
+    }}})
+    assert list(state.class_codes) == ["r\te1"]
+    assert state.class_code_preload["entries"] == []

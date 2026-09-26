@@ -306,6 +306,74 @@ async def test_class_codes_arriving_while_the_feed_is_lost_are_not_a_recovery(cl
     assert state.class_codes
 
 
+def _preload_msg(n=1):
+    """A registry preload of *n* synthetic entries; the first is car 7's."""
+    return {
+        "type": "class_code_preload",
+        "age_seconds": 1.5,
+        "entries": [
+            {"transponder": str(1234567 + i), "class_name": "Saloon Cup", "class_code": "SC"}
+            for i in range(n)
+        ],
+    }
+
+
+async def _post_car_7_and(client, msg):
+    headers = {"Authorization": "Bearer test-secret"}
+    for m in (
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+        msg,
+    ):
+        resp = await client.post("/api/ingest", json=m, headers=headers)
+        assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_an_ingested_preload_reaches_the_snapshot(client, app):
+    from server.server import race_state_key
+
+    await _post_car_7_and(client, _preload_msg())
+    snap = app[race_state_key].snapshot()
+    car = next(e for e in snap["entries"] if e["reg_number"] == "7")
+    assert car["class_code"] == "SC"
+    assert snap["class_codes_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_realistic_registry_preload_fits_the_ingest_limit(client, app):
+    """A preload is ~400 KB today and grows; aiohttp's default 1 MiB would
+    reject a larger archive with a 413 on every retry."""
+    from server.server import race_state_key
+
+    # About three times today's archive, and past the default limit.
+    msg = _preload_msg(15_000)
+    assert len(json.dumps(msg)) > 1024 ** 2
+    await _post_car_7_and(client, msg)
+    snap = app[race_state_key].snapshot()
+    assert next(e for e in snap["entries"] if e["reg_number"] == "7")["class_code"] == "SC"
+
+
+@pytest.mark.asyncio
+async def test_a_preload_arriving_while_the_feed_is_lost_is_not_a_recovery(client, app):
+    from server.server import race_state_key
+
+    fs = app[feed_state_key]
+    fs["feed_lost"] = True
+    fs["last_ingest_at"] = stale = time.monotonic() - 3600
+    resp = await client.post(
+        "/api/ingest", json=_preload_msg(),
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    assert fs["feed_lost"] is True
+    assert fs["last_ingest_at"] == stale
+    state = app[race_state_key]
+    assert "1" in state.competitors  # not reset
+    assert state.class_code_preload["entries"]
+
+
 @pytest.mark.asyncio
 async def test_class_codes_during_an_outage_do_not_broadcast_an_update(client, app):
     """The production broadcast path sends no ``update`` while the feed is lost.

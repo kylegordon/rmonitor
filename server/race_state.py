@@ -66,6 +66,9 @@ _CLASS_CODE_TTL_SECONDS = 12 * 3600
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
 
+# The fields a ``class_code_preload`` entry carries, all strings.
+_PRELOAD_FIELDS = ("transponder", "class_name", "class_code")
+
 
 def _interval_seconds(value: str) -> float | None:
     """Convert a feed time field to seconds, or *None* if unusable.
@@ -133,13 +136,17 @@ class RaceState:
         # Keyed ``"<run id>\t<entrant id>"``; see _class_codes.  Created here,
         # not in reset(), because reset() must never clear it.
         self.class_codes: dict[str, dict] = {}
+        # The last registry preload; see _class_code_preload.  Never cleared
+        # by reset(), for the same reason.
+        self.class_code_preload: dict = _preload_store([], None)
         self.reset()
 
     def reset(self):
-        # self.class_codes is deliberately left alone: a roster is pushed once,
-        # at run load, and not re-sent while its session runs — and it may
-        # arrive before or a minute after the $I burst that starts it.
-        # Clearing it here would lose codes the server never gets again.
+        # self.class_codes is deliberately left alone: pushes follow entry-list
+        # edits and are not repeated, so an entrant's code may have arrived
+        # long before the $I burst that starts its session.  Clearing it here
+        # would lose codes the server never gets again.  The preload is kept
+        # for the same reason: the relay pulls it again only when it reconnects.
         self.competitors: dict[str, dict] = {}  # keyed by reg_number
         self.classes: dict[str, str] = {}  # class_number -> description
         self.leader_time_at_lap: dict[int, float] = {}
@@ -478,6 +485,7 @@ class RaceState:
         run_id = msg.get("run_id") or ""
         now = time.time()
         changed = False
+        stored = 0
         if isinstance(entries, list):
             for item in entries:
                 if not isinstance(item, dict):
@@ -494,11 +502,63 @@ class RaceState:
                 entry["received_at"] = now - age
                 self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
                 changed = True
+                stored += 1
+        # Logged whatever was stored: a batch of codeless records stores
+        # nothing, and is otherwise indistinguishable from no batch at all.
+        log.info(
+            "Class codes for run %s: stored %d of %d entries",
+            run_id, stored, len(entries) if isinstance(entries, list) else 0,
+        )
         changed = self._prune_class_codes(now) or changed
         if not changed:
             return None
         self._dirty = True
         return "class_codes"
+
+    def _class_code_preload(self, msg: dict) -> str | None:
+        """Store the competitor registry the relay pulled from ``:51738``.
+
+        Each pull is a full snapshot, so it replaces the previous preload
+        whole rather than accumulating.  It is kept apart from the pushed
+        registry so a push always overrides it, and only
+        :meth:`_resolve_class_codes`'s third layer reads it.  Like the pushed
+        registry it survives :meth:`reset` and expires by
+        :data:`_CLASS_CODE_TTL_SECONDS`.
+
+        ``entries`` is untrusted and coerced as in :meth:`_class_codes`; an item
+        missing any field, or with transponder ``""`` or ``"0"``, is skipped,
+        and a preload with nothing usable leaves the previous one in place.
+        The store is dated from the pull — now minus the message's
+        ``age_seconds`` — and a message already past the TTL is ignored.
+        """
+        entries = msg.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+        usable = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            entry = {
+                k: str(item[k]) if item.get(k) is not None else "" for k in _PRELOAD_FIELDS
+            }
+            if not all(entry.values()) or entry["transponder"] == "0":
+                continue
+            usable.append(entry)
+        log.info("Class-code preload: %d usable of %d records", len(usable), len(entries))
+        age = _entry_age(msg.get("age_seconds"))
+        if not usable or age > _CLASS_CODE_TTL_SECONDS:
+            return None
+        self.class_code_preload = _preload_store(usable, time.time() - age)
+        self._dirty = True
+        return "class_codes"
+
+    def _prune_class_code_preload(self, now: float) -> bool:
+        """Drop the preload once past its TTL; return whether it went."""
+        stamp = self.class_code_preload["received_at"]
+        if stamp is None or now - stamp <= _CLASS_CODE_TTL_SECONDS:
+            return False
+        self.class_code_preload = _preload_store([], None)
+        return True
 
     def _prune_class_codes(self, now: float) -> bool:
         """Drop registry entries past their TTL; return whether any went."""
@@ -513,8 +573,8 @@ class RaceState:
     def _resolve_class_codes(self, entries: list[dict]) -> int:
         """Write ``class_code`` onto every entry; return how many have none.
 
-        Two layers, each failing to blank — never to a guess, and each gated
-        on the push's class name equalling ``class_description`` exactly and
+        Three layers, each failing to blank — never to a guess, and each gated
+        on the record's class name equalling ``class_description`` exactly and
         non-empty.  A prefix would bind a ``Modsports A`` record to an ``A2``
         session; without the gate on layer 1, a driver entered in two classes
         at one meeting on one transponder would be shown the other class's
@@ -528,11 +588,24 @@ class RaceState:
         2. **Exact** ``(number, class_description)`` → a code only when every
            matching record carries one distinct code.  Distinct codes, not
            records, because the same entrant is pushed under several run ids.
+        3. **The registry preload**, only when neither push layer gives a
+           code: transponder and class → a code only when that pair carries
+           one distinct code *and* every preload record with that exact class
+           name carries that same code.  The guard is there because the
+           registry holds a competitor's *registered* code, and a meeting's
+           entry can override it: measured against pushes, the pair alone was
+           wrong 2 times in 24 in a class whose name spans several codes, and
+           0 times with the guard.  The preload never takes part in the number
+           layer — the registry spans seasons, and numbers change between them.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
-        self._prune_class_codes(time.time())
+        now = time.time()
+        self._prune_class_codes(now)
+        self._prune_class_code_preload(now)
+        pre_tx = self.class_code_preload["by_tx"]
+        pre_class = self.class_code_preload["by_class"]
         by_tx: dict[tuple[str, str], dict] = {}
         by_nc: dict[tuple[str, str], set[str]] = {}
         for rec in self.class_codes.values():
@@ -554,6 +627,10 @@ class RaceState:
                     codes = by_nc.get((e.get("number", ""), desc), set())
                     if len(codes) == 1:
                         code = next(iter(codes))
+                if not code and tx not in ("", "0"):
+                    codes = pre_tx.get((tx, desc), set())
+                    if len(codes) == 1 and pre_class.get(desc) == codes:
+                        code = next(iter(codes))
             e["class_code"] = code
             if not code:
                 missing += 1
@@ -571,6 +648,7 @@ class RaceState:
         "lap_info": _lap_info,
         "init": _init,
         "class_codes": _class_codes,
+        "class_code_preload": _class_code_preload,
     }
 
     # ---- serialisation ----
@@ -667,7 +745,9 @@ class RaceState:
             "time_of_day": self.time_of_day,
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
-            "class_codes_available": bool(self.class_codes),
+            "class_codes_available": bool(
+                self.class_codes or self.class_code_preload["entries"]
+            ),
             "class_code_missing": class_code_missing,
             "entries": entries,
         }
@@ -829,14 +909,24 @@ class RaceState:
         pushed for runs not yet started, which are never pushed again.  The
         registry needs no such cutoff: every entry expires on its own
         :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
+        The registry preload is saved beside it under ``"preload"``, for the
+        same reason and because the relay pulls it again only on a reconnect.
         """
-        return {"class_codes": self.class_codes}
+        return {
+            "class_codes": self.class_codes,
+            "preload": {
+                "received_at": self.class_code_preload["received_at"],
+                "entries": self.class_code_preload["entries"],
+            },
+        }
 
     def load_class_codes(self, data: dict) -> None:
         """Restore the registry from :meth:`class_codes_to_dict`'s output.
 
         A malformed store degrades to an empty registry rather than failing
-        startup, and expired entries are pruned on the way in.
+        startup, and expired entries are pruned on the way in.  The preload
+        is restored the same way and independently: a missing or malformed
+        ``"preload"`` leaves it empty without touching the pushed registry.
         """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
@@ -855,6 +945,22 @@ class RaceState:
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
         self._prune_class_codes(now)
+        self.class_code_preload = _preload_store([], None)
+        try:
+            preload = data.get("preload") or {}
+            stamp = _finite_stamp(preload.get("received_at"))
+            entries = [
+                {f: str(item[f]) for f in _PRELOAD_FIELDS}
+                for item in preload.get("entries") or []
+                if isinstance(item, dict)
+                and all(item.get(f) not in (None, "") for f in _PRELOAD_FIELDS)
+                and str(item["transponder"]) != "0"
+            ]
+            if stamp is not None and entries:
+                self.class_code_preload = _preload_store(entries, min(stamp, now))
+        except (AttributeError, TypeError, ValueError):
+            pass
+        self._prune_class_code_preload(now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -895,6 +1001,21 @@ class RaceState:
         if self._seen_race_info or self.run_description:
             return "Race"
         return ""
+
+
+def _preload_store(entries: list[dict], received_at: float | None) -> dict:
+    """Return a preload store: its *entries*, their date, and the join indexes.
+
+    ``by_tx`` maps ``(transponder, class name)`` and ``by_class`` a class name
+    to the set of codes the entries carry; both are built once per store so a
+    snapshot does not rebuild them.
+    """
+    by_tx: dict[tuple[str, str], set[str]] = {}
+    by_class: dict[str, set[str]] = {}
+    for e in entries:
+        by_tx.setdefault((e["transponder"], e["class_name"]), set()).add(e["class_code"])
+        by_class.setdefault(e["class_name"], set()).add(e["class_code"])
+    return {"received_at": received_at, "entries": entries, "by_tx": by_tx, "by_class": by_class}
 
 
 def _finite_stamp(value) -> float | None:
