@@ -241,14 +241,15 @@ def test_registry_strings_between_code_and_number_are_skipped():
     assert ccc.parse_registry(rec) == [_triple(class_name="Test Sports Trophy", code="TT LT")]
 
 
-def test_registry_skips_codeless_classless_and_zero_transponder_records():
+def test_registry_keeps_codeless_records_and_skips_classless_and_zero_transponder_ones():
+    """A codeless record is kept: the server's class-uniform guard must see it."""
     buf = (
         _registry_record(tx=11, code="")
         + _registry_record(tx=22, class_name="")
         + _registry_record(tx=0)
         + _registry_record(tx=44)
     )
-    assert ccc.parse_registry(buf) == [_triple(tx="44")]
+    assert ccc.parse_registry(buf) == [_triple(tx="11", code=""), _triple(tx="44")]
 
 
 def test_registry_triples_are_deduplicated():

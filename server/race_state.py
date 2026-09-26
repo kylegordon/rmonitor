@@ -526,8 +526,10 @@ class RaceState:
         :data:`_CLASS_CODE_TTL_SECONDS`.
 
         ``entries`` is untrusted and coerced as in :meth:`_class_codes`; an item
-        missing any field, or with transponder ``""`` or ``"0"``, is skipped,
-        and a preload with nothing usable leaves the previous one in place.
+        without a class name, or with transponder ``""`` or ``"0"``, is
+        skipped, and a preload with nothing usable leaves the previous one in
+        place.  An item with no code is kept, as ``""``: it takes part in the
+        class-uniform guard, and withholds its class's code.
         The store is dated from the pull — now minus the message's
         ``age_seconds`` — and a message already past the TTL is ignored.
         """
@@ -541,7 +543,7 @@ class RaceState:
             entry = {
                 k: str(item[k]) if item.get(k) is not None else "" for k in _PRELOAD_FIELDS
             }
-            if not all(entry.values()) or entry["transponder"] == "0":
+            if not entry["class_name"] or entry["transponder"] in ("", "0"):
                 continue
             usable.append(entry)
         log.info("Class-code preload: %d usable of %d records", len(usable), len(entries))
@@ -591,7 +593,8 @@ class RaceState:
         3. **The registry preload**, only when neither push layer gives a
            code: transponder and class → a code only when that pair carries
            one distinct code *and* every preload record with that exact class
-           name carries that same code, *and* so does every pushed record with
+           name carries that same code — a codeless one does not — *and* so
+           does every pushed record with
            that class name — pushes are the meeting's own entries, so one
            showing another code is proof the class is not uniform here.  The
            guard is there because the
@@ -636,6 +639,7 @@ class RaceState:
                     codes = pre_tx.get((tx, desc), set())
                     if (
                         len(codes) == 1
+                        and "" not in codes
                         and pre_class.get(desc) == codes
                         and pushed_class.get(desc, codes) == codes
                     ):
@@ -755,7 +759,7 @@ class RaceState:
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
             "class_codes_available": bool(
-                self.class_codes or self.class_code_preload["entries"]
+                self.class_codes or self.class_code_preload["has_codes"]
             ),
             "class_code_missing": class_code_missing,
             "entries": entries,
@@ -962,8 +966,9 @@ class RaceState:
                 {f: str(item[f]) for f in _PRELOAD_FIELDS}
                 for item in preload.get("entries") or []
                 if isinstance(item, dict)
-                and all(item.get(f) not in (None, "") for f in _PRELOAD_FIELDS)
-                and str(item["transponder"]) != "0"
+                and all(item.get(f) is not None for f in _PRELOAD_FIELDS)
+                and str(item["class_name"])
+                and str(item["transponder"]) not in ("", "0")
             ]
             if stamp is not None and entries:
                 self.class_code_preload = _preload_store(entries, min(stamp, now))
@@ -1016,15 +1021,22 @@ def _preload_store(entries: list[dict], received_at: float | None) -> dict:
     """Return a preload store: its *entries*, their date, and the join indexes.
 
     ``by_tx`` maps ``(transponder, class name)`` and ``by_class`` a class name
-    to the set of codes the entries carry; both are built once per store so a
-    snapshot does not rebuild them.
+    to the set of codes the entries carry, ``""`` included; both, and
+    ``has_codes``, are built once per store so a snapshot does not rebuild
+    them.
     """
     by_tx: dict[tuple[str, str], set[str]] = {}
     by_class: dict[str, set[str]] = {}
     for e in entries:
         by_tx.setdefault((e["transponder"], e["class_name"]), set()).add(e["class_code"])
         by_class.setdefault(e["class_name"], set()).add(e["class_code"])
-    return {"received_at": received_at, "entries": entries, "by_tx": by_tx, "by_class": by_class}
+    return {
+        "received_at": received_at,
+        "entries": entries,
+        "by_tx": by_tx,
+        "by_class": by_class,
+        "has_codes": any(e["class_code"] for e in entries),
+    }
 
 
 def _finite_stamp(value) -> float | None:

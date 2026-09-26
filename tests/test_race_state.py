@@ -1772,7 +1772,6 @@ def test_a_new_preload_replaces_the_previous_one(state):
 def test_malformed_preload_entries_are_skipped(state):
     assert _preload(state, "not a dict", _pre("", "Saloon Cup", "SC"),
                     _pre("0", "Saloon Cup", "SC"), _pre("11", "", "SC"),
-                    _pre("22", "Saloon Cup", ""), {"transponder": 33, "class_name": "Saloon Cup"},
                     {"transponder": 44, "class_name": "Saloon Cup", "class_code": "SC"},
                     ) == "class_codes"
     assert state.class_code_preload["entries"] == [_pre("44", "Saloon Cup", "SC")]
@@ -1856,3 +1855,30 @@ def test_preload_code_is_withheld_when_pushes_show_another_code_in_the_class(sta
     _preload(other, _pre("1234567", "Saloon Cup", "SC"), _pre("7654321", "Saloon Cup", "SC"))
     _codes(other, "r", _code_entry("e2", "8", "Saloon Cup", "SC", "7654321"))
     assert _entry_for(other.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_a_codeless_preload_record_withholds_its_class(state):
+    """The guard needs every record in the class to carry the code; a codeless
+    one does not, so the class is not shown as uniform."""
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"),
+             {"transponder": "7654321", "class_name": "Saloon Cup"})
+    assert state.class_code_preload["entries"][1] == _pre("7654321", "Saloon Cup", "")
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_a_codeless_preload_record_is_never_shown_as_a_code(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", ""))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_codes_available"] is False
+
+
+def test_a_codeless_preload_record_round_trips(state):
+    import json
+
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"), _pre("7654321", "Saloon Cup", ""))
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_preload == state.class_code_preload

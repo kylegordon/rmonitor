@@ -365,10 +365,12 @@ def parse_registry(buf: bytes) -> list[dict]:
     so binary around them is skipped; a record that runs past the buffer or
     carries a string longer than 255 bytes is skipped too.  The class code is
     taken only from its own field — never derived from the class name, whose
-    mapping to codes is many-to-many.  A record with no code, no class name
-    or transponder 0 is dropped, and the rest are returned deduplicated as
-    ``{"transponder", "class_name", "class_code"}`` dicts in order of first
-    appearance.
+    mapping to codes is many-to-many.  A record with no class name or
+    transponder 0 is dropped.  A record with no code is kept, its code
+    ``""``: the server accepts a registry code only when every record in the
+    class carries it, and a codeless record is one that does not.  The rest
+    are returned deduplicated as ``{"transponder", "class_name",
+    "class_code"}`` dicts in order of first appearance.
     """
     seen: dict[tuple[str, str, str], None] = {}
     for m in _REGISTRY_ANCHOR.finditer(buf):
@@ -390,7 +392,7 @@ def parse_registry(buf: bytes) -> list[dict]:
             class_name = cur.string()
         except _ShortRecord:
             continue
-        if not code or not class_name or transponder == 0:
+        if not class_name or transponder == 0:
             continue
         seen[(str(transponder), class_name, code)] = None
     return [
@@ -643,7 +645,7 @@ class ClassCodeClient:
             )
             return
         log.info(
-            "Class-code registry: %d bytes pulled, %d records with a code and class",
+            "Class-code registry: %d bytes pulled, %d records with a class",
             len(model), len(entries),
         )
         self._preload = {"entries": entries, "_observed": pulled_at}
