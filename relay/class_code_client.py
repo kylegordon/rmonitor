@@ -656,10 +656,11 @@ class ClassCodeClient:
                 "not forwarding a preload", len(model),
             )
             return
-        # Measured as the POST body will be, its age at the widest it can be.
+        # Measured as the POST body will be, with an age as wide as a
+        # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({
             "type": "class_code_preload", "entries": entries,
-            "age_seconds": float(MAX_ENTRY_AGE),
+            "age_seconds": MAX_ENTRY_AGE - 0.001,
         }))
         if size > MAX_PRELOAD_BYTES:
             log.warning(

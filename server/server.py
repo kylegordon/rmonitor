@@ -228,6 +228,9 @@ async def handle_ingest(request: web.Request) -> web.Response:
         raise web.HTTPUnauthorized(reason="Invalid relay secret")
     try:
         msg = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        # Not bad JSON: let the 413 through, so the status and log say size.
+        raise
     except Exception:
         raise web.HTTPBadRequest(reason="Invalid JSON body")
     if not isinstance(msg, dict) or "type" not in msg:
