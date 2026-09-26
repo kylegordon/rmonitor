@@ -2129,6 +2129,8 @@ def test_class_code_run_survives_init_and_round_trips(state):
 @pytest.mark.parametrize("msg", [
     {"run_id": "0x40002806", "name": ""},
     {"run_id": "Race 7", "name": "Race 7 - 2nd Race"},
+    {"run_id": "0x80000000", "name": "Race 7 - 2nd Race"},
+    {"run_id": "0x80000985", "name": "Race 7 - 2nd Race"},
     {"run_id": ["0x40002806"], "name": "Race 7 - 2nd Race"},
     {"run_id": "0x40002806", "name": {"text": "Race 7 - 2nd Race"}},
     {"name": "Race 7 - 2nd Race"},
@@ -2223,3 +2225,8 @@ def test_only_the_edge_into_a_session_end_discards_a_started_run(state):
     _started(other)
     _closing(other, "Race 6 - AMENDED GRID")
     assert other.class_code_run is not None
+
+
+def test_a_run_table_row_with_its_ids_in_the_wrong_form_is_skipped(state):
+    _runs_preload(state, _run_row("0x80000985", "0x40002806"), _run_row("0x40002807"))
+    assert [r["run_id"] for r in state.class_code_preload["runs"]] == ["0x40002807"]

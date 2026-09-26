@@ -75,8 +75,10 @@ _PRELOAD_OPTIONAL_FIELDS = ("registration_id", "number")
 
 # The fields of one run in a preload's ``runs`` table, all strings.
 _RUN_FIELDS = ("run_id", "group_id", "name")
-# A run or group id as the timing host writes it, ``0x40002805``.
-_RUN_ID = re.compile(r"0x[0-9A-Fa-f]{1,8}")
+# A run id and a group id as the timing host writes them, ``0x40002805`` and
+# ``0x80000985``: the two never share a form, so a group id is never a run.
+_RUN_ID = re.compile(r"0x4000[0-9A-Fa-f]{4}")
+_GROUP_ID = re.compile(r"0x8000[0-9A-Fa-f]{4}")
 # The tag on every push, whatever its run; lowercased like a scope's tags.
 _ALL_PUSHES_TAG = "0x80000000"
 
@@ -612,7 +614,7 @@ class RaceState:
         class-code stores it survives :meth:`reset` — the ``$I`` burst that
         opens a session can follow the announcement — and it is dated from
         the relay's read, now minus ``age_seconds``.  A message with no name,
-        a run id not in the host's ``0x…`` form, or already past
+        a run id not of the host's ``0x4000xxxx`` form, or already past
         :data:`_CLASS_CODE_TTL_SECONDS` is ignored.
         """
         run_id, name = msg.get("run_id"), msg.get("name")
@@ -675,6 +677,9 @@ class RaceState:
             tags.add(group)
         # It tags every push, so it would admit them all.
         tags.discard(_ALL_PUSHES_TAG)
+        if not tags:
+            # Scoping to nothing would blank every pushed code.
+            return None
         return run_id, frozenset(tags)
 
     def prune_expired_class_codes(self) -> bool:
@@ -1285,8 +1290,9 @@ def _preload_store(
 def _coerce_runs(value) -> list[dict]:
     """Return a preload's untrusted ``runs`` as ``{"run_id", "group_id", "name"}`` dicts.
 
-    An item that is not a dict, lacks a field, or carries an id not in the
-    host's ``0x…`` form is skipped; anything else not a list reads as none.
+    An item that is not a dict, lacks a field, or carries a run id not of the
+    form ``0x4000xxxx`` or a group id not of the form ``0x8000xxxx`` is
+    skipped; anything else not a list reads as none.
     """
     if not isinstance(value, list):
         return []
@@ -1295,7 +1301,7 @@ def _coerce_runs(value) -> list[dict]:
         if not isinstance(item, dict):
             continue
         run = {k: str(item[k]) if item.get(k) is not None else "" for k in _RUN_FIELDS}
-        if run["name"] and _RUN_ID.fullmatch(run["run_id"]) and _RUN_ID.fullmatch(
+        if run["name"] and _RUN_ID.fullmatch(run["run_id"]) and _GROUP_ID.fullmatch(
             run["group_id"]
         ):
             runs.append(run)
