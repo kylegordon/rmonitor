@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from relay.class_code_client import ClassCodeClient
+from relay.class_code_client import ClassCodeClient, ClassCodeStatus
 from relay.rmonitor_client import RMonitorClient
 
 log = logging.getLogger("relay")
@@ -195,6 +195,7 @@ async def main(
     on_feed_disconnect=None,
     on_feed_line=None,
     on_server_attempt=None,
+    on_class_codes_status=None,
 ) -> None:
     """Run the relay loop: connect to the feed, POST each message to the server.
 
@@ -207,9 +208,14 @@ async def main(
     in-process (e.g. the GUI build's Save/Apply) passes an explicit config.
 
     The `on_*` callbacks are optional GUI-facing status hooks (default
-    no-ops); the headless path never passes them.
+    no-ops); the headless path never passes them.  `on_class_codes_status`
+    receives each `ClassCodeStatus`, and one `"disabled"` status when class
+    codes are switched off.
     """
     cfg = config if config is not None else RelayConfig.from_env()
+    on_class_codes_status = (
+        on_class_codes_status if on_class_codes_status is not None else lambda status: None
+    )
     if not cfg.relay_secret:
         log.warning(
             "RELAY_SECRET is not set – ingest endpoint is unauthenticated"
@@ -233,15 +239,15 @@ async def main(
             # retries it.  The :50000 path still exits on the same outage, so
             # nothing is masked.
             # A rejected POST (a 401 while the relay secret is being corrected,
-            # say) is a failure too: the roster is pushed once and never again.
+            # say) is a failure too: pushes are not repeated, and the registry
+            # is pulled again only on a reconnect.
             try:
                 accepted = await post_message(http, msg, cfg, on_attempt=on_server_attempt)
             except SystemExit:
                 accepted = False
             if not accepted:
-                raise ConnectionError(
-                    f"could not deliver class codes for run {msg.get('run_id')}"
-                )
+                run = f" for run {msg['run_id']}" if msg.get("run_id") else ""
+                raise ConnectionError(f"could not deliver {msg.get('type')}{run}")
 
         client = RMonitorClient(
             cfg.host,
@@ -254,9 +260,12 @@ async def main(
         )
         if not cfg.class_codes_enabled:
             log.info("Class codes are disabled")
+            on_class_codes_status(ClassCodeStatus("disabled"))
             await client.run()
             return
-        codes_client = ClassCodeClient(cfg.host, on_class_codes)
+        codes_client = ClassCodeClient(
+            cfg.host, on_class_codes, on_status=on_class_codes_status
+        )
         log.info("Reading class codes from %s:%s", codes_client.host, codes_client.port)
         codes = asyncio.create_task(codes_client.run())
         try:
@@ -285,6 +294,7 @@ class RelayRunner:
         on_server_attempt=None,
         on_server_connect=None,
         on_server_disconnect=None,
+        on_class_codes_status=None,
     ) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -302,6 +312,10 @@ class RelayRunner:
         )
         self._on_server_disconnect = (
             on_server_disconnect if on_server_disconnect is not None else lambda: None
+        )
+        self._on_class_codes_status = (
+            on_class_codes_status if on_class_codes_status is not None
+            else lambda status: None
         )
 
     def start(self, config: RelayConfig) -> None:
@@ -385,6 +399,7 @@ class RelayRunner:
                     on_feed_disconnect=self._on_feed_disconnect,
                     on_feed_line=self._on_feed_line,
                     on_server_attempt=self._on_server_attempt,
+                    on_class_codes_status=self._on_class_codes_status,
                 )
                 return
             except asyncio.CancelledError:

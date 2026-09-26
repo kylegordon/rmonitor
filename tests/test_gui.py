@@ -8,6 +8,8 @@ window-geometry persistence, and the close/teardown path.
 
 import re
 import importlib
+import logging
+import logging.handlers
 import os
 import time
 import tkinter as tk
@@ -16,6 +18,7 @@ import pytest
 import ttkbootstrap as ttb
 
 from relay import env_config, gui
+from relay.class_code_client import ClassCodeStatus
 
 # Tk's "WxH+X+Y" geometry string; the offsets may be negative, and Tk
 # spells a negative one as either "-10" or "+-10" depending on platform.
@@ -187,6 +190,85 @@ def test_pulse_sets_active_then_reverts_to_current_state(app):
     time.sleep((gui._HEARTBEAT_PULSE_MS / 1000) + 0.2)
     app.root.update()
     assert _bootstyle_of(app.feed_status) == gui._CONNECTED_STYLE
+
+
+def test_class_codes_status_button_starts_grey(app):
+    assert _bootstyle_of(app.class_codes_status) == gui._IDLE_STYLE
+    assert app.class_codes_status.cget("text") == "Class Codes"
+
+
+_AT_0930 = time.mktime((2026, 9, 26, 9, 30, 0, 0, 0, -1))
+
+
+@pytest.mark.parametrize("status, style, text", [
+    (ClassCodeStatus("disabled"), "secondary", "Disabled"),
+    (ClassCodeStatus("connecting"), "warning", "Connecting…"),
+    (ClassCodeStatus("retrying", detail="connection refused", retry_in=120.0),
+     "warning", "Retrying in 120s: connection refused"),
+    (ClassCodeStatus("connected", preloaded=4821, pushed=3, last_delivery=_AT_0930),
+     "success", "4821 preloaded · 3 pushed · last 09:30"),
+    (ClassCodeStatus("connected"), "success", "0 preloaded · 0 pushed · last —"),
+    (ClassCodeStatus("delivery_failed", retry_in=10.0),
+     "danger", "Delivery failed, retrying in 10s"),
+])
+def test_class_codes_status_maps_each_state_to_style_and_text(app, status, style, text):
+    app._class_codes_last_delivery = status.last_delivery  # not a new delivery
+    app._set_class_codes_status(status)
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.class_codes_status) == style
+    assert app.class_codes_var.get() == text
+
+
+def test_a_class_code_delivery_pulses_then_reverts(app):
+    app._set_class_codes_status(ClassCodeStatus("connected"))
+    app._set_class_codes_status(ClassCodeStatus("connected", pushed=1, last_delivery=time.time()))
+    app.root.update_idletasks()
+    assert _bootstyle_of(app.class_codes_status) == gui._PULSE_STYLE
+
+    time.sleep((gui._HEARTBEAT_PULSE_MS / 1000) + 0.2)
+    app.root.update()
+    assert _bootstyle_of(app.class_codes_status) == gui._CONNECTED_STYLE
+
+
+def test_class_codes_status_from_the_runner_thread_is_marshalled_to_tk(app, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(app.root, "after", lambda ms, fn, *args: scheduled.append((ms, fn, args)))
+    status = ClassCodeStatus("connecting")
+    app._on_class_codes_status(status)
+    assert scheduled == [(0, app._set_class_codes_status, (status,))]
+
+
+@pytest.fixture
+def root_logger_handlers():
+    """Remove any handler a test attaches to the root logger."""
+    before = list(logging.getLogger().handlers)
+    yield
+    for handler in logging.getLogger().handlers[:]:
+        if handler not in before:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+
+def test_log_file_receives_relay_log_lines(tmp_path, root_logger_handlers):
+    path = tmp_path / "sub" / "relay.log"
+    handler = gui._attach_log_file(path)
+    assert isinstance(handler, logging.handlers.RotatingFileHandler)
+    assert (handler.maxBytes, handler.backupCount) == (gui._LOG_MAX_BYTES, 1)
+    previous = logging.getLogger().level
+    logging.getLogger().setLevel(logging.INFO)
+    try:
+        logging.getLogger("relay.class_code_client").info("Class-code handshake complete")
+    finally:
+        logging.getLogger().setLevel(previous)
+    handler.flush()
+    assert "Class-code handshake complete" in path.read_text(encoding="utf-8")
+
+
+def test_an_unwritable_log_dir_does_not_stop_the_gui(tmp_path, root_logger_handlers, caplog):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    assert gui._attach_log_file(blocker / "relay.log") is None
+    assert "Could not open the log file" in caplog.text
 
 
 def test_feed_lines_pulse_once_per_heartbeat_tick(app):
