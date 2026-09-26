@@ -758,6 +758,8 @@ class RaceState:
            transponder pair alone was wrong 2 times in 24, each time another
            driver's registration, and 0 times with the guard.
 
+        The caller prunes expired codes first, as :meth:`snapshot` does.
+
         *scope*, from :meth:`_class_code_scope`, limits the push layers — and
         the guard's view of pushes — to pushes tagged with the running run
         or its group.  It is applied here, when codes are read, never on
@@ -769,9 +771,6 @@ class RaceState:
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
-        # Marks the state dirty on an expiry: a snapshot for one client must
-        # not expire a code that other clients' pages then never hear about.
-        self.prune_expired_class_codes()
         pre = self.class_code_preload
         pre_tx, pre_class = pre["by_tx"], pre["by_class"]
         by_tx: dict[tuple[str, str], dict] = {}
@@ -929,7 +928,10 @@ class RaceState:
         for e in entries:
             cn = e.get("class_number", "")
             e["class_description"] = self.classes.get(cn, "")
-        # Before the scope is chosen: an expired started run changes it.
+        # Once per snapshot, before the scope is chosen — an expired started
+        # run changes it — and before the codes are resolved.  It marks the
+        # state dirty on an expiry: a snapshot for one client must not expire
+        # a code that other clients' pages then never hear about.
         self.prune_expired_class_codes()
         scope = self._class_code_scope()
         scope_id = scope[0] if scope else ""

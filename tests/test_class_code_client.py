@@ -1152,6 +1152,13 @@ def test_run_state_parser_reads_a_started_run():
     ]
 
 
+def test_run_state_parser_reads_a_name_containing_an_apostrophe():
+    """The match is anchored on the closing ``' [id] is``, so an apostrophe in
+    the run or event name does not end the run name early or late."""
+    (run,) = ccc.RunStateParser().feed(_run_state("Driver's Trophy - Collector's Race"))
+    assert run.name == "Driver's Trophy - Collector's Race"
+
+
 def test_run_state_parser_joins_a_frame_split_across_reads():
     data = _run_state(state="stopped")
     parser = ccc.RunStateParser()

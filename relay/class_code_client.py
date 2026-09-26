@@ -450,7 +450,10 @@ def parse_registry(buf: bytes) -> list[dict]:
     transponder 0 is dropped.  A record with no code is kept, its code
     ``""``: the server accepts a registry code only when every record in the
     class carries it, and a codeless record is one that does not.  The rest
-    are returned deduplicated as ``{"registration_id", "number",
+    are deduplicated on all five fields, not on the id alone: an id is
+    unique in every pull measured, and one that ever appeared twice with
+    different fields is kept twice, so the server sees the disagreement and
+    withholds rather than this parser picking one.  They are returned as ``{"registration_id", "number",
     "transponder", "class_name", "class_code"}`` dicts in order of first
     appearance.
     """
