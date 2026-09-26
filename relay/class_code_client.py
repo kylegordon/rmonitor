@@ -453,9 +453,9 @@ def parse_registry(buf: bytes) -> list[dict]:
     are deduplicated on all five fields, not on the id alone: an id is
     unique in every pull measured, and one that ever appeared twice with
     different fields is kept twice, so the server sees the disagreement and
-    withholds rather than this parser picking one.  They are returned as ``{"registration_id", "number",
-    "transponder", "class_name", "class_code"}`` dicts in order of first
-    appearance.
+    withholds rather than this parser picking one.  They are returned as
+    ``{"registration_id", "number", "transponder", "class_name",
+    "class_code"}`` dicts in order of first appearance.
     """
     seen: dict[tuple[str, str, str, str, str], None] = {}
     for m in _REGISTRY_ANCHOR.finditer(buf):
