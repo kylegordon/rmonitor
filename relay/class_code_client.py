@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import re
 import struct
@@ -118,6 +119,11 @@ MAX_ENTRY_AGE = 12 * 3600
 # A model is ~4.5 MB and grows with the host's archive; a stream still going
 # past this is not one, and is not buffered further.
 MODEL_BUFFER_CAP = 32 * 1024 * 1024
+
+# The server's ingest limit (``client_max_size`` in ``server/server.py``; a
+# test holds the two equal).  A preload serialising larger would be answered
+# with a 413 on every retry, so it is not forwarded at all.
+MAX_PRELOAD_BYTES = 4 * 1024 * 1024
 
 _PUSH_MARKER = b"datamanager"
 # A length beyond this is not a real record: the marker literal turned up
@@ -648,6 +654,18 @@ class ClassCodeClient:
             log.warning(
                 "Class-code registry pull of %d bytes held no usable records – "
                 "not forwarding a preload", len(model),
+            )
+            return
+        # Measured as the POST body will be, its age at the widest it can be.
+        size = len(json.dumps({
+            "type": "class_code_preload", "entries": entries,
+            "age_seconds": float(MAX_ENTRY_AGE),
+        }))
+        if size > MAX_PRELOAD_BYTES:
+            log.warning(
+                "Class-code registry of %d records is %d bytes, over the server's "
+                "%d-byte ingest limit – not forwarding a preload",
+                len(entries), size, MAX_PRELOAD_BYTES,
             )
             return
         log.info(

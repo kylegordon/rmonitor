@@ -355,6 +355,13 @@ async def test_a_realistic_registry_preload_fits_the_ingest_limit(client, app):
     assert next(e for e in snap["entries"] if e["reg_number"] == "7")["class_code"] == "SC"
 
 
+def test_the_ingest_limit_matches_the_relays_preload_ceiling(app):
+    """The relay withholds a preload over its ceiling rather than retry a 413."""
+    from relay.class_code_client import MAX_PRELOAD_BYTES
+
+    assert app._client_max_size == MAX_PRELOAD_BYTES
+
+
 @pytest.mark.asyncio
 async def test_a_preload_arriving_while_the_feed_is_lost_is_not_a_recovery(client, app):
     from server.server import race_state_key

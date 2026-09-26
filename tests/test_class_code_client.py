@@ -6,6 +6,7 @@ codes — never from a capture.
 """
 
 import asyncio
+import json
 import struct
 
 import pytest
@@ -1037,3 +1038,23 @@ def test_a_marker_inside_model_bytes_is_not_taken_for_a_push():
         + b"datamanager\x02" + _registry_record(tx=22)
     )
     assert ccc.PushParser().feed(model) == []
+
+
+@pytest.mark.asyncio
+async def test_a_preload_larger_than_the_server_accepts_is_not_forwarded(monkeypatch, caplog):
+    """It would be answered with a 413 on every retry until it aged out."""
+    monkeypatch.setattr(ccc, "MAX_PRELOAD_BYTES", len(json.dumps(REGISTRY_ENTRIES)) - 1)
+    writer = FakeWriter()
+    opened, sleeps = _harness(monkeypatch, [(_pulling(writer), writer)])
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(writer.writes) >= 5)
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert batches == []
+    assert "over the server's" in caplog.text
+    assert len(opened) == 1
+    assert sleeps == []
