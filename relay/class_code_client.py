@@ -435,11 +435,13 @@ class ClassCodeClient:
     On every connect, once the handshake is complete, the client pulls the
     host's model and parses its competitor registry (:func:`parse_registry`);
     a complete pull is handed to *on_batch* as one ``class_code_preload``
-    message, replacing any preload not yet delivered.  A pull still running
-    after *model_cap* seconds, or larger than :data:`MODEL_BUFFER_CAP`, is not
-    forwarded: the server trusts a registry code only when no other record
-    of that class disagrees, which a partial registry cannot show.  Neither
-    fails the connection.
+    message, replacing any preload not yet delivered.  A pull counts as
+    complete when the stream has been quiet for *model_idle* seconds — the
+    model's own framing is not parsed, and that quiet was measured sufficient
+    live.  A pull still running after *model_cap* seconds, or larger than
+    :data:`MODEL_BUFFER_CAP`, is not forwarded: the server trusts a registry
+    code only when no other record of that class disagrees, which a cut-short
+    registry cannot show.  Neither fails the connection.
 
     Each burst of pushes is deduplicated last-wins per run id and entrant,
     and handed to *on_batch* as one ``class_codes`` message per run id once
@@ -482,7 +484,7 @@ class ClassCodeClient:
         first_idle: float = 0.3,
         record_idle: float = 0.15,
         model_idle: float = 1.5,
-        model_cap: float = 20.0,
+        model_cap: float = 15.0,
         handshake_cap: float = 30.0,
         retry_initial: float = 5.0,
         retry_max: float = 300.0,
@@ -497,8 +499,9 @@ class ClassCodeClient:
         self.reconnect_max = reconnect_max
         self.first_idle = first_idle
         self.record_idle = record_idle
-        # Under the host's ~30 s silent-client drop: no keepalive goes out
-        # while the model is read.
+        # No keepalive goes out while the model is read, and the first one
+        # follows a keepalive interval after it: the cap plus that interval
+        # must stay well under the host's ~30 s silent-client drop.
         self.model_idle = model_idle
         self.model_cap = model_cap
         self.handshake_cap = handshake_cap
@@ -660,7 +663,7 @@ class ClassCodeClient:
             except TimeoutError:
                 return bytes(rx)
             if not data:
-                raise ConnectionError("closed during handshake")
+                raise ConnectionError("connection closed by the timing host")
             rx += data
             self._absorb(data)
             if limit is not None and len(rx) > limit:
@@ -791,9 +794,7 @@ class ClassCodeClient:
             })
         except Exception:
             log.exception("Could not forward the class-code preload")
-            # A pull that finished meanwhile is newer, and replaces this one.
-            if self._preload is None:
-                self._preload = preload
+            self._preload = preload
             return False
         self._preloaded = len(entries)
         self._delivered()
@@ -801,11 +802,10 @@ class ClassCodeClient:
 
     def _delivered(self) -> None:
         self._last_delivery = time.time()
+        # Delivered after a disconnect, it is reported by the "retrying"
+        # status that follows, which carries the new counts.
         if self._connected:
             self._status("connected")
-        else:
-            last = self._last_status
-            self._status(last.state, detail=last.detail, retry_in=last.retry_in)
 
     def _status(self, state: str, *, detail: str = "", retry_in: float | None = None) -> None:
         self._last_status = ClassCodeStatus(

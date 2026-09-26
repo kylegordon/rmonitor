@@ -1841,3 +1841,18 @@ def test_load_class_codes_without_a_preload_key_still_loads_pushes(state):
     }}})
     assert list(state.class_codes) == ["r\te1"]
     assert state.class_code_preload["entries"] == []
+
+
+def test_preload_code_is_withheld_when_pushes_show_another_code_in_the_class(state):
+    """A meeting's pushes are its own entries; one with another code in the
+    class shows the registry's uniform code may be overridden here."""
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"), _pre("7654321", "Saloon Cup", "SC"))
+    _codes(state, "r", _code_entry("e2", "8", "Saloon Cup", "SX", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+    # A push agreeing with the registry leaves the preload usable.
+    other = RaceState()
+    _car_in_class(other, "7", "1234567", "Saloon Cup")
+    _preload(other, _pre("1234567", "Saloon Cup", "SC"), _pre("7654321", "Saloon Cup", "SC"))
+    _codes(other, "r", _code_entry("e2", "8", "Saloon Cup", "SC", "7654321"))
+    assert _entry_for(other.snapshot(), "7")["class_code"] == "SC"

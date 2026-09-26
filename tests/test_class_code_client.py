@@ -838,8 +838,9 @@ async def test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_pre
     writer = FakeWriter()
     if cut_short_by == "model_cap":
         # The model keeps coming, never idling, past the cap.
-        reader = HostReader(writer, {1: IDENT_FRAME, 4: REGISTRY}, then=[0.01, b"\x00"] * 40)
-        knobs = {"model_idle": 0.05, "model_cap": 0.15}
+        # Gaps a tenth of model_idle, so a scheduler stall can't idle it early.
+        reader = HostReader(writer, {1: IDENT_FRAME, 4: REGISTRY}, then=[0.02, b"\x00"] * 50)
+        knobs = {"model_idle": 0.2, "model_cap": 0.4}
     else:
         monkeypatch.setattr(ccc, "MODEL_BUFFER_CAP", len(REGISTRY) - 1)
         reader = _pulling(writer)
@@ -851,7 +852,7 @@ async def test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_pre
     )
     task = asyncio.ensure_future(client.run())
     try:
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.4)
     finally:
         await _finish(task)
     assert _preloads(batches) == []

@@ -36,8 +36,9 @@ here by `test_record_entry_skips_short_or_codeless_records` in
 Every connect also pulls the host's competitor registry and forwards its codes raw as one
 preload. The server uses a registry code only when every registry record with that exact class
 name carries the same code, because the registry holds a competitor's *registered* code and a
-meeting's entry can override it; pushes always win. The guard reads the whole registry, so a
-partial pull is never forwarded. Guarded by
+meeting's entry can override it; pushes always win, and a class whose pushes show another code
+is withheld. The guard reads the whole registry, so a pull cut short by its time or size cap is
+never forwarded (completeness is otherwise inferred from the stream going quiet). Guarded by
 `test_preload_code_is_withheld_when_the_class_name_spans_several_codes` in
 `tests/test_race_state.py` and
 `test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_preload` in

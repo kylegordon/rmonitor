@@ -591,7 +591,10 @@ class RaceState:
         3. **The registry preload**, only when neither push layer gives a
            code: transponder and class → a code only when that pair carries
            one distinct code *and* every preload record with that exact class
-           name carries that same code.  The guard is there because the
+           name carries that same code, *and* so does every pushed record with
+           that class name — pushes are the meeting's own entries, so one
+           showing another code is proof the class is not uniform here.  The
+           guard is there because the
            registry holds a competitor's *registered* code, and a meeting's
            entry can override it: measured against pushes, the pair alone was
            wrong 2 times in 24 in a class whose name spans several codes, and
@@ -608,7 +611,9 @@ class RaceState:
         pre_class = self.class_code_preload["by_class"]
         by_tx: dict[tuple[str, str], dict] = {}
         by_nc: dict[tuple[str, str], set[str]] = {}
+        pushed_class: dict[str, set[str]] = {}
         for rec in self.class_codes.values():
+            pushed_class.setdefault(rec["class_name"], set()).add(rec["class_code"])
             tx, cls = rec["transponder"], rec["class_name"]
             if tx not in ("", "0"):
                 best = by_tx.get((tx, cls))
@@ -629,7 +634,11 @@ class RaceState:
                         code = next(iter(codes))
                 if not code and tx not in ("", "0"):
                     codes = pre_tx.get((tx, desc), set())
-                    if len(codes) == 1 and pre_class.get(desc) == codes:
+                    if (
+                        len(codes) == 1
+                        and pre_class.get(desc) == codes
+                        and pushed_class.get(desc, codes) == codes
+                    ):
                         code = next(iter(codes))
             e["class_code"] = code
             if not code:
