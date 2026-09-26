@@ -2193,3 +2193,33 @@ def test_an_expired_started_run_dirties_the_state(state, monkeypatch):
     assert state.dirty
     assert state.class_code_run is None
     assert state.snapshot()["class_code_scope"] == ""
+
+
+def _closing(state, description="Race 7 - 2nd Race"):
+    state.process({"type": "run", "unique_number": "95", "description": description})
+
+
+def test_a_session_end_discards_the_started_run_it_closes(state):
+    """95 keeps the closing description, so a later same-named session the
+    relay never saw start would otherwise inherit the run."""
+    _session(state)
+    _started(state)
+    _closing(state)
+    assert state.class_code_run is None
+    _session(state)
+    assert state.snapshot()["class_code_scope"] == ""
+
+
+def test_only_the_edge_into_a_session_end_discards_a_started_run(state):
+    """95 repeats between sessions; a run announced meanwhile is kept, as is
+    one announced before another session's end."""
+    _session(state)
+    _closing(state)
+    _started(state)
+    _closing(state)  # repeated, not an edge
+    assert state.class_code_run is not None
+    other = RaceState()
+    _session(other, "Race 6 - AMENDED GRID")
+    _started(other)
+    _closing(other, "Race 6 - AMENDED GRID")
+    assert other.class_code_run is not None

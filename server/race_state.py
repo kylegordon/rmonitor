@@ -173,6 +173,8 @@ class RaceState:
         self.track_name: str = ""
         self.track_length_miles: float | None = None
         self.run_description: str = ""
+        # The last ``$B`` unique number; see _run.
+        self._run_number: str = ""
         self.flag: str = ""
         self.race_time: str = ""
         self.time_of_day: str = ""
@@ -258,27 +260,29 @@ class RaceState:
     def _run(self, msg: dict) -> str:
         """Record the run description from ``$B``.
 
-        ``unique_number`` is deliberately dropped: nothing here consumes it
-        yet.  It is not noise, though — 95 marks a session's end (see
-        :func:`relay.rmonitor_client._parse_run`), so this is where a reliable
-        session-boundary signal would be picked up if one is ever needed.
+        ``unique_number`` 95 marks a session's end, carrying the closing
+        session's description (see :func:`relay.rmonitor_client._parse_run`).
+        It is read only to end the started run below.
 
-        A change of description to one other than the started run's name
-        discards that run: the session it announced is over, and run names
-        repeat, so a later session of the same name that the relay never saw
-        start must not inherit its id.  Only a change counts — ``$B`` repeats
-        many times within one session, and a run can be announced before its
-        ``$B`` arrives.
+        The started run is discarded once its session is over — on a change
+        of description to one other than its name, or on the number changing
+        to 95 while the description still names it.  Run names repeat, so a
+        later session of the same name that the relay never saw start must
+        not inherit its id.  Only changes count: ``$B`` repeats many times
+        within one session, 95 included, and a run can be announced before
+        its ``$B`` arrives.
         """
+        desc = msg["description"]
+        number = msg.get("unique_number") or ""
         run = self.class_code_run
-        if (
-            msg["description"] != self.run_description
-            and run is not None
-            and run["name"] != msg["description"]
+        if run is not None and (
+            (desc != self.run_description and run["name"] != desc)
+            or (number == "95" and number != self._run_number and run["name"] == desc)
         ):
             self.class_code_run = None
             self.class_codes_revision += 1
-        self.run_description = msg["description"]
+        self._run_number = number
+        self.run_description = desc
         self._dirty = True
         return "run"
 
@@ -751,7 +755,9 @@ class RaceState:
 
         *scope*, from :meth:`_class_code_scope`, limits the push layers — and
         the guard's view of pushes — to pushes tagged with the running run
-        or its group.  Pushes from other runs are other meetings' or finished
+        or its group.  It is applied here, when codes are read, never on
+        ingest: every push is stored, so one arriving before its scope is
+        known is filtered once it is.  Pushes from other runs are other meetings' or finished
         runs' edits, not this session's entries.  ``0x80000000`` tags every
         push, so it is never a scope.  *None* keeps every push.
 
