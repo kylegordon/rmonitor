@@ -1677,8 +1677,11 @@ def _preload(state, *entries, age_seconds=0.0):
     })
 
 
-def _pre(transponder, class_name, code):
-    return {"transponder": transponder, "class_name": class_name, "class_code": code}
+def _pre(transponder, class_name, code, *, reg="", number=""):
+    return {
+        "transponder": transponder, "class_name": class_name, "class_code": code,
+        "registration_id": reg, "number": number,
+    }
 
 
 def _car_in_class(state, reg, transponder, description, *, number=None, class_number="1"):
@@ -1728,12 +1731,71 @@ def test_a_pushed_code_overrides_the_preload_by_number(state):
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SP"
 
 
-def test_preload_is_never_matched_by_number(state):
-    # A car with no transponder: only the number could match, and the preload
-    # carries none.
+def test_preload_is_matched_by_number_and_class_when_the_car_has_no_transponder(state):
     _car_in_class(state, "7", "", "Saloon Cup")
-    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    _preload(state, _pre("1234567", "Saloon Cup", "SC", reg="r1", number="7"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_preload_resolves_a_stale_transponder_by_number_and_class(state):
+    """The car races on a transponder its registration does not hold yet;
+    number and class still name exactly one registration."""
+    _car_in_class(state, "4", "10484382", "Jaguar (A)")
+    _preload(state, _pre("1184258", "Jaguar (A)", "A", reg="509ff32b", number="4"),
+             _pre("5550001", "Jaguar (A)", "A", reg="r2", number="5"))
+    assert _entry_for(state.snapshot(), "4")["class_code"] == "A"
+
+
+def test_preload_is_blank_when_transponder_and_number_name_different_registrations(state):
+    """A transponder that changed hands: it names another driver's
+    registration, the number names the car's own, so neither is trusted."""
+    _car_in_class(state, "26", "221241", "Saloon Cup")
+    _preload(state, _pre("9990001", "Saloon Cup", "SC", reg="own", number="26"),
+             _pre("221241", "Saloon Cup", "SC", reg="other", number="31"))
+    assert _entry_for(state.snapshot(), "26")["class_code"] == ""
+
+
+def test_preload_number_match_needs_exactly_one_registration(state):
+    _car_in_class(state, "7", "", "Saloon Cup")
+    _preload(state, _pre("1111111", "Saloon Cup", "SC", reg="r1", number="7"),
+             _pre("2222222", "Saloon Cup", "SC", reg="r2", number="7"))
     assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_preload_with_an_ambiguous_number_falls_back_to_the_transponder(state):
+    _car_in_class(state, "7", "1111111", "Saloon Cup")
+    _preload(state, _pre("1111111", "Saloon Cup", "SC", reg="r1", number="7"),
+             _pre("2222222", "Saloon Cup", "SC", reg="r2", number="7"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_preload_number_match_is_still_under_the_class_uniform_guard(state):
+    _car_in_class(state, "7", "", "Guest")
+    _preload(state, _pre("1111111", "Guest", "CI", reg="r1", number="7"),
+             _pre("2222222", "Guest", "CB", reg="r2", number="8"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_a_preload_without_registration_ids_still_joins_by_transponder(state):
+    """An older relay sends only the transponder, class and code."""
+    old = {"transponder": "1234567", "class_name": "Saloon Cup", "class_code": "SC"}
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _car_in_class(state, "8", "", "Saloon Cup")
+    assert _preload(state, old) == "class_codes"
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert _entry_for(snap, "8")["class_code"] == ""
+
+
+def test_load_class_codes_accepts_an_old_format_preload(state):
+    import time as _time
+
+    old = {"transponder": "1234567", "class_name": "Saloon Cup", "class_code": "SC"}
+    state.load_class_codes({"preload": {"received_at": _time.time(), "entries": [old]}})
+    assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+    assert state.class_code_preload["runs"] == []
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
 
 
 def test_an_expired_preload_is_not_joined(state, monkeypatch):
@@ -1806,11 +1868,17 @@ def test_snapshot_reports_class_codes_available_from_a_preload_alone(state):
 def test_preload_round_trips_through_the_class_code_store(state):
     import json
 
-    _preload(state, _pre("1234567", "Saloon Cup", "SC"), age_seconds=60.0)
+    state.process({
+        "type": "class_code_preload",
+        "entries": [_pre("1234567", "Saloon Cup", "SC", reg="r1", number="7")],
+        "runs": [_run_row()],
+        "age_seconds": 60.0,
+    })
     restored = RaceState()
     restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
     assert restored.class_code_preload == state.class_code_preload
-    _car_in_class(restored, "7", "1234567", "Saloon Cup")
+    assert restored.class_code_preload["runs"] == [_run_row()]
+    _car_in_class(restored, "7", "", "Saloon Cup")
     assert _entry_for(restored.snapshot(), "7")["class_code"] == "SC"
 
 
@@ -1940,3 +2008,138 @@ def test_class_codes_revision_moves_only_when_a_store_changes(state, monkeypatch
     now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
     state.prune_expired_class_codes()
     assert moved()
+
+
+# ---------------------------------------------------------------------------
+# Scoping pushes to the running run
+# ---------------------------------------------------------------------------
+
+def _run_row(run_id="0x40002806", group_id="0x80000985", name="Race 7 - 2nd Race"):
+    return {"run_id": run_id, "group_id": group_id, "name": name}
+
+
+def _started(state, run_id="0x40002806", name="Race 7 - 2nd Race", age_seconds=0.0):
+    return state.process({
+        "type": "class_code_run", "run_id": run_id, "name": name, "age_seconds": age_seconds,
+    })
+
+
+def _session(state, description="Race 7 - 2nd Race"):
+    state.process({"type": "run", "unique_number": "27", "description": description})
+
+
+def _runs_preload(state, *runs, entries=()):
+    # A preload needs one usable entry to be stored at all.
+    entries = list(entries) or [_pre("9999999", "Unused Class", "UC")]
+    return state.process({"type": "class_code_preload", "entries": entries, "runs": list(runs)})
+
+
+def test_pushes_for_another_run_are_ignored_once_the_run_is_known(state):
+    """A remote operator's post-race edit to a finished run is not this session."""
+    _session(state)
+    _started(state)
+    _car_in_class(state, "72", "5588219", "Classic K")
+    _codes(state, "0x40002804", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
+    _codes(state, "0x80000000", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == "0x40002806"
+    assert _entry_for(snap, "72")["class_code"] == ""
+    _codes(state, "0x40002806", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
+    assert _entry_for(state.snapshot(), "72")["class_code"] == "CM"
+
+
+def test_group_tagged_pushes_count_for_the_running_run(state):
+    _runs_preload(state, _run_row())
+    _session(state)
+    _started(state)
+    _car_in_class(state, "4", "10484382", "Jaguar (A)")
+    _codes(state, "0x80000985", _code_entry("e4", "4", "Jaguar (A)", "A", "10484382"))
+    assert _entry_for(state.snapshot(), "4")["class_code"] == "A"
+
+
+def test_scoped_out_pushes_take_no_part_in_the_guard(state):
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    _codes(state, "0x40002804", _code_entry("e8", "8", "Saloon Cup", "SX", "7654321"))
+    # Unscoped, the other run's push shows the class is not uniform.
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+    _session(state)
+    _started(state)
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+
+
+def test_scope_follows_the_run_description_not_a_stale_started_run(state):
+    _started(state, "0x40002805", "Race 6 - AMENDED GRID")
+    _session(state, "Race 7 - 2nd Race")
+    assert state.snapshot()["class_code_scope"] == ""
+    _runs_preload(state, _run_row())
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+
+
+def test_scope_from_the_run_table_picks_the_newest_run_with_that_name(state):
+    _runs_preload(
+        state,
+        _run_row("0x40001000", "0x80000101"),
+        _run_row("0x40002806", "0x80000985"),
+        _run_row("0x400015E8", "0x80000050"),
+        _run_row("0x40002807", "0x80000984", "Race 8"),
+    )
+    _session(state)
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert state._class_code_scope()[1] == frozenset({"0x40002806", "0x80000985"})
+
+
+def test_an_unknown_run_falls_back_to_unscoped_and_reports_it(state, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="server.race_state")
+    _runs_preload(state, _run_row())
+    _session(state, "Mystery Session")
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _codes(state, "0x40001234", _code_entry("e7", "7", "Saloon Cup", "SC", "1234567"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == ""
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert "scoped to no run (unscoped)" in caplog.text
+
+
+def test_run_tags_match_regardless_of_hex_case(state):
+    _session(state)
+    _started(state, "0x400027FB")
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _codes(state, "0x400027fb", _code_entry("e7", "7", "Saloon Cup", "SC", "1234567"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == "0x400027FB"
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+
+
+def test_class_code_run_survives_init_and_round_trips(state):
+    import json
+
+    assert _started(state, age_seconds=30.0) == "class_codes"
+    state.process({"type": "init"})
+    assert state.class_code_run["run_id"] == "0x40002806"
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run == state.class_code_run
+    _session(restored)
+    assert restored.snapshot()["class_code_scope"] == "0x40002806"
+
+
+@pytest.mark.parametrize("msg", [
+    {"run_id": "0x40002806", "name": ""},
+    {"run_id": "Race 7", "name": "Race 7 - 2nd Race"},
+    {"run_id": "0x40002806", "name": "Race 7 - 2nd Race", "age_seconds": 13 * 3600},
+])
+def test_a_malformed_class_code_run_is_ignored(state, msg):
+    assert state.process({"type": "class_code_run", **msg}) is None
+    assert state.class_code_run is None
+
+
+def test_class_code_run_does_not_make_stale_race_state_look_fresh(state, monkeypatch):
+    import server.race_state as rs
+
+    stale = state.last_updated
+    monkeypatch.setattr(rs.time, "time", lambda: stale + 3600)
+    assert _started(state) == "class_codes"
+    assert state.last_updated == stale

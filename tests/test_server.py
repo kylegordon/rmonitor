@@ -306,14 +306,21 @@ async def test_class_codes_arriving_while_the_feed_is_lost_are_not_a_recovery(cl
     assert state.class_codes
 
 
-def _preload_msg(n=1):
-    """A registry preload of *n* synthetic entries; the first is car 7's."""
+def _preload_msg(n=1, runs=0):
+    """A registry preload of *n* synthetic entries and *runs* runs; the first
+    entry is car 7's."""
     return {
         "type": "class_code_preload",
         "age_seconds": 1.5,
         "entries": [
-            {"transponder": str(1234567 + i), "class_name": "Saloon Cup", "class_code": "SC"}
+            {"registration_id": f"{0x10000000 + i:08x}", "number": str(7 + i),
+             "transponder": str(1234567 + i), "class_name": "Saloon Cup", "class_code": "SC"}
             for i in range(n)
+        ],
+        "runs": [
+            {"run_id": f"0x{0x40000000 + i:08X}", "group_id": f"0x{0x80000000 + i // 4:08X}",
+             "name": f"Race {i % 12} - Championship Round {i // 12}"}
+            for i in range(runs)
         ],
     }
 
@@ -347,8 +354,9 @@ async def test_a_realistic_registry_preload_fits_the_ingest_limit(client, app):
     reject a larger archive with a 413 on every retry."""
     from server.server import race_state_key
 
-    # About three times today's archive, and past the default limit.
-    msg = _preload_msg(15_000)
+    # About three times today's archive, and past the default limit, with a
+    # run table the size of today's.
+    msg = _preload_msg(15_000, runs=4_000)
     assert len(json.dumps(msg)) > 1024 ** 2
     await _post_car_7_and(client, msg)
     snap = app[race_state_key].snapshot()
@@ -389,6 +397,27 @@ async def test_a_preload_arriving_while_the_feed_is_lost_is_not_a_recovery(clien
     state = app[race_state_key]
     assert "1" in state.competitors  # not reset
     assert state.class_code_preload["entries"]
+
+
+@pytest.mark.asyncio
+async def test_a_class_code_run_arriving_while_the_feed_is_lost_is_not_a_recovery(client, app):
+    from server.server import race_state_key
+
+    fs = app[feed_state_key]
+    fs["feed_lost"] = True
+    fs["last_ingest_at"] = stale = time.monotonic() - 3600
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "class_code_run", "run_id": "0x40002805",
+              "name": "Race 6 - AMENDED GRID", "age_seconds": 0.4},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    assert fs["feed_lost"] is True
+    assert fs["last_ingest_at"] == stale
+    state = app[race_state_key]
+    assert "1" in state.competitors  # not reset
+    assert state.class_code_run["run_id"] == "0x40002805"
 
 
 @pytest.mark.asyncio
