@@ -2024,8 +2024,8 @@ def _started(state, run_id="0x40002806", name="Race 7 - 2nd Race", age_seconds=0
     })
 
 
-def _session(state, description="Race 7 - 2nd Race"):
-    state.process({"type": "run", "unique_number": "27", "description": description})
+def _session(state, description="Race 7 - 2nd Race", number="27"):
+    state.process({"type": "run", "unique_number": number, "description": description})
 
 
 def _runs_preload(state, *runs, entries=()):
@@ -2249,3 +2249,31 @@ def test_only_the_edge_into_a_session_end_closes_a_started_run(state):
 def test_a_run_table_row_with_its_ids_in_the_wrong_form_is_skipped(state):
     _runs_preload(state, _run_row("0x80000985", "0x40002806"), _run_row("0x40002807"))
     assert [r["run_id"] for r in state.class_code_preload["runs"]] == ["0x40002807"]
+
+
+def test_a_same_named_session_under_a_new_number_discards_the_old_run(state):
+    """A boundary is the number changing, with or without a 95 between."""
+    _session(state)
+    _started(state)
+    _session(state)  # repeated: binds the run to 27
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    _session(state, number="28")
+    assert state.class_code_run is None
+    assert state.snapshot()["class_code_scope"] == ""
+
+
+def test_a_run_announced_just_before_its_same_named_session_is_kept(state):
+    import json
+
+    _session(state)
+    _started(state)
+    _session(state)
+    _started(state, "0x40002807")  # the next session starts, then its $B
+    _session(state, number="28")
+    assert state.snapshot()["class_code_scope"] == "0x40002807"
+    # Bound to 28, across a restart as well.
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run == state.class_code_run
+    restored.process({"type": "run", "unique_number": "29", "description": "Race 7 - 2nd Race"})
+    assert restored.class_code_run is None

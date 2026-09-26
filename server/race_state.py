@@ -274,7 +274,12 @@ class RaceState:
         board still shows that session, so its run stays in scope until the
         next session's ``$B`` — any number but 95 — discards it.  Only
         changes into 95 count: ``$B`` repeats many times within one session,
-        95 included, and a run can be announced before its ``$B`` arrives.
+        95 included.  A same-named session may also follow under a new
+        number with no 95 between; a boundary is the number changing, so the
+        first non-95 number naming the run binds it, and a later one
+        discards it.  A run announced since — before its own ``$B``, which
+        the host may send in either order — is not yet bound, so it is kept
+        and binds to the new number.
         """
         desc = msg["description"]
         number = msg.get("unique_number") or ""
@@ -285,8 +290,15 @@ class RaceState:
             ):
                 self.class_code_run = None
                 self.class_codes_revision += 1
-            elif number == "95" and number != self._run_number and run["name"] == desc:
-                run["closed"] = True
+            elif number == "95":
+                if number != self._run_number and run["name"] == desc:
+                    run["closed"] = True
+                    self.class_codes_revision += 1
+            elif run["name"] == desc and run.get("session_number") != number:
+                if run.get("session_number"):
+                    self.class_code_run = None
+                else:
+                    run["session_number"] = number
                 self.class_codes_revision += 1
         self._run_number = number
         self.run_description = desc
@@ -1202,6 +1214,8 @@ class RaceState:
                     }
                     if run.get("closed") is True:
                         self.class_code_run["closed"] = True
+                    if isinstance(run.get("session_number"), str) and run["session_number"]:
+                        self.class_code_run["session_number"] = run["session_number"]
         except (AttributeError, TypeError, ValueError):
             pass
 
