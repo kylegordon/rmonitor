@@ -1275,7 +1275,14 @@ async def test_a_run_stopped_before_its_start_was_delivered_is_not_forwarded(
 
 
 @pytest.mark.asyncio
-async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retried(monkeypatch):
+@pytest.mark.parametrize("stops", [
+    [0x40002805],
+    # A later, unrelated stop must not hide the in-flight run's own.
+    [0x40002805, 0x40002806],
+])
+async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retried(
+    monkeypatch, stops
+):
     gate = asyncio.Event()
     reader = ChunkReader([IDENT_FRAME, gate, _run_state()])
     _harness(monkeypatch, [(reader, FakeWriter())])
@@ -1284,7 +1291,9 @@ async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retr
     async def on_batch(msg):
         calls.append(msg["run_id"])
         if len(calls) == 1:
-            reader._items.append(_run_state(state="stopped"))
+            reader._items.append(b"".join(
+                _run_state("Race", run_id=r, state="stopped") for r in stops
+            ))
             await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
             raise ConnectionError("server unreachable")
 
