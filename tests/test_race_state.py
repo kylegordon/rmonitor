@@ -1899,3 +1899,16 @@ def test_expiry_of_either_store_dirties_the_state(state, monkeypatch):
     assert state.dirty
     assert state.class_codes == {}
     assert state.class_code_preload["entries"] == []
+
+
+def test_an_expiry_found_by_a_snapshot_dirties_the_state(state, monkeypatch):
+    """A new client's full snapshot must not expire a code silently for the rest."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    state.mark_clean()
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    state.snapshot()
+    assert state.dirty

@@ -557,10 +557,10 @@ class RaceState:
     def prune_expired_class_codes(self) -> bool:
         """Drop expired pushed codes and an expired preload; return whether any went.
 
-        A snapshot prunes too, but only runs once something else dirtied the
-        state: an idle page would otherwise show a code past its TTL.  So the
-        broadcast loop calls this every interval, and an expiry marks the
-        state dirty.
+        A snapshot calls this too, but snapshots run only once something else
+        dirtied the state: an idle page would otherwise show a code past its
+        TTL.  So the broadcast loop calls it every interval as well, and an
+        expiry from either caller marks the state dirty.
         """
         now = time.time()
         expired = self._prune_class_codes(now)
@@ -622,9 +622,9 @@ class RaceState:
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
-        now = time.time()
-        self._prune_class_codes(now)
-        self._prune_class_code_preload(now)
+        # Marks the state dirty on an expiry: a snapshot for one client must
+        # not expire a code that other clients' pages then never hear about.
+        self.prune_expired_class_codes()
         pre_tx = self.class_code_preload["by_tx"]
         pre_class = self.class_code_preload["by_class"]
         by_tx: dict[tuple[str, str], dict] = {}
