@@ -859,7 +859,10 @@ class RaceState:
         lets it stand in — and its name is the session's description.  Never
         the scope's fallback to the preload's run table by name: names repeat,
         so a same-named next session would pick the old run up again and show
-        its announcements.  The key is a row's creation ticks.
+        its announcements.  A relay started mid-run does pick a run by name,
+        and sends it as an ordinary start; that accepted same-name risk lives
+        in the relay's pick, which stops at the first real start it reads.
+        The key is a row's creation ticks.
 
         Three things clear them, whichever comes first: the session's closing
         ``$B,95`` (through ``_run_number``); the run stopping (the relay sends

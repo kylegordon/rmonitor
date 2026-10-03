@@ -2365,6 +2365,22 @@ def _shown(state):
     return [a["text"] for a in state.snapshot()["announcements"]]
 
 
+def test_a_run_announced_after_its_session_shows_then_binds_on_the_next_repeat(state):
+    """A relay started mid-run picks the run by name and sends it after the
+    session's ``$B``; the server needs nothing more to show and bind it."""
+    _session(state, number="5")
+    _started(state)
+    assert state.class_code_run is None
+    assert state.class_code_run_next["run_id"] == "0x40002806"
+    _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+    _session(state, number="5")
+    assert state.class_code_run["run_id"] == "0x40002806"
+    assert state.class_code_run["session_number"] == "5"
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert _shown(state) == ["Track clear"]
+
+
 def test_announcements_show_while_their_run_is_the_running_session(state):
     _started(state)
     _session(state)

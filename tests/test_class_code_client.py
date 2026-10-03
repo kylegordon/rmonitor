@@ -1975,3 +1975,202 @@ async def test_an_earlier_runs_empty_reply_is_dropped_but_its_stop_clear_kept(mo
         await _finish(task)
     assert (RUN_ID, False) not in delivered
     assert ("0x40002806", False) in delivered
+
+
+# ---------------------------------------------------------------------------
+# Announcements: a run picked by name when no start was seen
+# ---------------------------------------------------------------------------
+
+PICK_NAME = "Race 2 - 1st Race"
+# The newest run of that name, with a letter in its id so a lower-case
+# notice can be told from the run table's upper-case one.
+PICKED_ID = "0x4000280A"
+PICKED_DECIMAL = str(0x4000280A)
+PICK_REGISTRY = (
+    _registry_record("aaaa1111", 11)
+    + _run_record(0x40002801, name=PICK_NAME)
+    + _run_record(0x4000280A, name=PICK_NAME)
+    + _run_record(0x40002803, name="Race 1 - Qualifying")
+)
+
+
+class PullingViewHost(ViewHost):
+    """A :class:`ViewHost` that first answers the registry pull with
+    *registry*, split across its answers to records 3 and 4 as
+    :func:`_pulling` does."""
+
+    def __init__(self, writer, registry=PICK_REGISTRY, rows=()):
+        super().__init__(writer, rows)
+        half = len(registry) // 2
+        self._pull = {4: registry[:half], 5: registry[half:]}
+
+    async def read(self, n):
+        if self._identified:
+            while self._pull:
+                due = min(self._pull)
+                if len(self._writer.writes) >= due:
+                    return self._pull.pop(due)
+                await asyncio.sleep(0.002)
+        return await super().read(n)
+
+
+async def _picking(monkeypatch, *, connections=None, **knobs):
+    if connections is None:
+        writer = FakeWriter()
+        connections = [(PullingViewHost(writer), writer)]
+    return await _running(monkeypatch, connections=connections, **knobs)
+
+
+def _runs_sent(calls):
+    return [c for c in calls if c["type"] == "class_code_run"]
+
+
+def _lowercase_stop(name, run_id) -> bytes:
+    """A stopped notice whose id is lower-case hex, which the regex accepts."""
+    text = f"Run '{name}' [0x{run_id:08x}] is stopped - Event 'Test Meeting'".encode()
+    return (
+        struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(text)) + text
+        + b"d" + struct.pack("<I", run_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_relay_that_saw_no_start_picks_the_newest_run_named_as_the_session(
+    monkeypatch,
+):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_opens(writer) and _runs_sent(calls))
+    finally:
+        await _finish(task)
+    assert _view_opens(writer) == [(1, PICKED_DECIMAL)]
+    (run,) = _runs_sent(calls)
+    assert run["run_id"] == PICKED_ID
+    assert run["name"] == PICK_NAME
+    assert isinstance(run["start_key"], str) and len(run["start_key"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_a_session_known_before_the_pull_is_picked_when_the_run_table_arrives(
+    monkeypatch,
+):
+    # A slow pull, so the session is noted well before the table arrives.
+    task, host, writer, calls, client = await _picking(monkeypatch, record_idle=0.2)
+    try:
+        assert client._runs is None
+        client.note_session("5", PICK_NAME)
+        assert _view_opens(writer) == []
+        await _until(lambda: _view_opens(writer) and _runs_sent(calls))
+    finally:
+        await _finish(task)
+    assert _view_opens(writer) == [(1, PICKED_DECIMAL)]
+    assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_real_start_ends_picking_for_good(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_run_state("Race 3", 0x40002807, "started"))
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+        await _until(lambda: (2, str(0x40002807)) in _view_opens(writer))
+        client.note_session("6", "Race 1 - Qualifying")
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID, "0x40002807"]
+    assert [u for _, u in _view_opens(writer)] == [PICKED_DECIMAL, str(0x40002807)]
+    assert client._ann_run == "0x40002807"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_pick_is_not_picked_again_for_the_same_description(monkeypatch):
+    first, second = FakeWriter(), FakeWriter()
+    host1, host2 = PullingViewHost(first), PullingViewHost(second)
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        host1.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
+        await _until(lambda: _view_closes(first))
+        host1.queue.append(b"")
+        # The reconnect pulls the same run table again.
+        await _until(lambda: not host2._pull)
+        client.note_session("5", PICK_NAME)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    (stop,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert stop["rows"] == []
+    # Matched despite the case, so the clear names the picked start.
+    assert stop["start_key"] == run["start_key"]
+    assert _view_closes(first) == [1]
+    assert _view_opens(second) == []
+    assert client._ann_run is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_description_with_no_matching_run_drops_the_pick(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls))
+        client.note_session("6", "Not In Table")
+        await _until(lambda: _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _view_closes(writer) == [1]
+    assert len(_view_opens(writer)) == 1
+    assert client._ann_run is None
+
+
+@pytest.mark.asyncio
+async def test_a_closing_95_and_a_repeated_description_do_not_re_pick(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        client.note_session("95", PICK_NAME)
+        client.note_session("5", PICK_NAME)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert len(_runs_sent(calls)) == 1
+    assert len(_view_opens(writer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_picked_run_is_resubscribed_after_a_reconnect_without_a_new_start(
+    monkeypatch,
+):
+    first, second = FakeWriter(), FakeWriter()
+    host1 = PullingViewHost(first, rows=[("Track clear", 5)])
+    host2 = PullingViewHost(second, rows=[("Track clear", 5)])
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        host1.queue.append(b"")
+        await _until(lambda: _view_opens(second))
+        await _until(lambda: len(_announcements(calls)) >= 2)
+    finally:
+        await _finish(task)
+    assert _view_opens(second) == [(1, PICKED_DECIMAL)]
+    (run,) = _runs_sent(calls)
+    keys = {c["start_key"] for c in calls if c["type"] == "announcements"}
+    assert keys == {run["start_key"]}
