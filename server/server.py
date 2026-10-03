@@ -210,9 +210,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 # Ingest types that come from a source other than the rMonitor feed, so they
 # are no evidence the feed is alive.  A class-code push, registry preload,
-# started run or retry arriving while :50000 is down must not clear the
-# outage, reset the race state and broadcast.
-_NON_FEED_TYPES = frozenset({"class_codes", "class_code_preload", "class_code_run"})
+# started run, announcements refresh or retry arriving while :50000 is down
+# must not clear the outage, reset the race state and broadcast.
+_NON_FEED_TYPES = frozenset({
+    "class_codes", "class_code_preload", "class_code_run", "announcements",
+})
 
 
 async def handle_ingest(request: web.Request) -> web.Response:

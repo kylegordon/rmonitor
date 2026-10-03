@@ -164,6 +164,11 @@ class RaceState:
         self.class_codes_revision = 0
         # The push scope last logged, so a change is logged once; see snapshot.
         self._logged_scope: str | None = None
+        # The timing host's announcements for one run; see _announcements.
+        # Not in reset(): $I is not a session signal (it is emitted
+        # inconsistently), and _shown_announcements hides the rows whenever
+        # their run is not the running session.
+        self.announcements: dict = {"run_id": "", "rows": []}
         self.reset()
 
     def reset(self):
@@ -210,7 +215,8 @@ class RaceState:
             # last_updated dates the *race* state, and the store discards it by
             # that age; class codes come from another source and live in a
             # store of their own, so they must not make stale race state fresh.
-            if event is not None and event != "class_codes":
+            # Announcements come from the same source, for the same reason.
+            if event is not None and event not in ("class_codes", "announcements"):
                 self.last_updated = time.time()
             return event
         return None
@@ -690,6 +696,68 @@ class RaceState:
         self._dirty = True
         return "class_codes"
 
+    def _announcements(self, msg: dict) -> str | None:
+        """Store the timing host's announcements for one run.
+
+        Every message is the relay's full truth for ``run_id``, read from a
+        fresh subscription, and replaces whatever was held; ``rows: []`` is
+        also how the relay clears them when the run stops.  A message whose
+        run id is not of the host's ``0x4000xxxx`` form, or whose rows are not
+        a list, is ignored.  Each row keeps its text, its creation ``ticks``
+        (0 when unusable) and its priority, forwarded raw; a row with no text
+        is dropped.  Rows are ordered oldest first by ``ticks`` — the newest
+        lands at the bottom of the page — and never by priority, which
+        nothing reads.  An unchanged message returns *None*, so the relay's
+        periodic refresh broadcasts nothing.
+        """
+        run_id, raw = msg.get("run_id"), msg.get("rows")
+        if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
+            return None
+        rows = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            ticks = row.get("ticks")
+            if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 0:
+                ticks = 0
+            priority = row.get("priority")
+            rows.append({
+                "text": text,
+                "ticks": ticks,
+                "priority": priority if isinstance(priority, str) else "",
+            })
+        rows.sort(key=lambda r: r["ticks"])
+        store = {"run_id": run_id, "rows": rows}
+        if store == self.announcements:
+            return None
+        self.announcements = store
+        self._dirty = True
+        return "announcements"
+
+    def _shown_announcements(self, scope: tuple[str, frozenset[str]] | None) -> list[dict]:
+        """Return the announcements to show, given the *scope* the snapshot chose.
+
+        Rows are shown only while their run is the running session — the run
+        :meth:`_class_code_scope` picks — and each is ``{"key", "text"}``,
+        the key its creation ticks.  Three things clear them, whichever comes
+        first: the session's closing ``$B,95`` (through ``_run_number``); the
+        run stopping (the relay sends empty rows); and a new run or session
+        (the scope moves to another run).  :meth:`reset` is not one, because
+        ``$I`` is emitted inconsistently; after it an empty description gives
+        a *None* scope, which hides the rows anyway until ``$B`` repopulates.
+        The priority is not sent: the page never needs it.
+        """
+        if (
+            scope is None
+            or self._run_number == "95"
+            or scope[0].lower() != self.announcements["run_id"].lower()
+        ):
+            return []
+        return [{"key": str(r["ticks"]), "text": r["text"]} for r in self.announcements["rows"]]
+
     def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:
         """Return the running run's id and the push tags in scope, or *None*.
 
@@ -913,6 +981,7 @@ class RaceState:
         "class_codes": _class_codes,
         "class_code_preload": _class_code_preload,
         "class_code_run": _class_code_run,
+        "announcements": _announcements,
     }
 
     # ---- serialisation ----
@@ -1024,6 +1093,7 @@ class RaceState:
             ),
             "class_code_missing": class_code_missing,
             "class_code_scope": scope_id,
+            "announcements": self._shown_announcements(scope),
             "entries": entries,
         }
 

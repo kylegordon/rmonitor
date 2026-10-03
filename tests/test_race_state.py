@@ -2347,3 +2347,109 @@ def test_a_run_started_after_a_cold_session_ends_waits_for_its_own(state):
     assert state.snapshot()["class_code_scope"] == ""
     _session(state, number="28")
     assert state.snapshot()["class_code_scope"] == "0x40002806"
+
+
+# ---------------------------------------------------------------------------
+# Announcements
+# ---------------------------------------------------------------------------
+
+def _announce(state, *rows, run_id="0x40002806"):
+    return state.process({"type": "announcements", "run_id": run_id, "rows": [
+        {"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows
+    ]})
+
+
+def _shown(state):
+    return [a["text"] for a in state.snapshot()["announcements"]]
+
+
+def test_announcements_show_while_their_run_is_the_running_session(state):
+    _started(state)
+    _session(state)
+    assert _announce(state, ("Track clear", 100)) == "announcements"
+    assert state.snapshot()["announcements"] == [{"key": "100", "text": "Track clear"}]
+
+
+def test_announcements_are_hidden_from_the_95_close_edge(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _closing(state)
+    assert _shown(state) == []
+
+
+def test_announcements_are_cleared_by_the_relays_empty_rows_on_a_stop(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _announce(state) == "announcements"
+    assert _shown(state) == []
+
+
+def test_announcements_of_another_run_are_not_shown(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _session(state, "Race 8 - Final", number="28")
+    assert _shown(state) == []
+
+
+def test_announcements_survive_init_and_reappear_with_the_sessions_run_record(state):
+    """``$I`` is not a session signal: the rows are kept, hidden while the
+    description is empty, and shown again once ``$B`` names the session."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    state.process({"type": "init"})
+    assert state.announcements["rows"]
+    assert _shown(state) == []
+    _session(state)
+    assert _shown(state) == ["Track clear"]
+
+
+def test_announcements_are_ordered_oldest_first_by_creation_ticks_not_priority(state):
+    _started(state)
+    _session(state)
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [
+        {"text": "Newest", "ticks": 300, "priority": "0"},
+        {"text": "Oldest", "ticks": 100, "priority": "9"},
+        {"text": "Middle", "ticks": 200, "priority": "1"},
+    ]})
+    assert _shown(state) == ["Oldest", "Middle", "Newest"]
+    assert all(set(a) == {"key", "text"} for a in state.snapshot()["announcements"])
+
+
+def test_an_unchanged_announcements_message_does_not_dirty_the_state(state):
+    _announce(state, ("Track clear", 100))
+    state.mark_clean()
+    assert _announce(state, ("Track clear", 100)) is None
+    assert not state.dirty
+
+
+def test_announcements_do_not_refresh_last_updated(state, monkeypatch):
+    import server.race_state as rs
+
+    stale = state.last_updated
+    monkeypatch.setattr(rs.time, "time", lambda: stale + 3600)
+    assert _announce(state, ("Track clear", 100)) == "announcements"
+    assert state.last_updated == stale
+
+
+@pytest.mark.parametrize("msg", [
+    {"run_id": "0x40002806"},
+    {"run_id": "0x40002806", "rows": "Track clear"},
+    {"run_id": "Race 7", "rows": []},
+    {"run_id": ["0x40002806"], "rows": []},
+    {"rows": [{"text": "Track clear", "ticks": 1}]},
+])
+def test_malformed_announcements_messages_are_ignored(state, msg):
+    assert state.process({"type": "announcements", **msg}) is None
+    assert state.announcements == {"run_id": "", "rows": []}
+
+
+def test_malformed_announcement_rows_are_dropped_or_coerced(state):
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [
+        "Track clear", {"text": ""}, {"ticks": 5}, {"text": 7},
+        {"text": "Kept", "ticks": "soon", "priority": 3},
+    ]})
+    assert state.announcements["rows"] == [{"text": "Kept", "ticks": 0, "priority": ""}]

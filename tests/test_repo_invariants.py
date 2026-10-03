@@ -693,3 +693,49 @@ def test_the_class_cell_shows_the_code_or_a_dash_never_the_description() -> None
     assert "class_codes_available" in page and "class_code_missing" in page, (
         "the page no longer reads the header count of entrants without a class code"
     )
+
+
+def test_announcement_text_is_rendered_with_textcontent_never_innerhtml() -> None:
+    """Guards the announcements stack: the timing operator types the text freely.
+
+    Anything typed into the timing host's announcements reaches every viewer's page, so
+    it must only ever be inserted as text. No test renders the template, so this guard
+    is textual: it pins the one function that draws the rows.
+    """
+    lines = (ROOT / "server" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    first, last = _js_block(lines, "function renderAnnouncements")
+    body = "\n".join(lines[first - 1 : last])
+    assert "textContent = a.text" in body, "announcement text must be set as textContent"
+    assert "innerHTML" not in body, "announcement text must never go through innerHTML"
+
+
+def test_announcements_are_announced_through_their_own_polite_live_region() -> None:
+    """Guards the user's decision that each new announcement is read once.
+
+    The visible stack scrolls a long row as a marquee, so it must not be a live region,
+    or a screen reader would read it again; a hidden polite region, present from first
+    paint, carries each new announcement instead.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    region = re.search(r'<div id="announce-region"[^>]*>', page)
+    assert region and 'aria-live="polite"' in region.group(0), (
+        "#announce-region must be a polite live region"
+    )
+    stack = re.search(r'<div id="announcements"[^>]*>', page)
+    assert stack and "aria-live" not in stack.group(0), (
+        "#announcements must not be a live region: a marquee pass would be read again"
+    )
+
+
+def test_the_page_never_reads_announcement_priority() -> None:
+    """Guards the user's decision that the priority is recorded but never used.
+
+    The relay forwards the priority raw and the server keeps it out of the payload, so
+    nothing on the page may filter, sort or style on it.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert not re.search(r"""\.priority\b|\[\s*['"]priority['"]""", page), (
+        "the page must never read an announcement's priority"
+    )
