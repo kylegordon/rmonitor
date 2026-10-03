@@ -2403,7 +2403,7 @@ def test_announcements_survive_init_and_reappear_with_the_sessions_run_record(st
     _session(state)
     _announce(state, ("Track clear", 100))
     state.process({"type": "init"})
-    assert state.announcements["rows"]
+    assert state.announcements["0x40002806"]
     assert _shown(state) == []
     _session(state)
     assert _shown(state) == ["Track clear"]
@@ -2446,7 +2446,7 @@ def test_announcements_do_not_refresh_last_updated(state, monkeypatch):
 ])
 def test_malformed_announcements_messages_are_ignored(state, msg):
     assert state.process({"type": "announcements", **msg}) is None
-    assert state.announcements == {"run_id": "", "rows": []}
+    assert state.announcements == {}
 
 
 def test_malformed_announcement_rows_are_dropped_or_coerced(state):
@@ -2454,7 +2454,7 @@ def test_malformed_announcement_rows_are_dropped_or_coerced(state):
         "Track clear", {"text": ""}, {"ticks": 5}, {"text": 7},
         {"text": "Kept", "ticks": "soon", "priority": 3},
     ]})
-    assert state.announcements["rows"] == [{"text": "Kept", "ticks": 0, "priority": ""}]
+    assert state.announcements["0x40002806"] == [{"text": "Kept", "ticks": 0, "priority": ""}]
 
 
 @pytest.mark.parametrize("closed_between", [False, True])
@@ -2590,3 +2590,39 @@ def test_retired_runs_expire_with_the_run_ttl():
         "Race 7": now, "0x40002804": "soon",
     }})
     assert restored._retired_runs == {"0x40002805": now - 3600}
+
+
+def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(state):
+    """The next run can start, and its rows arrive, before the current session ends."""
+    _started(state, run_id="0x40002805", name="Race 6")
+    _session(state, "Race 6", number="26")
+    _announce(state, ("Current", 100), run_id="0x40002805")
+    _started(state)
+    _announce(state, ("Next", 200))
+    assert _shown(state) == ["Current"]
+    _session(state)
+    assert _shown(state) == ["Next"]
+
+
+def test_a_run_restarted_under_a_retired_id_is_restored(state, monkeypatch):
+    """A restart under the same id is a new start: its refresh, dated after
+    the retirement, restores it; the old start's refresh does not."""
+    import json
+
+    import server.race_state as rs
+
+    _started(state)
+    _session(state)
+    _session(state, "Race 8 - Final", number="28")
+    later = time.time() + 3600
+    monkeypatch.setattr(rs.time, "time", lambda: later)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored, number="29")
+    old = {"type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
+           "rows": [{"text": "Track clear", "ticks": 1}], "run_age_seconds": 7200}
+    restored.process(old)
+    assert restored.class_code_run is None
+    restored.process(old | {"run_age_seconds": 5})
+    assert restored.class_code_run["run_id"] == "0x40002806"
+    assert _shown(restored) == ["Track clear"]

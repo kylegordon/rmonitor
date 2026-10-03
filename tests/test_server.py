@@ -438,7 +438,7 @@ async def test_announcements_ingest_is_not_feed_liveness(client, app):
     assert fs["last_ingest_at"] == stale
     state = app[race_state_key]
     assert "1" in state.competitors  # not reset
-    assert state.announcements["rows"][0]["text"] == "Track clear"
+    assert state.announcements["0x40002805"][0]["text"] == "Track clear"
 
 
 @pytest.mark.asyncio

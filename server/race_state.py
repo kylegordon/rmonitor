@@ -66,6 +66,9 @@ _CLASS_CODE_TTL_SECONDS = 12 * 3600
 # How often an announcements refresh renews its started run's date, at most;
 # each renewal makes the periodic save rewrite the class-code store.
 _RUN_RENEW_SECONDS = 3600
+# Runs whose announcements are kept: the current and the waiting one, with
+# room for a stop's clear arriving late.
+_MAX_ANNOUNCED_RUNS = 4
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
@@ -171,11 +174,11 @@ class RaceState:
         self.class_codes_revision = 0
         # The push scope last logged, so a change is logged once; see snapshot.
         self._logged_scope: str | None = None
-        # The timing host's announcements for one run; see _announcements.
-        # Not in reset(): $I is not a session signal (it is emitted
-        # inconsistently), and _shown_announcements hides the rows whenever
-        # their run is not the running session.
-        self.announcements: dict = {"run_id": "", "rows": []}
+        # The timing host's announcements, lowercased run id to its rows,
+        # the latest few runs; see _announcements.  Not in reset(): $I is not
+        # a session signal (it is emitted inconsistently), and
+        # _shown_announcements shows only the running session's run's rows.
+        self.announcements: dict[str, list[dict]] = {}
         self.reset()
 
     def reset(self):
@@ -710,9 +713,12 @@ class RaceState:
         """Store the timing host's announcements for one run.
 
         Every message is the relay's full truth for ``run_id``, read from a
-        fresh subscription, and replaces whatever was held; ``rows: []`` is
-        also how the relay clears them when the run stops — on every stop,
-        so empty rows for a run other than the one held are ignored.  A message whose
+        fresh subscription, and replaces what was held for that run.  Rows
+        are kept per run: the next run's start, and so its rows, can arrive
+        before the current session ends, and must not hide the current run's
+        rows early.  ``rows: []`` is also how the relay clears a run's rows
+        when it stops — on every stop, so empty rows for a run with none held
+        change nothing.  A message whose
         run id is not of the host's ``0x4000xxxx`` form, or whose rows are not
         a list, is ignored.  Each row keeps its text, its creation ``ticks``
         (0 when unusable) and its priority, forwarded raw; a row with no text
@@ -731,7 +737,7 @@ class RaceState:
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
         if not msg.get("stopped"):
-            self._restore_started_run(run_id, msg.get("name"))
+            self._restore_started_run(run_id, msg.get("name"), msg.get("run_age_seconds"))
             self._renew_started_run(run_id)
         rows = []
         for row in raw:
@@ -749,15 +755,14 @@ class RaceState:
                 "ticks": ticks,
                 "priority": priority if isinstance(priority, str) else "",
             })
-        if not rows and run_id.lower() != self.announcements["run_id"].lower():
-            # The relay clears on every stop, so this is another run's stop,
-            # and must not erase the rows of the run held.
-            return None
+        key = run_id.lower()
         rows.sort(key=lambda r: r["ticks"])
-        store = {"run_id": run_id, "rows": rows}
-        if store == self.announcements:
+        if self.announcements.get(key, []) == rows:
             return None
-        self.announcements = store
+        self.announcements.pop(key, None)
+        self.announcements[key] = rows
+        while len(self.announcements) > _MAX_ANNOUNCED_RUNS:
+            del self.announcements[next(iter(self.announcements))]
         self._dirty = True
         return "announcements"
 
@@ -770,7 +775,7 @@ class RaceState:
         self._retired_runs[run["run_id"].lower()] = now
         self.class_codes_revision += 1
 
-    def _restore_started_run(self, run_id: str, name) -> None:
+    def _restore_started_run(self, run_id: str, name, run_age) -> None:
         """Bind the relay's subscribed run *run_id* when no run is bound.
 
         A server that crashed after accepting a run's start but before saving
@@ -781,13 +786,24 @@ class RaceState:
         (the next ``$B`` binds that), *name* is the running session's
         description, and the session has not closed.  Never a run a session
         boundary discarded (``_retired_runs``): a same-named next session must
-        not take the old run back.
+        not take the old run back.  A run restarted under the same id is a new
+        start, though, so a retired id is restored when *run_age* — seconds
+        since the relay read the run's start — dates that start after the
+        retirement.
+
+        A known limitation, accepted: run names repeat, and the next run's
+        start can arrive before the current session ends.  If the server loses
+        both starts and the relay has already moved to that next run, a
+        refresh binds it to the current session under the same name — the
+        current session then shows the next run's announcements and scopes its
+        class codes to it, and the next run's own session, which retires it,
+        shows none.  After a restart nothing tells the two runs apart.
         """
         nxt = self.class_code_run_next
         if (
             self.class_code_run is not None
             or (nxt is not None and nxt["run_id"].lower() == run_id.lower())
-            or run_id.lower() in self._retired_runs
+            or self._retired_since_start(run_id, run_age)
             or not isinstance(name, str)
             or not name
             or name != self.run_description
@@ -801,6 +817,23 @@ class RaceState:
         }
         self.class_codes_revision += 1
         self._dirty = True
+
+    def _retired_since_start(self, run_id: str, run_age) -> bool:
+        """Whether *run_id* was retired after the start *run_age* seconds ago.
+
+        With no usable age the retirement stands.
+        """
+        retired_at = self._retired_runs.get(run_id.lower())
+        if retired_at is None:
+            return False
+        # _coerce_scalars has made it a string.
+        try:
+            age = float(run_age)
+        except (TypeError, ValueError):
+            return True
+        if not math.isfinite(age) or age < 0:
+            return True
+        return time.time() - age <= retired_at
 
     def _renew_started_run(self, run_id: str) -> None:
         """Re-date the held started run *run_id* as read now, at most hourly."""
@@ -841,10 +874,10 @@ class RaceState:
             or run.get("closed")
             or self._run_number == "95"
             or run["name"] != self.run_description
-            or run["run_id"].lower() != self.announcements["run_id"].lower()
         ):
             return []
-        return [{"key": str(r["ticks"]), "text": r["text"]} for r in self.announcements["rows"]]
+        rows = self.announcements.get(run["run_id"].lower(), [])
+        return [{"key": str(r["ticks"]), "text": r["text"]} for r in rows]
 
     def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:
         """Return the running run's id and the push tags in scope, or *None*.

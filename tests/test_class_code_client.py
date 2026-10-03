@@ -1625,6 +1625,8 @@ async def test_the_subscription_reply_rows_are_forwarded_as_announcements(monkey
     finally:
         await _finish(task)
     (msg,) = [c for c in calls if c["type"] == "announcements"]
+    age = msg.pop("run_age_seconds")
+    assert isinstance(age, float) and age >= 0
     assert msg == {"type": "announcements", "run_id": RUN_ID, "name": "Race 6 - AMENDED GRID", "rows": [{
         "text": "Track clear", "ticks": 5, "date": "03/10/2026", "time": "10:42:14",
         "type": "Official message", "priority": "0",

@@ -919,6 +919,7 @@ class ClassCodeClient:
         # both outlive a reconnect.
         self._ann_run: str | None = None
         self._ann_name = ""
+        self._ann_started = 0.0
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         self._keepalive = b""
@@ -1250,6 +1251,7 @@ class ClassCodeClient:
                 self._drop_announcement_views()
                 self._ann_run = run.run_id
             self._ann_name = run.name
+            self._ann_started = time.monotonic()
             # The reply holds the rows that already exist.
             self._ann_due = asyncio.get_running_loop().time()
         for frame in self._ann_parser.feed(data):
@@ -1276,6 +1278,7 @@ class ClassCodeClient:
                 self._queue_announcement({
                     "type": "announcements", "run_id": self._ann_run,
                     "name": self._ann_name, "rows": frame.rows,
+                    "_started": self._ann_started,
                 })
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
@@ -1435,9 +1438,16 @@ class ClassCodeClient:
         self._announcements[msg["run_id"]] = msg
 
     async def _deliver_announcement(self, msg: dict) -> bool:
-        """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""
+        """Hand the announcements *msg* to *on_batch*; return whether it was delivered.
+
+        A reply carries ``run_age_seconds``, the time since its run's start
+        was read, measured now so a delayed retry is dated correctly.
+        """
+        out = {k: v for k, v in msg.items() if k != "_started"}
+        if "_started" in msg:
+            out["run_age_seconds"] = round(time.monotonic() - msg["_started"], 3)
         try:
-            await self.on_batch(msg)
+            await self.on_batch(out)
         except Exception:
             log.exception("Could not forward the announcements for run %s", msg["run_id"])
             return False
