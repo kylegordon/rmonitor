@@ -1273,7 +1273,18 @@ class ClassCodeClient:
                     self._ann_due = None
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
+            picked = (
+                not self._seen_start
+                and self._ann_run is not None
+                and self._ann_run.lower() == run.run_id.lower()
+            )
             self._seen_start = True
+            if picked:
+                # The run picked by name has started: the server ignores a
+                # repeat of the run it holds, so the pick's start key and
+                # subscription stand, and refreshes keep naming its start.
+                self._ann_name = run.name
+                continue
             self._take_run(run.run_id, run.name)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)

@@ -2025,9 +2025,9 @@ def _runs_sent(calls):
     return [c for c in calls if c["type"] == "class_code_run"]
 
 
-def _lowercase_stop(name, run_id) -> bytes:
-    """A stopped notice whose id is lower-case hex, which the regex accepts."""
-    text = f"Run '{name}' [0x{run_id:08x}] is stopped - Event 'Test Meeting'".encode()
+def _lowercase_stop(name, run_id, state="stopped") -> bytes:
+    """A run-state notice whose id is lower-case hex, which the regex accepts."""
+    text = f"Run '{name}' [0x{run_id:08x}] is {state} - Event 'Test Meeting'".encode()
     return (
         struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(text)) + text
         + b"d" + struct.pack("<I", run_id)
@@ -2217,3 +2217,29 @@ async def test_a_pick_ended_while_its_failed_delivery_was_in_flight_is_not_retri
         await _finish(task)
     assert attempts == [PICKED_ID]
     assert client._run is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lowercase", [False, True])
+async def test_the_picked_run_starting_keeps_the_picks_start(monkeypatch, lowercase):
+    """A session's $B can pick its run before the start notice arrives; that
+    start must not mint a second key the server never holds."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        host.queue.append(
+            _lowercase_stop(PICK_NAME, 0x4000280A, "started") if lowercase
+            else _run_state(PICK_NAME, 0x4000280A, "started")
+        )
+        await _until(lambda: client._seen_start)
+        # Picking has ended with the real start.
+        client.note_session("6", "Race 1 - Qualifying")
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert client._ann_start_key == run["start_key"]
+    assert client._ann_run == PICKED_ID
+    assert len(_view_opens(writer)) == 1
