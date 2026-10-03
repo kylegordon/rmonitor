@@ -2,7 +2,10 @@
 
 Every byte here is synthetic: the handshake constants are checked for being
 scrubbed, and push records are built in-test from invented names, numbers and
-codes — never from a capture.
+codes — never from a capture.  The one exception is the Announcements view:
+its records and frames are captured layouts, kept byte for byte because the
+layout is the thing under test, with every identity slot zeroed and only an
+operator's test text in them.
 """
 
 import asyncio
@@ -58,6 +61,7 @@ def test_constants_have_the_captured_lengths():
     assert len(ccc.KEEPALIVE) == 63
     assert len(ccc.RECORD_3) == 63
     assert len(ccc.RECORD_4) == 130
+    assert len(ccc.VIEW_HEADER) == 59
 
 
 def test_every_identity_and_session_slot_in_the_constants_is_zero():
@@ -70,6 +74,7 @@ def test_every_identity_and_session_slot_in_the_constants_is_zero():
         (ccc.RECORD_3, ccc.RECORD_3_ANCHORS, ccc.RECORD_3_TOKENS),
         (ccc.RECORD_4, ccc.RECORD_4_ANCHORS, ccc.RECORD_4_TOKENS),
         (ccc.KEEPALIVE, ccc.KEEPALIVE_ANCHORS, ccc.KEEPALIVE_TOKENS),
+        (ccc.VIEW_HEADER, ccc.VIEW_ANCHORS, ccc.VIEW_TOKENS),
     ):
         for a in anchors:
             assert rec[a:a + 10] == bytes(10)
@@ -1338,3 +1343,459 @@ async def test_a_run_stopped_while_the_preload_is_delivered_is_not_forwarded(mon
         await _finish(task)
     assert calls == ["class_code_preload"]
     assert client._run is None
+
+
+# ---------------------------------------------------------------------------
+# Announcements: view records and frames
+# ---------------------------------------------------------------------------
+
+SESSION = {"token": TOKEN, "handle": HANDLE, "unit": UNIT}
+
+
+def _with_identity(rec: bytes) -> bytes:
+    """Return a captured view record, its identity zeroed, with the test's written in."""
+    out = bytearray(rec)
+    out[4:6] = HANDLE
+    out[8:14] = UNIT
+    out[22:28] = TOKEN
+    return bytes(out)
+
+
+# A subscribe record the timing console sent (view 1, the qualifying results)
+# and a close it sent for view 3, identity zeroed.
+CONSOLE_VIEW_OPEN = bytes.fromhex(
+    "2180050000000000000000000000000006012000000000000000000000000100"
+    "0f0500000000000000000000000000000000000000000000000000"
+    "89000000" "150000006c67566965775f5175616c696679526573756c7473" "01000000" "04000000"
+    "130000004c69766553656374696f6e446563696d616c73" "0100000031"
+    "0f00000053656374696f6e446563696d616c73" "0100000033"
+    "0d0000005370656564446563696d616c73" "0100000031"
+    "08000000556e697175654944" "0a00000034323934393637323935" "00000000"
+)
+CONSOLE_VIEW_CLOSE = bytes.fromhex(
+    "2280050000000000000000000000000006012000000000000000000000000100"
+    "0f0500000000000000000000000000000000000000000000000000"
+    "10000000" "00000000" "03000000" "00000000" "00000000"
+)
+
+# The header of a frame the host sends on an Announcements view, identity
+# zeroed; the opcode goes in front.
+_ANN_HEADER = bytes.fromhex(
+    "060120000000" "000000000000" "0000" "0500" "0000" "0000" "000000000000" "000001000f05"
+) + bytes(25)
+
+# Captured frames: the reply to view 42's subscribe holding "Test 4", the
+# push of an edit to "Test 5 edited" sent to view 105, and the reply to
+# view 43's subscribe after "Test 4" was deleted.
+ANN_REPLY_TEST_4 = bytes.fromhex("2480") + _ANN_HEADER + bytes.fromhex(
+    "a00000002a00000001000000000000000d000000416e6e6f756e63656d656e74730d000000"
+    "416e6e6f756e63656d656e7473010000000100000000000000ffff600000000100000000"
+    "01000000310c8ac276ec5c0600000a00000030332f31302f323032360c8ac276ec5c0600"
+    "000800000031303a34323a3134100000004f6666696369616c206d657373616765000600"
+    "00005465737420340000000000000100000030"
+)
+ANN_MODIFIED_TEST_5 = bytes.fromhex("2680") + _ANN_HEADER + bytes.fromhex(
+    "a70000006900000001000000000000000d000000416e6e6f756e63656d656e74730d000000"
+    "416e6e6f756e63656d656e7473010000000200000000000000ffff670000000200000000"
+    "0100000032680f0e87ec5c0600000a00000030332f31302f32303236680f0e87ec5c0600"
+    "000800000031303a34363a3438100000004f6666696369616c206d657373616765000d00"
+    "0000546573742035206564697465640000000000000100000030"
+)
+ANN_EMPTY_REPLY = bytes.fromhex("2480") + _ANN_HEADER + bytes.fromhex(
+    "320000002b00000001000000000000000d000000416e6e6f756e63656d656e74730d000000"
+    "416e6e6f756e63656d656e747300000000"
+)
+TEST_4_ROW = {
+    "text": "Test 4", "ticks": 1791020534761996, "date": "03/10/2026",
+    "time": "10:42:14", "type": "Official message", "priority": "0",
+}
+
+
+def _ann_row(index, text, ticks, *, date="03/10/2026", time="10:42:14", priority="0"):
+    stamp = struct.pack("<Q", ticks) + b"\x00"
+    return (
+        struct.pack("<I", index) + b"\x00" + _s(str(index))
+        + stamp + _s(date) + stamp + _s(time)
+        + _s("Official message") + b"\x00" + _s(text) + bytes(6) + _s(priority)
+    )
+
+
+def _ann_frame(opcode, view_id, rows=(), *, count=None):
+    """One Announcements frame in the captured layout.
+
+    *rows* are ``(text, ticks)`` pairs, concatenated: the bytes between two
+    rows have never been captured.  *count* overrides the row count.
+    """
+    body = b"".join(_ann_row(i + 1, text, ticks) for i, (text, ticks) in enumerate(rows))
+    block = struct.pack("<III", view_id, 1, 0) + _s("Announcements") * 2
+    block += struct.pack("<I", len(rows) if count is None else count)
+    if rows:
+        block += struct.pack("<II", len(rows), 0) + b"\xff\xff"
+        block += struct.pack("<I", len(body)) + body
+    return opcode + _ANN_HEADER + struct.pack("<I", len(block)) + block
+
+
+def test_ann_frame_helper_builds_the_captured_layout():
+    assert len(b"\x24\x80" + _ANN_HEADER) == 59
+    assert _ann_frame(b"\x24\x80", 42, [("Test 4", TEST_4_ROW["ticks"])]) == ANN_REPLY_TEST_4
+    assert _ann_frame(b"\x24\x80", 43) == ANN_EMPTY_REPLY
+
+
+def test_view_open_rebuilds_the_captured_console_record():
+    rec = ccc.build_view_open(
+        SESSION, view_id=1, name="lgView_QualifyResults",
+        params=[("LiveSectionDecimals", "1"), ("SectionDecimals", "3"),
+                ("SpeedDecimals", "1"), ("UniqueID", "4294967295")],
+    )
+    assert len(rec) == 200
+    assert rec == _with_identity(CONSOLE_VIEW_OPEN)
+
+
+def test_view_close_rebuilds_the_captured_console_record():
+    rec = ccc.build_view_close(SESSION, view_id=3)
+    assert len(rec) == 79
+    assert rec == _with_identity(CONSOLE_VIEW_CLOSE)
+
+
+def test_announcement_parser_reads_a_reply_with_one_row():
+    frames = ccc.AnnouncementParser().feed(bytes(100) + ANN_REPLY_TEST_4 + bytes(10))
+    assert frames == [ccc.AnnouncementFrame("reply", 42, [TEST_4_ROW])]
+
+
+def test_announcement_parser_reads_an_empty_reply():
+    assert ccc.AnnouncementParser().feed(ANN_EMPTY_REPLY) == [
+        ccc.AnnouncementFrame("reply", 43, []),
+    ]
+
+
+def test_announcement_parser_reads_two_rows_in_order():
+    data = _ann_frame(b"\x24\x80", 7, [("First", 100), ("Second", 200)])
+    (frame,) = ccc.AnnouncementParser().feed(data)
+    assert [(r["text"], r["ticks"]) for r in frame.rows] == [("First", 100), ("Second", 200)]
+
+
+def test_announcement_parser_reads_text_longer_than_a_registry_string():
+    text = "Long announcement " * 40
+    (frame,) = ccc.AnnouncementParser().feed(_ann_frame(b"\x24\x80", 7, [(text, 1)]))
+    assert frame.rows[0]["text"] == text
+
+
+def test_announcement_parser_classifies_pushes_by_opcode():
+    row = [("Test 4", TEST_4_ROW["ticks"])]
+    data = (
+        _ann_frame(b"\x25\x80", 105, row) + ANN_MODIFIED_TEST_5
+        + _ann_frame(b"\x27\x80", 105, row) + _ann_frame(b"\x99\x80", 105, row)
+    )
+    assert ccc.AnnouncementParser().feed(data) == [
+        ccc.AnnouncementFrame("added", 105, None),
+        ccc.AnnouncementFrame("modified", 105, None),
+        ccc.AnnouncementFrame("deleted", 105, None),
+        ccc.AnnouncementFrame("changed", 105, None),
+    ]
+
+
+def test_announcement_parser_withholds_a_reply_whose_row_count_disagrees(caplog):
+    data = _ann_frame(b"\x24\x80", 9, [("Test 4", 1)], count=2)
+    assert ccc.AnnouncementParser().feed(data) == [ccc.AnnouncementFrame("reply", 9, None)]
+    assert "withheld" in caplog.text
+
+
+def test_announcement_parser_joins_a_frame_split_across_reads():
+    parser = ccc.AnnouncementParser()
+    data = bytes(30) + ANN_REPLY_TEST_4
+    out = []
+    for i in range(0, len(data), 7):
+        out += parser.feed(data[i:i + 7])
+    assert out == [ccc.AnnouncementFrame("reply", 42, [TEST_4_ROW])]
+
+
+def test_announcement_parser_ignores_the_column_definition_frame():
+    """The host's ``21 80`` frame defines the view's columns and carries no
+    title pair, so it is never taken for a frame."""
+    data = b"\x21\x80" + _ANN_HEADER + struct.pack("<I", 40) + _s("lgHeader_Announcement") + bytes(15)
+    assert ccc.AnnouncementParser().feed(data) == []
+
+
+# ---------------------------------------------------------------------------
+# Announcements: the subscription loop
+# ---------------------------------------------------------------------------
+
+RUN_ID = "0x40002805"
+RUN_DECIMAL = "1073752069"
+ANN_FAST = {**FAST, "announce_resubscribe_delay": 0.02, "announce_refresh_interval": 10.0}
+
+
+class ViewHost:
+    """A host that sends its identity frame, then answers every view open.
+
+    Each open written is answered with a ``24 80`` reply on that view
+    holding the current *rows*, ``(text, ticks)`` pairs.  Bytes appended to
+    *queue* are sent as they come; a queued ``b""`` is EOF.
+    """
+
+    def __init__(self, writer, rows=()):
+        self._writer = writer
+        self.rows = list(rows)
+        self.queue = []
+        self._identified = False
+        self._answered = 0
+
+    async def read(self, n):
+        while True:
+            if not self._identified and self._writer.writes:
+                self._identified = True
+                return IDENT_FRAME
+            opens = _view_opens(self._writer)
+            if self._identified and len(opens) > self._answered:
+                view_id = opens[self._answered][0]
+                self._answered += 1
+                return _ann_frame(b"\x24\x80", view_id, self.rows)
+            if self.queue:
+                return self.queue.pop(0)
+            await asyncio.sleep(0.002)
+
+
+def _view_opens(writer):
+    """Return ``(view id, UniqueID)`` for every view open written."""
+    out = []
+    for w in writer.writes:
+        if w[:2] == b"\x21\x80":
+            (n,) = struct.unpack_from("<I", w, 63)
+            (view_id,) = struct.unpack_from("<I", w, 67 + n)
+            (k,) = struct.unpack_from("<I", w, 75 + n)
+            (v,) = struct.unpack_from("<I", w, 79 + n + k)
+            out.append((view_id, w[83 + n + k:83 + n + k + v].decode()))
+    return out
+
+
+def _view_closes(writer):
+    return [struct.unpack_from("<I", w, 67)[0] for w in writer.writes if w[:2] == b"\x22\x80"]
+
+
+def _announcements(calls):
+    return [[r["text"] for r in c["rows"]] for c in calls if c["type"] == "announcements"]
+
+
+async def _running(monkeypatch, host_rows=(), *, on_batch=None, connections=None, **knobs):
+    """Start a client against a :class:`ViewHost`.
+
+    Returns ``(task, host, writer, calls, client)`` for the first connection.
+    """
+    if connections is None:
+        writer = FakeWriter()
+        connections = [(ViewHost(writer, host_rows), writer)]
+    host, writer = connections[0]
+    _harness(monkeypatch, connections, stop_after=knobs.pop("stop_after", 1))
+    calls = []
+    if on_batch is None:
+        async def on_batch(msg):
+            calls.append(msg)
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**ANN_FAST, **knobs})
+    task = asyncio.ensure_future(client.run())
+    await _until(lambda: host._identified)
+    return task, host, writer, calls, client
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_subscribes_its_announcements_with_the_decimal_run_id(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _view_opens(writer))
+    finally:
+        await _finish(task)
+    (rec,) = [w for w in writer.writes if w[:2] == b"\x21\x80"]
+    assert rec == ccc.build_view_open(
+        SESSION, view_id=1, name="lgView_Announcements", params=[("UniqueID", RUN_DECIMAL)]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_subscription_reply_rows_are_forwarded_as_announcements(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+    finally:
+        await _finish(task)
+    (msg,) = [c for c in calls if c["type"] == "announcements"]
+    assert msg == {"type": "announcements", "run_id": RUN_ID, "rows": [{
+        "text": "Track clear", "ticks": 5, "date": "03/10/2026", "time": "10:42:14",
+        "type": "Official message", "priority": "0",
+    }]}
+    # The run goes first, so the server holds the run binding.
+    assert [c["type"] for c in calls] == ["class_code_run", "announcements"]
+
+
+@pytest.mark.asyncio
+async def test_a_delete_push_triggers_a_resubscribe_whose_reply_is_the_truth(monkeypatch):
+    """The delete push still carries the deleted row, so it is never read as
+    the table; a fresh subscription's reply is."""
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.rows = []
+        host.queue.append(_ann_frame(b"\x27\x80", 1, [("Track clear", 5)]))
+        await _until(lambda: len(_announcements(calls)) >= 2)
+        await _until(lambda: _view_closes(writer))
+    finally:
+        await _finish(task)
+    assert _announcements(calls) == [["Track clear"], []]
+    assert [v for v, _ in _view_opens(writer)] == [1, 2]
+    assert _view_closes(writer) == [1]
+
+
+@pytest.mark.asyncio
+async def test_the_reply_to_a_resubscribe_does_not_trigger_another(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.queue.append(_ann_frame(b"\x25\x80", 1, [("Track clear", 5)]))
+        await _until(lambda: len(_view_opens(writer)) >= 2)
+        await asyncio.sleep(0.3)
+    finally:
+        await _finish(task)
+    assert len(_view_opens(writer)) == 2
+
+
+@pytest.mark.asyncio
+async def test_pushes_to_a_view_no_longer_held_are_ignored(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.queue.append(_ann_frame(b"\x25\x80", 99, [("Track clear", 5)]))
+        await asyncio.sleep(0.2)
+    finally:
+        await _finish(task)
+    assert len(_view_opens(writer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_forwards_empty_announcements_and_closes_its_view(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.queue.append(_run_state(state="stopped"))
+        await _until(lambda: len(_announcements(calls)) >= 2)
+        await _until(lambda: _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _announcements(calls) == [["Track clear"], []]
+    assert calls[-1]["run_id"] == RUN_ID
+    assert _view_closes(writer) == [1]
+    assert len(_view_opens(writer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_closes_the_previous_runs_view(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.queue.append(_run_state("Race 7", run_id=0x40002806))
+        await _until(lambda: len(_announcements(calls)) >= 2)
+    finally:
+        await _finish(task)
+    assert _view_opens(writer) == [(1, RUN_DECIMAL), (2, "1073752070")]
+    assert _view_closes(writer) == [1]
+    assert [c["run_id"] for c in calls if c["type"] == "announcements"] == [
+        RUN_ID, "0x40002806",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_resubscribes_the_remembered_run(monkeypatch):
+    first, second = FakeWriter(), FakeWriter()
+    host1, host2 = ViewHost(first, [("Track clear", 5)]), ViewHost(second, [("Track clear", 5)])
+    task, _, _, calls, _ = await _running(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        host1.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host1.queue.append(b"")
+        await _until(lambda: _view_opens(second))
+        await _until(lambda: len(_announcements(calls)) >= 2)
+    finally:
+        await _finish(task)
+    assert _view_opens(second) == [(1, RUN_DECIMAL)]
+    assert _announcements(calls) == [["Track clear"], ["Track clear"]]
+
+
+@pytest.mark.asyncio
+async def test_announcements_are_refreshed_after_the_refresh_interval(monkeypatch):
+    task, host, writer, calls, _ = await _running(
+        monkeypatch, [("Track clear", 5)], announce_refresh_interval=0.15,
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: len(_announcements(calls)) >= 3)
+    finally:
+        await _finish(task)
+    assert [v for v, _ in _view_opens(writer)][:3] == [1, 2, 3]
+    assert _view_closes(writer)[:2] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_subscription_is_sent_again_on_a_new_view(monkeypatch):
+    writer = FakeWriter()
+
+    class SilentHost(ViewHost):
+        async def read(self, n):
+            if not self._identified and self._writer.writes:
+                self._identified = True
+                return IDENT_FRAME
+            while not self.queue:
+                await asyncio.sleep(0.002)
+            return self.queue.pop(0)
+
+    host = SilentHost(writer)
+    task, _, _, calls, _ = await _running(
+        monkeypatch, connections=[(host, writer)], announce_reply_timeout=0.1,
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: len(_view_opens(writer)) >= 2)
+    finally:
+        await _finish(task)
+    assert [v for v, _ in _view_opens(writer)][:2] == [1, 2]
+    assert _view_closes(writer)[:1] == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer", [False, True])
+async def test_a_failed_announcements_delivery_is_retried_and_a_newer_one_replaces_it(
+    monkeypatch, newer
+):
+    attempts = []
+    host_ref = []
+
+    async def on_batch(msg):
+        if msg["type"] != "announcements":
+            return
+        attempts.append([r["text"] for r in msg["rows"]])
+        if len(attempts) == 1:
+            if newer:
+                host = host_ref[0]
+                host.rows = [("Second", 6)]
+                host.queue.append(_ann_frame(b"\x25\x80", 1, [("Second", 6)]))
+                await asyncio.sleep(0.1)  # the hold loop resubscribes meanwhile
+            raise ConnectionError("server unreachable")
+
+    task, host, writer, _, _ = await _running(
+        monkeypatch, [("First", 5)], on_batch=on_batch,
+        retry_initial=0.05, keepalive_interval=0.05,
+    )
+    host_ref.append(host)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: len(attempts) >= 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert attempts == ([["First"], ["Second"]] if newer else [["First"], ["First"]])
