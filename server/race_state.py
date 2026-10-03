@@ -161,6 +161,9 @@ class RaceState:
         # since and waits for its own $B (see _run).
         self.class_code_run: dict | None = None
         self.class_code_run_next: dict | None = None
+        # Whether a started run has been held since this process started; see
+        # _restore_started_run.
+        self._held_a_run = False
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
@@ -695,6 +698,7 @@ class RaceState:
         self.class_code_run_next = {
             "run_id": run_id, "name": name, "received_at": time.time() - age,
         }
+        self._held_a_run = True
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
@@ -724,6 +728,7 @@ class RaceState:
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
         if not msg.get("stopped"):
+            self._restore_started_run(run_id, msg.get("name"))
             self._renew_started_run(run_id)
         rows = []
         for row in raw:
@@ -752,6 +757,35 @@ class RaceState:
         self.announcements = store
         self._dirty = True
         return "announcements"
+
+    def _restore_started_run(self, run_id: str, name) -> None:
+        """Bind the relay's subscribed run *run_id* if this process never held one.
+
+        A server that crashed after accepting a run's start but before saving
+        it has lost the binding, and the relay does not send the start again,
+        so its announcements would stay hidden all session.  It is restored
+        only while no started run has been held since this process started —
+        never after :meth:`_run` discarded one at a session boundary, so a
+        same-named next session does not take the old run back — and only
+        while *name* is the running session's description and the session
+        has not closed.
+        """
+        if (
+            self._held_a_run
+            or not isinstance(name, str)
+            or not name
+            or name != self.run_description
+            or self._run_number in ("", "95")
+        ):
+            return
+        log.info("Restoring started run %s %r from its announcements", run_id, name)
+        self.class_code_run = {
+            "run_id": run_id, "name": name, "received_at": time.time(),
+            "session_number": self._run_number,
+        }
+        self._held_a_run = True
+        self.class_codes_revision += 1
+        self._dirty = True
 
     def _renew_started_run(self, run_id: str) -> None:
         """Re-date the held started run *run_id* as read now, at most hourly."""
@@ -1362,6 +1396,8 @@ class RaceState:
         runs = data if isinstance(data, dict) else {}
         self.class_code_run = _restore_run(runs.get("run"), now)
         self.class_code_run_next = _restore_run(runs.get("run_next"), now)
+        if self.class_code_run is not None or self.class_code_run_next is not None:
+            self._held_a_run = True
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.

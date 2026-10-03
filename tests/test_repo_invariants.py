@@ -784,3 +784,11 @@ def test_the_announcement_scroll_region_is_keyboard_reachable_and_named() -> Non
     assert 'tabindex="0"' in rows.group(0) and "aria-label=" in rows.group(0), (
         "the scrolling announcements region must be focusable and named"
     )
+
+
+def test_the_announcement_layout_follows_a_reduced_motion_change() -> None:
+    """Turning reduced motion on wraps long rows and grows the stack without a
+    resize, so the stack's height the page pads for must be recomputed."""
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "matchMedia('(prefers-reduced-motion: reduce)')" in page
+    assert "addEventListener('change', onMotionChange)" in page

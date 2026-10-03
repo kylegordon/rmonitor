@@ -1625,7 +1625,7 @@ async def test_the_subscription_reply_rows_are_forwarded_as_announcements(monkey
     finally:
         await _finish(task)
     (msg,) = [c for c in calls if c["type"] == "announcements"]
-    assert msg == {"type": "announcements", "run_id": RUN_ID, "rows": [{
+    assert msg == {"type": "announcements", "run_id": RUN_ID, "name": "Race 6 - AMENDED GRID", "rows": [{
         "text": "Track clear", "ticks": 5, "date": "03/10/2026", "time": "10:42:14",
         "type": "Official message", "priority": "0",
     }]}
@@ -1904,3 +1904,31 @@ async def test_a_failed_delivery_of_an_earlier_runs_rows_is_not_retried_over_a_n
     finally:
         await _finish(task)
     assert delivered == [("0x40002806", ["New"])]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_awaited_when_a_change_was_pushed_is_withheld(monkeypatch):
+    """A delete pushed before the subscription's reply: that reply may still
+    hold the deleted row, so only the follow-up subscription's is forwarded."""
+    writer = FakeWriter()
+
+    class PushFirstHost(ViewHost):
+        async def read(self, n):
+            if self._identified and self._answered == 0 and _view_opens(self._writer):
+                view_id = _view_opens(self._writer)[0][0]
+                self._answered = 1
+                stale = _ann_frame(b"\x24\x80", view_id, self.rows)
+                self.rows = []
+                return _ann_frame(b"\x27\x80", view_id, [("Withdrawn", 5)]) + stale
+            return await super().read(n)
+
+    host = PushFirstHost(writer, [("Withdrawn", 5)])
+    task, _, _, calls, _ = await _running(monkeypatch, connections=[(host, writer)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _announcements(calls) == [[]]
+    assert [v for v, _ in _view_opens(writer)] == [1, 2]

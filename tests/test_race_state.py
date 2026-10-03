@@ -2512,3 +2512,37 @@ def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
     monkeypatch.setattr(rs.time, "time", lambda: t0 + 2 * 3600)
     state.process({"type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True})
     assert state.class_code_run["received_at"] == t0
+
+
+def _refresh(state, *rows, name="Race 7 - 2nd Race"):
+    return state.process({"type": "announcements", "run_id": "0x40002806", "name": name, "rows": [
+        {"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows
+    ]})
+
+
+def test_a_server_that_lost_the_started_run_restores_it_from_a_refresh(state):
+    """A crash after the start was accepted but before it was saved: the relay
+    never sends the start again, so its refresh restores the binding."""
+    _session(state)
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run["run_id"] == "0x40002806"
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state):
+    _started(state)
+    _session(state)
+    _refresh(state, ("Track clear", 100))
+    _session(state, number="28")
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run is None
+    assert _shown(state) == []
+
+
+@pytest.mark.parametrize("closing", [False, True])
+def test_a_refresh_restores_nothing_for_another_session_or_a_closed_one(state, closing):
+    _session(state, "Race 8 - Final", number="28")
+    if closing:
+        _closing(state, "Race 7 - 2nd Race")
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run is None

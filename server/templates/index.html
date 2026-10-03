@@ -569,6 +569,12 @@
     }
 
     window.addEventListener('resize', layoutAnnouncements);
+    // Turning reduced motion on or off wraps or unwraps long rows without a
+    // resize, and the stack's height with them.
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onMotionChange = () => { layoutAnnouncements(); scrollToNewestAnnouncement(); };
+    if (reducedMotion.addEventListener) reducedMotion.addEventListener('change', onMotionChange);
+    else reducedMotion.addListener(onMotionChange);
     announceMotionEl.addEventListener('click', () => {
       announcementsStill = !announcementsStill;
       try {

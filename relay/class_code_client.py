@@ -918,6 +918,7 @@ class ClassCodeClient:
         # messages not yet delivered — the latest per run, oldest first;
         # both outlive a reconnect.
         self._ann_run: str | None = None
+        self._ann_name = ""
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         self._keepalive = b""
@@ -1248,6 +1249,7 @@ class ClassCodeClient:
             if run.run_id != self._ann_run:
                 self._drop_announcement_views()
                 self._ann_run = run.run_id
+            self._ann_name = run.name
             # The reply holds the rows that already exist.
             self._ann_due = asyncio.get_running_loop().time()
         for frame in self._ann_parser.feed(data):
@@ -1261,13 +1263,20 @@ class ClassCodeClient:
         if frame.kind == "reply":
             if frame.view_id != pending:
                 return
-            if frame.rows is not None:
+            if self._ann_stale:
+                # A change was pushed while this reply was awaited, so it may
+                # predate the change; the follow-up subscription's reply is
+                # forwarded instead.
+                log.debug("Withholding a reply that may predate a pushed change")
+            elif frame.rows is not None:
                 log.info(
                     "Announcements for run %s: %d rows", self._ann_run, len(frame.rows)
                 )
-                self._queue_announcement(
-                    {"type": "announcements", "run_id": self._ann_run, "rows": frame.rows}
-                )
+                # The name lets a server that lost the started run restore it.
+                self._queue_announcement({
+                    "type": "announcements", "run_id": self._ann_run,
+                    "name": self._ann_name, "rows": frame.rows,
+                })
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
             if self._ann_view is not None:
