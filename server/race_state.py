@@ -698,7 +698,11 @@ class RaceState:
         ):
             return None
         # A relay retries a delivery whose answer it lost, so a repeat of a
-        # run already held changes nothing; one that closed is a restart.
+        # run already held changes nothing; one that closed is a restart.  A
+        # start a session boundary retired is never taken back, or its old
+        # rows would show again for a same-named next session.
+        if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
+            return None
         for held in (self.class_code_run, self.class_code_run_next):
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
                 return None
@@ -731,16 +735,21 @@ class RaceState:
         nothing reads.  An unchanged message returns *None*, so the relay's
         periodic refresh broadcasts nothing.
 
-        A message not marked ``stopped`` comes from a subscription to a run
-        the relay holds as started, so it renews that run's date when it is
-        the started run held here (:meth:`_renew_started_run`): a session
+        A message not marked ``stopped`` or ``superseded`` comes from a
+        subscription to the run the relay holds as started, so it may restore
+        that run (:meth:`_restore_started_run`) and renews its date when it
+        is the started run held here (:meth:`_renew_started_run`): a session
         running past :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so
-        its announcements, while the relay still refreshes it.
+        its announcements, while the relay still refreshes it.  A message
+        from a start a session boundary retired is ignored outright, so a
+        late one never touches a restart of the same run.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
-        if not msg.get("stopped"):
+        if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
+            return None
+        if not msg.get("stopped") and not msg.get("superseded"):
             self._restore_started_run(run_id, msg.get("name"), msg.get("start_key"))
             self._renew_started_run(run_id)
         rows = []
@@ -764,7 +773,10 @@ class RaceState:
         if self.announcements.get(key, []) == rows:
             return None
         self.announcements.pop(key, None)
-        self.announcements[key] = rows
+        # A run with none is not kept, so clears never crowd a run with rows
+        # out of the capped store.
+        if rows:
+            self.announcements[key] = rows
         while len(self.announcements) > _MAX_ANNOUNCED_RUNS:
             del self.announcements[next(iter(self.announcements))]
         self._dirty = True

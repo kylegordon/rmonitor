@@ -1823,7 +1823,8 @@ async def test_a_stop_clears_announcements_this_process_never_forwarded(monkeypa
     finally:
         await _finish(task)
     assert [c for c in calls if c["type"] == "announcements"] == [
-        {"type": "announcements", "run_id": RUN_ID, "rows": [], "stopped": True},
+        {"type": "announcements", "run_id": RUN_ID, "rows": [], "stopped": True,
+         "start_key": ""},
     ]
 
 
@@ -1879,10 +1880,10 @@ async def test_a_failed_clear_is_retried_beside_another_runs_clear(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_delivery_of_an_earlier_runs_rows_is_not_retried_over_a_newer_run(
+async def test_a_failed_delivery_of_an_earlier_runs_rows_is_retried_marked_superseded(
     monkeypatch
 ):
-    """The server holds one run's rows; a retry of the old run's would hide the new one's."""
+    """The server keeps rows per run, so the old run's still go — marked."""
     delivered = []
     host_ref = []
 
@@ -1895,7 +1896,9 @@ async def test_a_failed_delivery_of_an_earlier_runs_rows_is_not_retried_over_a_n
             host.queue.append(_run_state("Race 7", run_id=0x40002806))
             await asyncio.sleep(0.1)  # the hold loop subscribes the new run meanwhile
             raise ConnectionError("server unreachable")
-        delivered.append((msg["run_id"], [r["text"] for r in msg["rows"]]))
+        delivered.append(
+            (msg["run_id"], [r["text"] for r in msg["rows"]], bool(msg.get("superseded")))
+        )
 
     task, host, writer, _, _ = await _running(
         monkeypatch, [("Old", 5)], on_batch=on_batch,
@@ -1908,7 +1911,10 @@ async def test_a_failed_delivery_of_an_earlier_runs_rows_is_not_retried_over_a_n
         await asyncio.sleep(0.3)
     finally:
         await _finish(task)
-    assert delivered == [("0x40002806", ["New"])]
+    # The earlier run's rows still reach the server — it can be the one shown
+    # until the boundary — but marked, so they never restore or renew it.
+    assert ("0x40002806", ["New"], False) in delivered
+    assert (RUN_ID, ["Old"], True) in delivered
 
 
 @pytest.mark.asyncio

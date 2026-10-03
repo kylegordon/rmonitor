@@ -1241,6 +1241,9 @@ class ClassCodeClient:
                 self._queue_announcement({
                     "type": "announcements", "run_id": run.run_id, "rows": [],
                     "stopped": True,
+                    # So a late clear of a retired start never clears a
+                    # restart of the same run.
+                    "start_key": self._ann_start_key if run.run_id == self._ann_run else "",
                 })
                 if run.run_id == self._ann_run:
                     self._drop_announcement_views()
@@ -1320,12 +1323,11 @@ class ClassCodeClient:
         kept: dict[str, dict] = {}
         for run_id, msg in announcements.items():
             if not msg.get("stopped") and run_id != self._ann_run:
-                # A reply for a run no longer subscribed, even an empty one:
-                # delivered now, it would replace the newer run's rows in the
-                # server's one store, or restore the old run there.  Only a
-                # stop's clear is kept.
-                log.debug("Dropping undelivered announcements for run %s", run_id)
-                continue
+                # A reply for a run no longer subscribed: its rows still
+                # matter — that run can be the one shown until the session
+                # boundary — but marked, so the server never restores or
+                # renews the run from it.
+                msg = msg | {"superseded": True}
             if not await self._deliver_announcement(msg):
                 failed = True
                 # Unless a newer message for the run was read meanwhile.
