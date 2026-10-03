@@ -467,11 +467,14 @@
       for (const row of announcementsEl.children) {
         const text = row.firstChild;
         row.classList.remove('marquee');
-        if (text.scrollWidth > row.clientWidth) {
+        // clientWidth includes the padding the text starts inside of.
+        const style = getComputedStyle(row);
+        const width = row.clientWidth
+          - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        if (text.scrollWidth > width) {
           row.classList.add('marquee');
-          row.style.setProperty('--row-w', row.clientWidth + 'px');
-          row.style.setProperty(
-            '--marquee-s', ((row.clientWidth + text.scrollWidth) / MARQUEE_PX_PER_S) + 's');
+          row.style.setProperty('--row-w', width + 'px');
+          row.style.setProperty('--marquee-s', ((width + text.scrollWidth) / MARQUEE_PX_PER_S) + 's');
         }
       }
       document.documentElement.style.setProperty(
@@ -506,8 +509,9 @@
       }
       if (fresh.length > 0) announceRegionEl.textContent = fresh.join('. ');
       announcementsEl.hidden = list.length === 0;
-      if (list.length > 0) announcementsEl.scrollTop = announcementsEl.scrollHeight;
       layoutAnnouncements();
+      // After layout: a wrapped row (reduced motion) grows the stack.
+      if (list.length > 0) announcementsEl.scrollTop = announcementsEl.scrollHeight;
     }
 
     window.addEventListener('resize', layoutAnnouncements);

@@ -737,23 +737,33 @@ class RaceState:
         self._dirty = True
         return "announcements"
 
-    def _shown_announcements(self, scope: tuple[str, frozenset[str]] | None) -> list[dict]:
-        """Return the announcements to show, given the *scope* the snapshot chose.
+    def _shown_announcements(self) -> list[dict]:
+        """Return the announcements to show, as ``{"key", "text"}`` dicts.
 
-        Rows are shown only while their run is the running session — the run
-        :meth:`_class_code_scope` picks — and each is ``{"key", "text"}``,
-        the key its creation ticks.  Three things clear them, whichever comes
-        first: the session's closing ``$B,95`` (through ``_run_number``); the
-        run stopping (the relay sends empty rows); and a new run or session
-        (the scope moves to another run).  :meth:`reset` is not one, because
-        ``$I`` is emitted inconsistently; after it an empty description gives
-        a *None* scope, which hides the rows anyway until ``$B`` repopulates.
-        The priority is not sent: the page never needs it.
+        Rows are shown only while their run is the one the timing host
+        announced as started and :meth:`_run` bound to the running session —
+        or, with none bound, the waiting one, as :meth:`_class_code_scope`
+        lets it stand in — and its name is the session's description.  Never
+        the scope's fallback to the preload's run table by name: names repeat,
+        so a same-named next session would pick the old run up again and show
+        its announcements.  The key is a row's creation ticks.
+
+        Three things clear them, whichever comes first: the session's closing
+        ``$B,95`` (through ``_run_number``); the run stopping (the relay sends
+        empty rows); and a new session (:meth:`_run` discards or replaces the
+        bound run).  :meth:`reset` is not one, because ``$I`` is emitted
+        inconsistently; after it an empty description hides the rows until
+        ``$B`` repopulates.  The priority is not sent: the page never needs it.
         """
+        run = self.class_code_run
+        if run is None:
+            run = self.class_code_run_next
         if (
-            scope is None
+            run is None
+            or run.get("closed")
             or self._run_number == "95"
-            or scope[0].lower() != self.announcements["run_id"].lower()
+            or run["name"] != self.run_description
+            or run["run_id"].lower() != self.announcements["run_id"].lower()
         ):
             return []
         return [{"key": str(r["ticks"]), "text": r["text"]} for r in self.announcements["rows"]]
@@ -1093,7 +1103,7 @@ class RaceState:
             ),
             "class_code_missing": class_code_missing,
             "class_code_scope": scope_id,
-            "announcements": self._shown_announcements(scope),
+            "announcements": self._shown_announcements(),
             "entries": entries,
         }
 

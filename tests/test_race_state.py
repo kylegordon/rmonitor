@@ -2453,3 +2453,23 @@ def test_malformed_announcement_rows_are_dropped_or_coerced(state):
         {"text": "Kept", "ticks": "soon", "priority": 3},
     ]})
     assert state.announcements["rows"] == [{"text": "Kept", "ticks": 0, "priority": ""}]
+
+
+@pytest.mark.parametrize("closed_between", [False, True])
+def test_announcements_do_not_carry_into_a_same_named_session_through_the_preload(
+    state, closed_between
+):
+    """The preload's run table still names the old run, and the scope falls
+    back to it by name; the announcements must not, or a same-named next
+    session the relay never saw start would show the old run's rows."""
+    _runs_preload(state, _run_row())
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+    if closed_between:
+        _closing(state)
+    _session(state, number="28")
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == "0x40002806"  # the fallback still picks it
+    assert snap["announcements"] == []
