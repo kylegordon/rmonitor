@@ -843,8 +843,9 @@ class ClassCodeClient:
     stops, empty rows are forwarded and its view closed — on every stop,
     since the server may hold rows forwarded before a relay restart.  The run is
     remembered across a reconnect and re-subscribed once the registry is
-    pulled; a relay started mid-run has seen no start, and subscribes
-    nothing until the next run starts.
+    pulled.  A relay started mid-run has seen no start, so until it reads
+    one it picks the run by the session's name instead
+    (:meth:`note_session`).
 
     *on_status*, if given, is called with a :class:`ClassCodeStatus` on each
     connect attempt, completed handshake, connection failure, delivery and
@@ -1328,6 +1329,13 @@ class ClassCodeClient:
         ids = [r["run_id"] for r in self._runs if r["name"] == self._session_desc]
         if not ids:
             if self._ann_run is not None:
+                # Cleared as a stop clears, so a start for it accepted after
+                # all — a delivery in flight — has no rows to show should a
+                # later session of its name bind it on the server.
+                self._queue_announcement({
+                    "type": "announcements", "run_id": self._ann_run, "rows": [],
+                    "stopped": True, "start_key": self._ann_start_key,
+                })
                 self._drop_announcement_views()
                 self._ann_run = None
                 self._ann_due = None

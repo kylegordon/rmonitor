@@ -2133,6 +2133,13 @@ async def test_a_new_description_with_no_matching_run_drops_the_pick(monkeypatch
     assert _view_closes(writer) == [1]
     assert len(_view_opens(writer)) == 1
     assert client._ann_run is None
+    # Its rows are cleared as a stop clears them, under the pick's start.
+    (run,) = _runs_sent(calls)
+    (clear,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert clear == {
+        "type": "announcements", "run_id": PICKED_ID, "rows": [], "stopped": True,
+        "start_key": run["start_key"],
+    }
 
 
 @pytest.mark.asyncio
