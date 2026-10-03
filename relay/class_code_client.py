@@ -914,10 +914,11 @@ class ClassCodeClient:
         # The preload not yet delivered: its entries and the monotonic time
         # its pull finished.
         self._preload: dict | None = None
-        # The run whose announcements are subscribed and the announcements
-        # message not yet delivered; both outlive a reconnect.
+        # The run whose announcements are subscribed, and the announcements
+        # messages not yet delivered — the latest per run, oldest first;
+        # both outlive a reconnect.
         self._ann_run: str | None = None
-        self._announcement: dict | None = None
+        self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
@@ -1206,7 +1207,7 @@ class ClassCodeClient:
             bool(self._pending)
             or self._preload is not None
             or self._run is not None
-            or self._announcement is not None
+            or bool(self._announcements)
         )
 
     def _absorb(self, data: bytes) -> None:
@@ -1232,13 +1233,10 @@ class ClassCodeClient:
                 # this process never forwarded, from before a relay restart,
                 # and it applies the clear only to the run it holds.  It
                 # replaces any rows of that run not yet delivered, and keeps a
-                # failed delivery of them from being put back; rows waiting
-                # for another run already replace whatever the server holds.
-                waiting = self._announcement
-                if waiting is None or waiting["run_id"] == run.run_id:
-                    self._announcement = {
-                        "type": "announcements", "run_id": run.run_id, "rows": [],
-                    }
+                # failed delivery of them from being put back.
+                self._queue_announcement(
+                    {"type": "announcements", "run_id": run.run_id, "rows": []}
+                )
                 if run.run_id == self._ann_run:
                     self._drop_announcement_views()
                     self._ann_run = None
@@ -1266,9 +1264,9 @@ class ClassCodeClient:
                 log.info(
                     "Announcements for run %s: %d rows", self._ann_run, len(frame.rows)
                 )
-                self._announcement = {
-                    "type": "announcements", "run_id": self._ann_run, "rows": frame.rows,
-                }
+                self._queue_announcement(
+                    {"type": "announcements", "run_id": self._ann_run, "rows": frame.rows}
+                )
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
             if self._ann_view is not None:
@@ -1299,9 +1297,16 @@ class ClassCodeClient:
         run, self._run = self._run, None
         if run is not None:
             failed = not await self._deliver_run(run) or failed
-        announcement, self._announcement = self._announcement, None
-        if announcement is not None:
-            failed = not await self._deliver_announcement(announcement) or failed
+        announcements, self._announcements = self._announcements, {}
+        kept: dict[str, dict] = {}
+        for run_id, msg in announcements.items():
+            if not await self._deliver_announcement(msg):
+                failed = True
+                # Unless a newer message for the run was read meanwhile.
+                if run_id not in self._announcements:
+                    kept[run_id] = msg
+        # Kept ones go back ahead of any read meanwhile, which are newer.
+        self._announcements = kept | self._announcements
         for run_id, by_entrant in pending.items():
             now = time.monotonic()
             expired = [
@@ -1403,18 +1408,21 @@ class ClassCodeClient:
         self._delivered()
         return True
 
-    async def _deliver_announcement(self, msg: dict) -> bool:
-        """Hand the announcements *msg* to *on_batch*; return whether nothing is left to retry.
+    def _queue_announcement(self, msg: dict) -> None:
+        """Queue *msg*, replacing any for its run, as the newest.
 
-        A failed delivery is kept for the retry unless a newer message has
-        been read meanwhile, which replaces it.
+        Kept per run, so a clear for one run never displaces another run's
+        message; delivered oldest first, so the server ends on the newest.
         """
+        self._announcements.pop(msg["run_id"], None)
+        self._announcements[msg["run_id"]] = msg
+
+    async def _deliver_announcement(self, msg: dict) -> bool:
+        """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""
         try:
             await self.on_batch(msg)
         except Exception:
             log.exception("Could not forward the announcements for run %s", msg["run_id"])
-            if self._announcement is None:
-                self._announcement = msg
             return False
         self._delivered()
         return True

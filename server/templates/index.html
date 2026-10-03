@@ -194,7 +194,10 @@
       flex-shrink: 0;
     }
     .announcement + .announcement { border-top: 1px solid rgba(255,255,255,0.08); }
-    .announcement-text { display: inline-block; }
+    /* Inert while the row is nowrap; once a long row wraps, an unbroken run such
+       as a URL breaks too rather than being clipped. */
+    .announcement-text { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+    .announcement.marquee .announcement-text { max-width: none; }
     /* Only a row wider than the screen scrolls; a row that fits stays still. */
     .announcement.marquee .announcement-text {
       animation: announce-scroll var(--marquee-s, 12s) linear infinite;
@@ -205,10 +208,10 @@
     }
     /* Stopped, a long row wraps and stands still instead. */
     .announcements.still .announcement.marquee { white-space: normal; }
-    .announcements.still .announcement.marquee .announcement-text { animation: none; }
+    .announcements.still .announcement.marquee .announcement-text { animation: none; max-width: 100%; }
     @media (prefers-reduced-motion: reduce) {
       .announcement.marquee { white-space: normal; }
-      .announcement.marquee .announcement-text { animation: none; }
+      .announcement.marquee .announcement-text { animation: none; max-width: 100%; }
       .announce-motion { display: none; }
     }
     .visually-hidden {
@@ -403,7 +406,9 @@
        announcement is read once, through #announce-region. -->
   <div id="announcements" class="announcements" hidden>
     <button id="announce-motion" class="announce-motion" type="button" aria-pressed="false" hidden>Stop scrolling</button>
-    <div id="announcement-rows" class="announcement-rows"></div>
+    <!-- Focusable and named: once the stack passes its height cap, older rows are
+         reachable only by scrolling this region. -->
+    <div id="announcement-rows" class="announcement-rows" role="region" aria-label="Announcements" tabindex="0"></div>
   </div>
   <div id="announce-region" class="visually-hidden" role="status" aria-live="polite"></div>
 

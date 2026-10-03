@@ -755,9 +755,10 @@ def test_scrolling_announcements_can_be_stopped() -> None:
     assert button and "aria-pressed" in button.group(0), (
         "the stop-scrolling control must be a button carrying aria-pressed"
     )
-    assert ".announcements.still .announcement.marquee .announcement-text { animation: none; }" in page, (
-        "stopping must remove the marquee animation"
-    )
+    assert re.search(
+        r"\.announcements\.still \.announcement\.marquee \.announcement-text \{[^}]*animation: none;",
+        page,
+    ), "stopping must remove the marquee animation"
 
 
 def test_the_announcement_live_region_is_emptied_when_nothing_new_arrives() -> None:
@@ -771,4 +772,15 @@ def test_the_announcement_live_region_is_emptied_when_nothing_new_arrives() -> N
     assert "announceRegionEl.textContent = fresh.join('. ');" in body
     assert "if (fresh.length > 0) announceRegionEl" not in body, (
         "the region must be emptied on every changed list, not only set on new rows"
+    )
+
+
+def test_the_announcement_scroll_region_is_keyboard_reachable_and_named() -> None:
+    """Past its height cap the stack scrolls, and some browsers do not focus a scroll
+    container by themselves, so keyboard users could not reach older rows."""
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    rows = re.search(r'<div id="announcement-rows"[^>]*>', page)
+    assert rows, "the announcement rows container is missing"
+    assert 'tabindex="0"' in rows.group(0) and "aria-label=" in rows.group(0), (
+        "the scrolling announcements region must be focusable and named"
     )

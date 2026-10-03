@@ -1820,3 +1820,54 @@ async def test_a_stop_clears_announcements_this_process_never_forwarded(monkeypa
     assert [c for c in calls if c["type"] == "announcements"] == [
         {"type": "announcements", "run_id": RUN_ID, "rows": []},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unrelated_first", [True, False])
+async def test_an_unrelated_stop_does_not_displace_the_subscribed_runs_clear(
+    monkeypatch, unrelated_first
+):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        stops = [
+            _run_state("Race 5", run_id=0x40002804, state="stopped"),
+            _run_state(state="stopped"),
+        ]
+        host.queue.append(b"".join(stops if unrelated_first else stops[::-1]))
+        await _until(lambda: len(_announcements(calls)) >= 3)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    clears = [c["run_id"] for c in calls if c["type"] == "announcements" and not c["rows"]]
+    assert sorted(clears) == ["0x40002804", RUN_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_clear_is_retried_beside_another_runs_clear(monkeypatch):
+    attempts = []
+
+    async def on_batch(msg):
+        if msg["type"] != "announcements" or msg["rows"]:
+            return
+        attempts.append(msg["run_id"])
+        if attempts.count(RUN_ID) == 1 and msg["run_id"] == RUN_ID:
+            raise ConnectionError("server unreachable")
+
+    task, host, writer, _, _ = await _running(
+        monkeypatch, [("Track clear", 5)], on_batch=on_batch,
+        retry_initial=0.05, keepalive_interval=0.05,
+    )
+    try:
+        host.queue.append(_run_state())
+        await asyncio.sleep(0.1)
+        host.queue.append(
+            _run_state("Race 5", run_id=0x40002804, state="stopped") + _run_state(state="stopped")
+        )
+        await _until(lambda: attempts.count(RUN_ID) >= 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert attempts.count(RUN_ID) == 2
+    assert attempts.count("0x40002804") == 1
