@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.21](https://github.com/kylegordon/rmonitor/compare/v0.1.20...v0.1.21) (2026-10-03)
+
+## What's Changed
+* feat: show timing-host announcements along the bottom of the live page by @kylegordon in https://github.com/kylegordon/rmonitor/pull/101
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.20...v0.1.21
+
+
 ## [0.1.20](https://github.com/kylegordon/rmonitor/compare/v0.1.19...v0.1.20) (2026-09-26)
 
 ## What's Changed
