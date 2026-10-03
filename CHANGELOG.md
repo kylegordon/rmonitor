@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.22](https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22) (2026-10-03)
+
+## What's Changed
+* feat(relay): pick a run by name when started mid-run by @kylegordon in https://github.com/kylegordon/rmonitor/pull/104
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22
+
+
 ## [0.1.21](https://github.com/kylegordon/rmonitor/compare/v0.1.20...v0.1.21) (2026-10-03)
 
 ## What's Changed
