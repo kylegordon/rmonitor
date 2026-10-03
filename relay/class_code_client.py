@@ -109,6 +109,18 @@ KEEPALIVE_ANCHORS = (4,)
 KEEPALIVE_TOKENS = (22,)
 IP_SLOT = 71
 
+# The header of the view records (see build_view_open), as captured with its
+# identity zeroed; the opcode in its first two bytes is swapped per record.
+VIEW_HEADER = bytes.fromhex(
+    "2180050000000000000000000000000006012000000000000000000000000100"
+    "0f0500000000000000000000000000000000000000000000000000"
+)
+VIEW_ANCHORS = (4,)
+VIEW_TOKENS = (22,)
+_OP_VIEW_OPEN = b"\x21\x80"
+_OP_VIEW_CLOSE = b"\x22\x80"
+ANNOUNCEMENTS_VIEW = "lgView_Announcements"
+
 _IDENTITY_FRAME_PREFIX = b"\x00\x00\x01\x04"
 
 # A kept entry older than this is dropped rather than retried: the server
@@ -146,6 +158,29 @@ _MAX_REGISTRY_STR = 255
 # u32 flags, the group id (0x8000xxxx), then the run name as a ``str``.
 _RUN_ANCHOR = re.compile(
     rb"\x01\x00\x00\x00.{12}(..\x00\x40)(....)(..\x00\x80)", re.DOTALL
+)
+
+# An Announcements view frame is found by the view's title, written twice;
+# see AnnouncementParser for the offsets around it.
+_ANN_MARKER = b"\x0d\x00\x00\x00Announcements\x0d\x00\x00\x00Announcements"
+_ANN_OPCODE_AT = -75
+_ANN_LENGTH_AT = -16
+_ANN_VIEW_AT = -12
+_ANN_COUNT_AT = len(_ANN_MARKER)
+_ANN_KINDS = {
+    b"\x24\x80": "reply",
+    b"\x25\x80": "added",
+    b"\x26\x80": "modified",
+    b"\x27\x80": "deleted",
+}
+# A row is found by its date and time columns, each a str after an 8-byte
+# timestamp and one byte.
+# The operator types the text freely, so it is allowed far longer than a
+# registry string.
+_MAX_ANN_TEXT = 65535
+_ANN_ROW = re.compile(
+    rb"(.{8})\x00\x0a\x00\x00\x00(\d\d/\d\d/\d{4}).{8}\x00\x08\x00\x00\x00(\d\d:\d\d:\d\d)",
+    re.DOTALL,
 )
 
 # The run-state notice the host announces on the live stream; see RunStateParser.
@@ -223,6 +258,58 @@ def build_session_record(
     for t in tokens:
         rec[t:t + 6] = token
     return bytes(rec)
+
+
+def _str(text: str) -> bytes:
+    data = text.encode("utf-8")
+    return struct.pack("<I", len(data)) + data
+
+
+def _view_record(session: dict, opcode: bytes, block: bytes) -> bytes:
+    rec = bytearray(build_session_record(
+        VIEW_HEADER, **session, anchors=VIEW_ANCHORS, tokens=VIEW_TOKENS
+    ))
+    rec[0:2] = opcode
+    return bytes(rec) + struct.pack("<I", len(block)) + block
+
+
+def build_view_open(
+    session: dict, *, view_id: int, name: str, params: list[tuple[str, str]]
+) -> bytes:
+    """Return the record that subscribes view *view_id* to the host's *name* view.
+
+    *session* is the live ``token``/``handle``/``unit``.  The record is the
+    59-byte :data:`VIEW_HEADER` with opcode ``21 80``, then a u32 block
+    length and the block — integers u32 little-endian, a ``str`` a u32 length
+    then that many bytes::
+
+        str   view name       e.g. ``lgView_Announcements``
+        u32   view id         chosen by the client; the host's frames echo it
+        u32   param count
+        (str key, str value) x param count
+        u32   0
+
+    The host answers with the view's rows as they are now, then pushes each
+    later change to every view still open.  The layout matches a record the
+    timing console itself sends, byte for byte.
+    """
+    block = _str(name) + struct.pack("<II", view_id, len(params))
+    for key, value in params:
+        block += _str(key) + _str(value)
+    return _view_record(session, _OP_VIEW_OPEN, block + bytes(4))
+
+
+def build_view_close(session: dict, *, view_id: int) -> bytes:
+    """Return the record that closes view *view_id*.
+
+    It is :data:`VIEW_HEADER` with opcode ``22 80``, then the u32 block length
+    16 and the block ``u32 0, u32 view id, u32 0, u32 0`` — a record the timing
+    console sends between opens, byte for byte.  Two things are inferred, not
+    verified: that the second u32 is the view id (the console's closes name
+    the ids it opened earlier), and that the host stops pushing to a closed
+    view.  Pushes to a view the client no longer holds are ignored anyway.
+    """
+    return _view_record(session, _OP_VIEW_CLOSE, struct.pack("<IIII", 0, view_id, 0, 0))
 
 
 def parse_identity_frame(buf: bytes) -> tuple[bytes, bytes] | None:
@@ -344,6 +431,143 @@ class RunStateParser:
         return out
 
 
+class AnnouncementFrame(NamedTuple):
+    """One frame of an Announcements view.
+
+    *kind* is ``"reply"`` (the answer to a subscribe: the rows as they are
+    now), ``"added"``, ``"modified"`` or ``"deleted"`` (pushed on a change)
+    or ``"changed"`` (any other opcode).  *rows* is read only for a reply,
+    and is *None* for a push or a reply that could not be read whole.
+    """
+
+    kind: str
+    view_id: int
+    rows: list[dict] | None
+
+
+class AnnouncementParser:
+    """Incrementally parse Announcements view frames out of the ``:51738`` stream.
+
+    Every frame is a 59-byte header, its opcode in the first two bytes, then
+    a block; integers are u32 little-endian and a ``str`` is a u32 length then
+    that many bytes::
+
+        u32   block length    counted from the view id; 0x32 with no rows
+        u32   view id         the id the client chose when it subscribed
+        u32   1
+        u32   0
+        str   "Announcements"
+        str   "Announcements"
+        u32   row count
+        u32                   not read
+        u32   0
+        2 bytes               ff ff
+        u32                   bytes to the end of the block
+        rows
+
+    and each row::
+
+        u32   index
+        1 byte
+        str   UniqueID        "0", "1", "2", …
+        8 bytes               timestamp: a u64 growing with creation time
+        1 byte
+        str   date            dd/mm/yyyy
+        8 bytes               the same timestamp
+        1 byte
+        str   time            HH:MM:SS, local
+        str   type            "Official message"
+        1 byte
+        str   text
+        6 bytes
+        str   priority        "0" in every capture; forwarded raw, never read
+
+    The opcode says what the frame is: ``24 80`` answers a subscribe and is
+    the truth, ``25 80``/``26 80``/``27 80`` are pushed to every open view on
+    a create, modify and delete — a delete push still carries the deleted
+    row, so a push is only ever a sign that something changed.  The captures
+    only ever held one row at a time, so the bytes between two rows have not
+    been observed: rows are found by scanning for their date and time columns
+    rather than by walking from one to the next, and a reply whose rows found
+    disagree with its row count is withheld (*rows* None) rather than shown in
+    part.  A frame is found by the view's title pair, and parsed once the
+    whole block is buffered.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def feed(self, data: bytes) -> list[AnnouncementFrame]:
+        """Absorb *data* and return every frame now complete."""
+        self._buf += data
+        out: list[AnnouncementFrame] = []
+        while True:
+            i = self._buf.find(_ANN_MARKER)
+            if i < 0:
+                # Keep a tail that may hold the header and the start of a
+                # straddling marker.
+                del self._buf[:-(len(_ANN_MARKER) - 1 - _ANN_OPCODE_AT)]
+                break
+            if i + _ANN_OPCODE_AT < 0:
+                # The header was cut off before this parser saw it.
+                del self._buf[:i + 1]
+                continue
+            (n, view_id) = struct.unpack_from("<II", self._buf, i + _ANN_LENGTH_AT)
+            if not _ANN_COUNT_AT + 4 - _ANN_VIEW_AT <= n <= _MAX_RECORD_LEN:
+                # Too short to hold the row count, or too long to be real:
+                # the title turned up inside other bytes.
+                del self._buf[:i + 1]
+                continue
+            end = i + _ANN_VIEW_AT + n
+            if len(self._buf) < max(end, i + _ANN_COUNT_AT + 4):
+                del self._buf[:i + _ANN_OPCODE_AT]
+                break
+            start = i + _ANN_OPCODE_AT
+            opcode = bytes(self._buf[start:start + 2])
+            kind = _ANN_KINDS.get(opcode, "changed")
+            rows = None
+            if kind == "reply":
+                rows = _announcement_rows(bytes(self._buf[i:end]), view_id)
+            del self._buf[:end]
+            out.append(AnnouncementFrame(kind, view_id, rows))
+        return out
+
+
+def _announcement_rows(block: bytes, view_id: int) -> list[dict] | None:
+    """Return the rows of one reply, *block* starting at its title pair."""
+    (count,) = struct.unpack_from("<I", block, _ANN_COUNT_AT)
+    rows = []
+    for m in _ANN_ROW.finditer(block, _ANN_COUNT_AT + 4):
+        cur = _Cursor(block, m.end())
+        try:
+            kind = cur.string()
+            cur.skip(1)
+            text = cur.string(_MAX_ANN_TEXT)
+            cur.skip(6)
+        except _ShortRecord:
+            continue
+        try:
+            priority = cur.string()
+        except _ShortRecord:
+            priority = ""
+        (ticks,) = struct.unpack("<Q", m.group(1))
+        rows.append({
+            "text": text,
+            "ticks": ticks,
+            "date": m.group(2).decode("ascii"),
+            "time": m.group(3).decode("ascii"),
+            "type": kind,
+            "priority": priority,
+        })
+    if len(rows) != count:
+        log.warning(
+            "Announcements reply for view %d holds %d rows but %d were read – "
+            "withheld: %s", view_id, count, len(rows), block.hex(),
+        )
+        return None
+    return rows
+
+
 def _parse_body(body: bytes) -> PushRecord | None:
     # The same decoding RMonitorClient applies to :50000, so the server's
     # exact class-name gate compares like with like.
@@ -402,9 +626,9 @@ class _Cursor:
             raise _ShortRecord
         self.pos += n
 
-    def string(self) -> str:
+    def string(self, limit: int = _MAX_REGISTRY_STR) -> str:
         n = self.u32()
-        if n > _MAX_REGISTRY_STR:
+        if n > limit:
             raise _ShortRecord
         start = self.pos
         self.skip(n)
@@ -604,6 +828,24 @@ class ClassCodeClient:
     the pushes of the same burst, and retried like them; the server uses it
     to keep only the running run's pushes.  A stopped run is not forwarded.
 
+    The client also subscribes to the started run's announcements view
+    (:func:`build_view_open`, :class:`AnnouncementParser`) and hands its rows
+    to *on_batch* as an ``announcements`` message, delivered after the run
+    and retried like it, the latest replacing any not yet delivered.  Only a
+    subscription's reply is the truth: a push — even a delete, which still
+    carries the deleted row — only says something changed, so
+    *announce_resubscribe_delay* seconds after one (a burst coalesces) the
+    run is subscribed again on a new view, its reply forwarded and the view
+    it replaces closed.  The run is also re-subscribed every
+    *announce_refresh_interval* seconds, and every reply forwarded, so a
+    restarted server recovers within that; a subscription not answered
+    within *announce_reply_timeout* seconds is sent again.  When the run
+    stops, empty rows are forwarded and its view closed — on every stop,
+    since the server may hold rows forwarded before a relay restart.  The run is
+    remembered across a reconnect and re-subscribed once the registry is
+    pulled; a relay started mid-run has seen no start, and subscribes
+    nothing until the next run starts.
+
     *on_status*, if given, is called with a :class:`ClassCodeStatus` on each
     connect attempt, completed handshake, connection failure, delivery and
     failed delivery; an exception it raises is logged and ignored.
@@ -633,6 +875,9 @@ class ClassCodeClient:
         handshake_cap: float = 30.0,
         retry_initial: float = 5.0,
         retry_max: float = 300.0,
+        announce_resubscribe_delay: float = 1.0,
+        announce_refresh_interval: float = 60.0,
+        announce_reply_timeout: float = 10.0,
     ) -> None:
         self.host = host
         self.port = port
@@ -652,6 +897,9 @@ class ClassCodeClient:
         self.handshake_cap = handshake_cap
         self.retry_initial = retry_initial
         self.retry_max = retry_max
+        self.announce_resubscribe_delay = announce_resubscribe_delay
+        self.announce_refresh_interval = announce_refresh_interval
+        self.announce_reply_timeout = announce_reply_timeout
         self._retry_delay = retry_initial
         # Event-loop time before which a failed batch is not re-sent.
         self._retry_at = 0.0
@@ -666,6 +914,16 @@ class ClassCodeClient:
         # The preload not yet delivered: its entries and the monotonic time
         # its pull finished.
         self._preload: dict | None = None
+        # The run whose announcements are subscribed, and the announcements
+        # messages not yet delivered — the latest per run, oldest first;
+        # both outlive a reconnect.
+        self._ann_run: str | None = None
+        self._ann_name = ""
+        # Names the start the relay read, so the server can tell a restart
+        # under the same run id from the start it retired.
+        self._ann_start_key = ""
+        self._announcements: dict[str, dict] = {}
+        self._reset_announcement_views()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
         self._connected = False
@@ -683,6 +941,7 @@ class ClassCodeClient:
             reason = "connection closed by the timing host"
             self._parser = PushParser()
             self._run_parser = RunStateParser()
+            self._reset_announcement_views()
             try:
                 log.info("Connecting to class codes at %s:%s", self.host, self.port)
                 self._status("connecting")
@@ -691,6 +950,9 @@ class ClassCodeClient:
                 self._connected = True
                 self._status("connected")
                 await self._pull_registry(reader, writer)
+                if self._ann_run is not None:
+                    # The views died with the last connection.
+                    self._ann_due = asyncio.get_running_loop().time()
                 held_from = time.monotonic()
                 try:
                     await self._hold(reader, writer)
@@ -729,6 +991,31 @@ class ClassCodeClient:
             self._status("retrying", detail=reason, retry_in=delay)
             await _backoff_sleep(delay)
             delay = min(delay * 2, self.reconnect_max)
+
+    def _reset_announcement_views(self) -> None:
+        # Per connection: view ids are the client's own, per connection.
+        self._ann_parser = AnnouncementParser()
+        # The view whose reply was last taken as the truth, the subscription
+        # awaiting its reply (view id, loop time sent), the loop time the
+        # next subscription is due, and the views to close.
+        self._ann_view: int | None = None
+        self._ann_pending: tuple[int, float] | None = None
+        self._ann_due: float | None = None
+        self._ann_close: list[int] = []
+        self._next_view_id = 1
+        # A push read while a subscription awaited its reply: that reply may
+        # predate the change, so another subscription follows it.
+        self._ann_stale = False
+
+    def _drop_announcement_views(self) -> None:
+        """Queue every view held or awaited for close."""
+        if self._ann_view is not None:
+            self._ann_close.append(self._ann_view)
+        if self._ann_pending is not None:
+            self._ann_close.append(self._ann_pending[0])
+        self._ann_view = None
+        self._ann_pending = None
+        self._ann_stale = False
 
     async def _handshake(self, reader, writer) -> None:
         token, machine = relay_identity()
@@ -849,6 +1136,12 @@ class ClassCodeClient:
         last_rx = loop.time()
         while True:
             deadline = next_keepalive
+            if self._ann_close:
+                deadline = loop.time()
+            elif self._ann_pending is not None:
+                deadline = min(deadline, self._ann_pending[1] + self.announce_reply_timeout)
+            elif self._ann_run is not None and self._ann_due is not None:
+                deadline = min(deadline, self._ann_due)
             if self._has_pending():
                 if self._delivering():
                     # Re-check once the delivery in flight may have finished.
@@ -865,6 +1158,8 @@ class ClassCodeClient:
                     writer.write(self._keepalive)
                     await writer.drain()
                     next_keepalive = now + self.keepalive_interval
+                self._write_announcement_records(writer, now)
+                await writer.drain()
                 if (
                     self._has_pending()
                     and not self._delivering()
@@ -879,11 +1174,45 @@ class ClassCodeClient:
             self._absorb(data)
             last_rx = loop.time()
 
+    def _write_announcement_records(self, writer, now: float) -> None:
+        """Write every queued close, then a due subscription."""
+        for view_id in self._ann_close:
+            writer.write(build_view_close(self._session, view_id=view_id))
+        self._ann_close = []
+        if self._ann_run is None:
+            return
+        if self._ann_pending is not None:
+            if now - self._ann_pending[1] < self.announce_reply_timeout:
+                return
+            # Never answered: close it and try again on a new view.
+            log.warning(
+                "Announcements subscription on view %d not answered – subscribing again",
+                self._ann_pending[0],
+            )
+            writer.write(build_view_close(self._session, view_id=self._ann_pending[0]))
+        elif self._ann_due is None or self._ann_due > now:
+            return
+        view_id = self._next_view_id
+        self._next_view_id += 1
+        writer.write(build_view_open(
+            self._session, view_id=view_id, name=ANNOUNCEMENTS_VIEW,
+            params=[("UniqueID", str(int(self._ann_run, 16)))],
+        ))
+        log.debug("Subscribed to announcements for run %s on view %d", self._ann_run, view_id)
+        self._ann_pending = (view_id, now)
+        # The fallback if no reply comes.
+        self._ann_due = now + self.announce_refresh_interval
+
     def _delivering(self) -> bool:
         return self._delivery is not None and not self._delivery.done()
 
     def _has_pending(self) -> bool:
-        return bool(self._pending) or self._preload is not None or self._run is not None
+        return (
+            bool(self._pending)
+            or self._preload is not None
+            or self._run is not None
+            or bool(self._announcements)
+        )
 
     def _absorb(self, data: bytes) -> None:
         for rec in self._parser.feed(data):
@@ -904,9 +1233,80 @@ class ClassCodeClient:
                 flying = self._run_in_flight
                 if flying is not None and flying["run_id"] == run.run_id:
                     flying["_stopped"] = True
+                # Every stop clears its run's rows: the server may hold rows
+                # this process never forwarded, from before a relay restart,
+                # and it applies the clear only to the run it holds.  It
+                # replaces any rows of that run not yet delivered, and keeps a
+                # failed delivery of them from being put back.
+                self._queue_announcement({
+                    "type": "announcements", "run_id": run.run_id, "rows": [],
+                    "stopped": True,
+                    # So a late clear of a retired start never clears a
+                    # restart of the same run.
+                    "start_key": self._ann_start_key if run.run_id == self._ann_run else "",
+                })
+                if run.run_id == self._ann_run:
+                    self._drop_announcement_views()
+                    self._ann_run = None
+                    self._ann_due = None
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
-            self._run = {"run_id": run.run_id, "name": run.name, "_observed": time.monotonic()}
+            start_key = uuid.uuid4().hex
+            self._run = {
+                "run_id": run.run_id, "name": run.name, "start_key": start_key,
+                "_observed": time.monotonic(),
+            }
+            if run.run_id != self._ann_run:
+                self._drop_announcement_views()
+                self._ann_run = run.run_id
+            self._ann_name = run.name
+            self._ann_start_key = start_key
+            # The reply holds the rows that already exist.
+            self._ann_due = asyncio.get_running_loop().time()
+        for frame in self._ann_parser.feed(data):
+            self._absorb_announcement(frame)
+
+    def _absorb_announcement(self, frame: AnnouncementFrame) -> None:
+        if self._ann_run is None:
+            return
+        now = asyncio.get_running_loop().time()
+        pending = self._ann_pending[0] if self._ann_pending is not None else None
+        if frame.kind == "reply":
+            if frame.view_id != pending:
+                return
+            if self._ann_stale:
+                # A change was pushed while this reply was awaited, so it may
+                # predate the change; the follow-up subscription's reply is
+                # forwarded instead.
+                log.debug("Withholding a reply that may predate a pushed change")
+            elif frame.rows is not None:
+                log.info(
+                    "Announcements for run %s: %d rows", self._ann_run, len(frame.rows)
+                )
+                # The name lets a server that lost the started run restore it.
+                self._queue_announcement({
+                    "type": "announcements", "run_id": self._ann_run,
+                    "name": self._ann_name, "rows": frame.rows,
+                    "start_key": self._ann_start_key,
+                })
+            # A withheld reply keeps the rows already forwarded; its view
+            # still replaces the held one, so it is closed in turn.
+            if self._ann_view is not None:
+                self._ann_close.append(self._ann_view)
+            self._ann_view = pending
+            self._ann_pending = None
+            if self._ann_stale:
+                self._ann_due = now + self.announce_resubscribe_delay
+                self._ann_stale = False
+            else:
+                self._ann_due = now + self.announce_refresh_interval
+        elif frame.view_id in (self._ann_view, pending):
+            log.debug("Announcements %s on view %d", frame.kind, frame.view_id)
+            if self._ann_pending is not None:
+                self._ann_stale = True
+                return
+            due = now + self.announce_resubscribe_delay
+            self._ann_due = due if self._ann_due is None else min(self._ann_due, due)
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}
@@ -919,6 +1319,22 @@ class ClassCodeClient:
         run, self._run = self._run, None
         if run is not None:
             failed = not await self._deliver_run(run) or failed
+        announcements, self._announcements = self._announcements, {}
+        kept: dict[str, dict] = {}
+        for run_id, msg in announcements.items():
+            if not msg.get("stopped") and run_id != self._ann_run:
+                # A reply for a run no longer subscribed: its rows still
+                # matter — that run can be the one shown until the session
+                # boundary — but marked, so the server never restores or
+                # renews the run from it.
+                msg = msg | {"superseded": True}
+            if not await self._deliver_announcement(msg):
+                failed = True
+                # Unless a newer message for the run was read meanwhile.
+                if run_id not in self._announcements:
+                    kept[run_id] = msg
+        # Kept ones go back ahead of any read meanwhile, which are newer.
+        self._announcements = kept | self._announcements
         for run_id, by_entrant in pending.items():
             now = time.monotonic()
             expired = [
@@ -1008,6 +1424,7 @@ class ClassCodeClient:
                 "type": "class_code_run",
                 "run_id": run["run_id"],
                 "name": run["name"],
+                "start_key": run["start_key"],
                 "age_seconds": round(age, 3),
             })
         except Exception:
@@ -1017,6 +1434,25 @@ class ClassCodeClient:
             return False
         finally:
             self._run_in_flight = None
+        self._delivered()
+        return True
+
+    def _queue_announcement(self, msg: dict) -> None:
+        """Queue *msg*, replacing any for its run, as the newest.
+
+        Kept per run, so a clear for one run never displaces another run's
+        message; delivered oldest first, so the server ends on the newest.
+        """
+        self._announcements.pop(msg["run_id"], None)
+        self._announcements[msg["run_id"]] = msg
+
+    async def _deliver_announcement(self, msg: dict) -> bool:
+        """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""
+        try:
+            await self.on_batch(msg)
+        except Exception:
+            log.exception("Could not forward the announcements for run %s", msg["run_id"])
+            return False
         self._delivered()
         return True
 

@@ -693,3 +693,102 @@ def test_the_class_cell_shows_the_code_or_a_dash_never_the_description() -> None
     assert "class_codes_available" in page and "class_code_missing" in page, (
         "the page no longer reads the header count of entrants without a class code"
     )
+
+
+def test_announcement_text_is_rendered_with_textcontent_never_innerhtml() -> None:
+    """Guards the announcements stack: the timing operator types the text freely.
+
+    Anything typed into the timing host's announcements reaches every viewer's page, so
+    it must only ever be inserted as text. No test renders the template, so this guard
+    is textual: it pins the one function that draws the rows.
+    """
+    lines = (ROOT / "server" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    first, last = _js_block(lines, "function renderAnnouncements")
+    body = "\n".join(lines[first - 1 : last])
+    assert "textContent = a.text" in body, "announcement text must be set as textContent"
+    assert "innerHTML" not in body, "announcement text must never go through innerHTML"
+
+
+def test_announcements_are_announced_through_their_own_polite_live_region() -> None:
+    """Guards the user's decision that each new announcement is read once.
+
+    The visible stack scrolls a long row as a marquee, so it must not be a live region,
+    or a screen reader would read it again; a hidden polite region, present from first
+    paint, carries each new announcement instead.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    region = re.search(r'<div id="announce-region"[^>]*>', page)
+    assert region and 'aria-live="polite"' in region.group(0), (
+        "#announce-region must be a polite live region"
+    )
+    stack = re.search(r'<div id="announcements"[^>]*>', page)
+    assert stack and "aria-live" not in stack.group(0), (
+        "#announcements must not be a live region: a marquee pass would be read again"
+    )
+
+
+def test_the_page_never_reads_announcement_priority() -> None:
+    """Guards the user's decision that the priority is recorded but never used.
+
+    The relay forwards the priority raw and the server keeps it out of the payload, so
+    nothing on the page may filter, sort or style on it.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert not re.search(r"""\.priority\b|\[\s*['"]priority['"]""", page), (
+        "the page must never read an announcement's priority"
+    )
+
+
+def test_scrolling_announcements_can_be_stopped() -> None:
+    """Guards WCAG 2.2.2: text that moves for more than five seconds needs a control
+    that stops it, beyond the system's reduced-motion setting.
+
+    A toggle button in the stack wraps a long row and stands it still. It is a real
+    ``<button>`` with ``aria-pressed`` so it is reachable by keyboard and its state is
+    announced. As elsewhere on the page the guard is textual, since nothing renders the
+    template.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    button = re.search(r'<button id="announce-motion"[^>]*>', page)
+    assert button and "aria-pressed" in button.group(0), (
+        "the stop-scrolling control must be a button carrying aria-pressed"
+    )
+    assert re.search(
+        r"\.announcements\.still \.announcement\.marquee \.announcement-text \{[^}]*animation: none;",
+        page,
+    ), "stopping must remove the marquee animation"
+
+
+def test_the_announcement_live_region_is_emptied_when_nothing_new_arrives() -> None:
+    """A withdrawn announcement must not linger in the hidden live region, where a
+    screen reader can still reach it after the visible stack has gone."""
+    lines = (ROOT / "server" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    first, last = _js_block(lines, "function renderAnnouncements")
+    body = "\n".join(lines[first - 1 : last])
+    assert "announceRegionEl.textContent = fresh.join('. ');" in body
+    assert "if (fresh.length > 0) announceRegionEl" not in body, (
+        "the region must be emptied on every changed list, not only set on new rows"
+    )
+
+
+def test_the_announcement_scroll_region_is_keyboard_reachable_and_named() -> None:
+    """Past its height cap the stack scrolls, and some browsers do not focus a scroll
+    container by themselves, so keyboard users could not reach older rows."""
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    rows = re.search(r'<div id="announcement-rows"[^>]*>', page)
+    assert rows, "the announcement rows container is missing"
+    assert 'tabindex="0"' in rows.group(0) and "aria-label=" in rows.group(0), (
+        "the scrolling announcements region must be focusable and named"
+    )
+
+
+def test_the_announcement_layout_follows_a_reduced_motion_change() -> None:
+    """Turning reduced motion on wraps long rows and grows the stack without a
+    resize, so the stack's height the page pads for must be recomputed."""
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "matchMedia('(prefers-reduced-motion: reduce)')" in page
+    assert "addEventListener('change', onMotionChange)" in page

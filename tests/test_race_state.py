@@ -1,5 +1,7 @@
 """Tests for race state management."""
 
+import time
+
 import pytest
 
 from server.race_state import RaceState
@@ -2347,3 +2349,299 @@ def test_a_run_started_after_a_cold_session_ends_waits_for_its_own(state):
     assert state.snapshot()["class_code_scope"] == ""
     _session(state, number="28")
     assert state.snapshot()["class_code_scope"] == "0x40002806"
+
+
+# ---------------------------------------------------------------------------
+# Announcements
+# ---------------------------------------------------------------------------
+
+def _announce(state, *rows, run_id="0x40002806"):
+    return state.process({"type": "announcements", "run_id": run_id, "rows": [
+        {"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows
+    ]})
+
+
+def _shown(state):
+    return [a["text"] for a in state.snapshot()["announcements"]]
+
+
+def test_announcements_show_while_their_run_is_the_running_session(state):
+    _started(state)
+    _session(state)
+    assert _announce(state, ("Track clear", 100)) == "announcements"
+    assert state.snapshot()["announcements"] == [{"key": "100", "text": "Track clear"}]
+
+
+def test_announcements_are_hidden_from_the_95_close_edge(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _closing(state)
+    assert _shown(state) == []
+
+
+def test_announcements_are_cleared_by_the_relays_empty_rows_on_a_stop(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _announce(state) == "announcements"
+    assert _shown(state) == []
+
+
+def test_announcements_of_another_run_are_not_shown(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _session(state, "Race 8 - Final", number="28")
+    assert _shown(state) == []
+
+
+def test_announcements_survive_init_and_reappear_with_the_sessions_run_record(state):
+    """``$I`` is not a session signal: the rows are kept, hidden while the
+    description is empty, and shown again once ``$B`` names the session."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    state.process({"type": "init"})
+    assert state.announcements["0x40002806"]
+    assert _shown(state) == []
+    _session(state)
+    assert _shown(state) == ["Track clear"]
+
+
+def test_announcements_are_ordered_oldest_first_by_creation_ticks_not_priority(state):
+    _started(state)
+    _session(state)
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [
+        {"text": "Newest", "ticks": 300, "priority": "0"},
+        {"text": "Oldest", "ticks": 100, "priority": "9"},
+        {"text": "Middle", "ticks": 200, "priority": "1"},
+    ]})
+    assert _shown(state) == ["Oldest", "Middle", "Newest"]
+    assert all(set(a) == {"key", "text"} for a in state.snapshot()["announcements"])
+
+
+def test_an_unchanged_announcements_message_does_not_dirty_the_state(state):
+    _announce(state, ("Track clear", 100))
+    state.mark_clean()
+    assert _announce(state, ("Track clear", 100)) is None
+    assert not state.dirty
+
+
+def test_announcements_do_not_refresh_last_updated(state, monkeypatch):
+    import server.race_state as rs
+
+    stale = state.last_updated
+    monkeypatch.setattr(rs.time, "time", lambda: stale + 3600)
+    assert _announce(state, ("Track clear", 100)) == "announcements"
+    assert state.last_updated == stale
+
+
+@pytest.mark.parametrize("msg", [
+    {"run_id": "0x40002806"},
+    {"run_id": "0x40002806", "rows": "Track clear"},
+    {"run_id": "Race 7", "rows": []},
+    {"run_id": ["0x40002806"], "rows": []},
+    {"rows": [{"text": "Track clear", "ticks": 1}]},
+])
+def test_malformed_announcements_messages_are_ignored(state, msg):
+    assert state.process({"type": "announcements", **msg}) is None
+    assert state.announcements == {}
+
+
+def test_malformed_announcement_rows_are_dropped_or_coerced(state):
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [
+        "Track clear", {"text": ""}, {"ticks": 5}, {"text": 7},
+        {"text": "Kept", "ticks": "soon", "priority": 3},
+    ]})
+    assert state.announcements["0x40002806"] == [{"text": "Kept", "ticks": 0, "priority": ""}]
+
+
+@pytest.mark.parametrize("closed_between", [False, True])
+def test_announcements_do_not_carry_into_a_same_named_session_through_the_preload(
+    state, closed_between
+):
+    """The preload's run table still names the old run, and the scope falls
+    back to it by name; the announcements must not, or a same-named next
+    session the relay never saw start would show the old run's rows."""
+    _runs_preload(state, _run_row())
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+    if closed_between:
+        _closing(state)
+    _session(state, number="28")
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == "0x40002806"  # the fallback still picks it
+    assert snap["announcements"] == []
+
+
+def test_another_runs_stop_does_not_clear_the_announcements_held(state):
+    """The relay clears on every stop, including runs it never subscribed."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _announce(state, run_id="0x40002805") is None
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_refreshed_session_keeps_its_announcements_past_the_run_ttl(state, monkeypatch):
+    """The relay's refreshes prove the run is still started, so a session
+    running past the 12-hour run TTL keeps its announcements."""
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    for hours in (2, 4, 6, 8, 10, 12, 14):
+        monkeypatch.setattr(rs.time, "time", lambda h=hours: t0 + h * 3600)
+        _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    monkeypatch.setattr(rs.time, "time", lambda: t0 + 2 * 3600)
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True})
+    assert state.class_code_run["received_at"] == t0
+
+
+def _refresh(state, *rows, name="Race 7 - 2nd Race"):
+    return state.process({"type": "announcements", "run_id": "0x40002806", "name": name, "rows": [
+        {"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows
+    ]})
+
+
+def test_a_server_that_lost_the_started_run_restores_it_from_a_refresh(state):
+    """A crash after the start was accepted but before it was saved: the relay
+    never sends the start again, so its refresh restores the binding."""
+    _session(state)
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run["run_id"] == "0x40002806"
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state):
+    _started(state)
+    _session(state)
+    _refresh(state, ("Track clear", 100))
+    _session(state, number="28")
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run is None
+    assert _shown(state) == []
+
+
+@pytest.mark.parametrize("closing", [False, True])
+def test_a_refresh_restores_nothing_for_another_session_or_a_closed_one(state, closing):
+    _session(state, "Race 8 - Final", number="28")
+    if closing:
+        _closing(state, "Race 7 - 2nd Race")
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run is None
+
+
+def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
+    """The crash lost the new run's start, and the store still holds the
+    previous run; the next $B discards that, and the refresh restores the
+    current one."""
+    import json
+
+    _started(state, run_id="0x40002805", name="Race 6")
+    _session(state, "Race 6", number="26")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run["run_id"] == "0x40002805"
+    _session(restored)
+    assert restored.class_code_run is None
+    _refresh(restored, ("Track clear", 100))
+    assert restored.class_code_run["run_id"] == "0x40002806"
+    assert _shown(restored) == ["Track clear"]
+
+
+def test_a_retired_run_stays_retired_across_a_restart(state):
+    """A same-named next session discarded the run; after a reload, the old
+    subscription's refresh must not restore it."""
+    import json
+
+    _started(state)
+    _session(state)
+    _session(state, number="28")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored, number="28")
+    _refresh(restored, ("Track clear", 100))
+    assert restored.class_code_run is None
+    assert _shown(restored) == []
+
+
+def test_retired_runs_expire_with_the_run_ttl():
+    restored = RaceState()
+    now = time.time()
+    restored.load_class_codes({"retired_runs": {
+        "0x40002806\tk1": now - 13 * 3600, "0x40002805\tk2": now - 3600,
+        "Race 7\tk3": now, "0x40002804\tk4": "soon", "0x40002803": now,
+    }})
+    assert restored._retired_runs == {"0x40002805\tk2": now - 3600}
+
+
+def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(state):
+    """The next run can start, and its rows arrive, before the current session ends."""
+    _started(state, run_id="0x40002805", name="Race 6")
+    _session(state, "Race 6", number="26")
+    _announce(state, ("Current", 100), run_id="0x40002805")
+    _started(state)
+    _announce(state, ("Next", 200))
+    assert _shown(state) == ["Current"]
+    _session(state)
+    assert _shown(state) == ["Next"]
+
+
+def test_a_run_restarted_under_a_retired_id_is_restored(state):
+    """A restart under the same id is a new start with its own key: its
+    refresh restores it, while the retired start's never does — however
+    late a retry of it arrives."""
+    import json
+
+    state.process({"type": "class_code_run", "run_id": "0x40002806",
+                   "name": "Race 7 - 2nd Race", "start_key": "first"})
+    _session(state)
+    _session(state, "Race 8 - Final", number="28")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored, number="29")
+    old = {"type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
+           "rows": [{"text": "Track clear", "ticks": 1}], "start_key": "first"}
+    restored.process(old)
+    assert restored.class_code_run is None
+    restored.process(old | {"start_key": "second"})
+    assert restored.class_code_run["run_id"] == "0x40002806"
+    assert _shown(restored) == ["Track clear"]
+
+
+def test_a_restart_lost_in_a_crash_is_restored_after_its_saved_closed_run_retires(state):
+    """The store holds the run's earlier, closed start; the restart was lost.
+    The next $B retires the saved start only, so the restart's refresh restores."""
+    import json
+
+    state.process({"type": "class_code_run", "run_id": "0x40002806",
+                   "name": "Race 7 - 2nd Race", "start_key": "first"})
+    _session(state)
+    _closing(state)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run["closed"]
+    _session(restored, number="28")
+    assert restored.class_code_run is None
+    restored.process({"type": "announcements", "run_id": "0x40002806",
+                      "name": "Race 7 - 2nd Race", "start_key": "second",
+                      "rows": [{"text": "Track clear", "ticks": 1}]})
+    assert restored.class_code_run["start_key"] == "second"
+    assert _shown(restored) == ["Track clear"]

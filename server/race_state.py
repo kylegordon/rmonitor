@@ -63,6 +63,12 @@ _PRACTICE_KEYWORDS = (
 # reused across meetings, so a longer life would pair a reused transponder
 # with last meeting's code — a plausible wrong value, never shown.
 _CLASS_CODE_TTL_SECONDS = 12 * 3600
+# How often an announcements refresh renews its started run's date, at most;
+# each renewal makes the periodic save rewrite the class-code store.
+_RUN_RENEW_SECONDS = 3600
+# Runs whose announcements are kept: the current and the waiting one, with
+# room for a stop's clear arriving late.
+_MAX_ANNOUNCED_RUNS = 4
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
@@ -158,12 +164,22 @@ class RaceState:
         # since and waits for its own $B (see _run).
         self.class_code_run: dict | None = None
         self.class_code_run_next: dict | None = None
+        # The run starts a session boundary discarded, keyed "<lowercased
+        # run id>\t<start key>", to the time it did; see
+        # _restore_started_run.  Saved with the class codes, each kept for
+        # _CLASS_CODE_TTL_SECONDS.
+        self._retired_runs: dict[str, float] = {}
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
         self.class_codes_revision = 0
         # The push scope last logged, so a change is logged once; see snapshot.
         self._logged_scope: str | None = None
+        # The timing host's announcements, lowercased run id to its rows,
+        # the latest few runs; see _announcements.  Not in reset(): $I is not
+        # a session signal (it is emitted inconsistently), and
+        # _shown_announcements shows only the running session's run's rows.
+        self.announcements: dict[str, list[dict]] = {}
         self.reset()
 
     def reset(self):
@@ -210,7 +226,8 @@ class RaceState:
             # last_updated dates the *race* state, and the store discards it by
             # that age; class codes come from another source and live in a
             # store of their own, so they must not make stale race state fresh.
-            if event is not None and event != "class_codes":
+            # Announcements come from the same source, for the same reason.
+            if event is not None and event not in ("class_codes", "announcements"):
                 self.last_updated = time.time()
             return event
         return None
@@ -303,6 +320,7 @@ class RaceState:
             and nxt["name"] != desc
         ):
             # A session it does not name has begun, so it is not the next one.
+            self._retire_run(nxt)
             self.class_code_run_next = nxt = None
         if number == "95":
             # With no run bound, a waiting run stands in for the session shown.
@@ -321,6 +339,8 @@ class RaceState:
         elif cur is None or cur.get("closed") or cur["name"] != desc or cur.get(
             "session_number", number
         ) != number:
+            if cur is not None:
+                self._retire_run(cur)
             if nxt is not None and nxt["name"] == desc:
                 self.class_code_run = nxt | {"session_number": number}
                 self.class_code_run_next = None
@@ -678,7 +698,11 @@ class RaceState:
         ):
             return None
         # A relay retries a delivery whose answer it lost, so a repeat of a
-        # run already held changes nothing; one that closed is a restart.
+        # run already held changes nothing; one that closed is a restart.  A
+        # start a session boundary retired is never taken back, or its old
+        # rows would show again for a same-named next session.
+        if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
+            return None
         for held in (self.class_code_run, self.class_code_run_next):
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
                 return None
@@ -686,9 +710,176 @@ class RaceState:
         self.class_code_run_next = {
             "run_id": run_id, "name": name, "received_at": time.time() - age,
         }
+        start_key = msg.get("start_key")
+        if isinstance(start_key, str) and start_key:
+            self.class_code_run_next["start_key"] = start_key
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
+
+    def _announcements(self, msg: dict) -> str | None:
+        """Store the timing host's announcements for one run.
+
+        Every message is the relay's full truth for ``run_id``, read from a
+        fresh subscription, and replaces what was held for that run.  Rows
+        are kept per run: the next run's start, and so its rows, can arrive
+        before the current session ends, and must not hide the current run's
+        rows early.  ``rows: []`` is also how the relay clears a run's rows
+        when it stops — on every stop, so empty rows for a run with none held
+        change nothing.  A message whose
+        run id is not of the host's ``0x4000xxxx`` form, or whose rows are not
+        a list, is ignored.  Each row keeps its text, its creation ``ticks``
+        (0 when unusable) and its priority, forwarded raw; a row with no text
+        is dropped.  Rows are ordered oldest first by ``ticks`` — the newest
+        lands at the bottom of the page — and never by priority, which
+        nothing reads.  An unchanged message returns *None*, so the relay's
+        periodic refresh broadcasts nothing.
+
+        A message not marked ``stopped`` or ``superseded`` comes from a
+        subscription to the run the relay holds as started, so it may restore
+        that run (:meth:`_restore_started_run`) and renews its date when it
+        is the started run held here (:meth:`_renew_started_run`): a session
+        running past :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so
+        its announcements, while the relay still refreshes it.  A message
+        from a start a session boundary retired is ignored outright, so a
+        late one never touches a restart of the same run.
+        """
+        run_id, raw = msg.get("run_id"), msg.get("rows")
+        if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
+            return None
+        if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
+            return None
+        if not msg.get("stopped") and not msg.get("superseded"):
+            self._restore_started_run(run_id, msg.get("name"), msg.get("start_key"))
+            self._renew_started_run(run_id)
+        rows = []
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            ticks = row.get("ticks")
+            if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 0:
+                ticks = 0
+            priority = row.get("priority")
+            rows.append({
+                "text": text,
+                "ticks": ticks,
+                "priority": priority if isinstance(priority, str) else "",
+            })
+        key = run_id.lower()
+        rows.sort(key=lambda r: r["ticks"])
+        if self.announcements.get(key, []) == rows:
+            return None
+        self.announcements.pop(key, None)
+        # A run with none is not kept, so clears never crowd a run with rows
+        # out of the capped store.
+        if rows:
+            self.announcements[key] = rows
+        while len(self.announcements) > _MAX_ANNOUNCED_RUNS:
+            del self.announcements[next(iter(self.announcements))]
+        self._dirty = True
+        return "announcements"
+
+    def _retire_run(self, run: dict) -> None:
+        """Record that a session boundary discarded *run*; see :meth:`_restore_started_run`."""
+        now = time.time()
+        self._retired_runs = {
+            k: t for k, t in self._retired_runs.items() if now - t <= _CLASS_CODE_TTL_SECONDS
+        }
+        self._retired_runs[_start_id(run["run_id"], run.get("start_key"))] = now
+        self.class_codes_revision += 1
+
+    def _restore_started_run(self, run_id: str, name, start_key) -> None:
+        """Bind the relay's subscribed run *run_id* when no run is bound.
+
+        A server that crashed after accepting a run's start but before saving
+        it has lost the binding — or holds the previous run's from the store,
+        which the next ``$B`` discards — and the relay does not send the start
+        again, so its announcements would stay hidden all session.  It is
+        restored only while no run is bound and none is waiting under this id
+        (the next ``$B`` binds that), *name* is the running session's
+        description, and the session has not closed.  Never a run a session
+        boundary discarded (``_retired_runs``): a same-named next session must
+        not take the old run back.  The relay names each start it reads with
+        a *start_key*, carried by the start and every refresh, and that start
+        is what is retired: a run restarted under the same id has another key
+        and may be restored.  A message without one matches only a start
+        retired without one.
+
+        A known limitation, accepted: run names repeat, and the next run's
+        start can arrive before the current session ends.  If the server loses
+        both starts and the relay has already moved to that next run, a
+        refresh binds it to the current session under the same name — the
+        current session then shows the next run's announcements and scopes its
+        class codes to it, and the next run's own session, which retires it,
+        shows none.  After a restart nothing tells the two runs apart.
+        """
+        nxt = self.class_code_run_next
+        if (
+            self.class_code_run is not None
+            or (nxt is not None and nxt["run_id"].lower() == run_id.lower())
+            or _start_id(run_id, start_key) in self._retired_runs
+            or not isinstance(name, str)
+            or not name
+            or name != self.run_description
+            or self._run_number in ("", "95")
+        ):
+            return
+        log.info("Restoring started run %s %r from its announcements", run_id, name)
+        self.class_code_run = {
+            "run_id": run_id, "name": name, "received_at": time.time(),
+            "session_number": self._run_number,
+        }
+        if isinstance(start_key, str) and start_key:
+            self.class_code_run["start_key"] = start_key
+        self.class_codes_revision += 1
+        self._dirty = True
+
+    def _renew_started_run(self, run_id: str) -> None:
+        """Re-date the held started run *run_id* as read now, at most hourly."""
+        now = time.time()
+        for run in (self.class_code_run, self.class_code_run_next):
+            if (
+                run is not None
+                and not run.get("closed")
+                and run["run_id"].lower() == run_id.lower()
+                and now - run["received_at"] > _RUN_RENEW_SECONDS
+            ):
+                run["received_at"] = now
+                self.class_codes_revision += 1
+
+    def _shown_announcements(self) -> list[dict]:
+        """Return the announcements to show, as ``{"key", "text"}`` dicts.
+
+        Rows are shown only while their run is the one the timing host
+        announced as started and :meth:`_run` bound to the running session —
+        or, with none bound, the waiting one, as :meth:`_class_code_scope`
+        lets it stand in — and its name is the session's description.  Never
+        the scope's fallback to the preload's run table by name: names repeat,
+        so a same-named next session would pick the old run up again and show
+        its announcements.  The key is a row's creation ticks.
+
+        Three things clear them, whichever comes first: the session's closing
+        ``$B,95`` (through ``_run_number``); the run stopping (the relay sends
+        empty rows); and a new session (:meth:`_run` discards or replaces the
+        bound run).  :meth:`reset` is not one, because ``$I`` is emitted
+        inconsistently; after it an empty description hides the rows until
+        ``$B`` repopulates.  The priority is not sent: the page never needs it.
+        """
+        run = self.class_code_run
+        if run is None:
+            run = self.class_code_run_next
+        if (
+            run is None
+            or run.get("closed")
+            or self._run_number == "95"
+            or run["name"] != self.run_description
+        ):
+            return []
+        rows = self.announcements.get(run["run_id"].lower(), [])
+        return [{"key": str(r["ticks"]), "text": r["text"]} for r in rows]
 
     def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:
         """Return the running run's id and the push tags in scope, or *None*.
@@ -913,6 +1104,7 @@ class RaceState:
         "class_codes": _class_codes,
         "class_code_preload": _class_code_preload,
         "class_code_run": _class_code_run,
+        "announcements": _announcements,
     }
 
     # ---- serialisation ----
@@ -1024,6 +1216,7 @@ class RaceState:
             ),
             "class_code_missing": class_code_missing,
             "class_code_scope": scope_id,
+            "announcements": self._shown_announcements(),
             "entries": entries,
         }
 
@@ -1187,7 +1380,8 @@ class RaceState:
         The registry preload is saved beside it under ``"preload"``, for the
         same reason and because the relay pulls it again only on a reconnect;
         the started runs under ``"run"`` and ``"run_next"``, because the host
-        announces each once.
+        announces each once; and the runs a session boundary retired under
+        ``"retired_runs"``, so a restart cannot restore one.
         """
         return {
             "class_codes": self.class_codes,
@@ -1198,6 +1392,7 @@ class RaceState:
             },
             "run": self.class_code_run,
             "run_next": self.class_code_run_next,
+            "retired_runs": self._retired_runs,
         }
 
     def load_class_codes(self, data: dict) -> None:
@@ -1253,6 +1448,7 @@ class RaceState:
         runs = data if isinstance(data, dict) else {}
         self.class_code_run = _restore_run(runs.get("run"), now)
         self.class_code_run_next = _restore_run(runs.get("run_next"), now)
+        self._retired_runs = _restore_retired_runs(runs.get("retired_runs"), now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -1343,6 +1539,34 @@ def _preload_store(
     }
 
 
+def _start_id(run_id: str, start_key) -> str:
+    """Return the key one run start is retired under: lowercased id, tab, start key."""
+    return run_id.lower() + "\t" + (start_key if isinstance(start_key, str) else "")
+
+
+def _restore_retired_runs(value, now: float) -> dict[str, float]:
+    """Return the retired runs saved by :meth:`RaceState.class_codes_to_dict`.
+
+    A malformed entry, or one retired longer than
+    :data:`_CLASS_CODE_TTL_SECONDS` ago, is dropped; a date is capped at *now*.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, stamp in value.items():
+        stamp = _finite_stamp(stamp)
+        run_id = key.split("\t", 1)[0] if isinstance(key, str) else None
+        if (
+            run_id is not None
+            and "\t" in key
+            and _RUN_ID.fullmatch(run_id)
+            and stamp is not None
+            and now - stamp <= _CLASS_CODE_TTL_SECONDS
+        ):
+            out[key] = min(stamp, now)
+    return out
+
+
 def _restore_run(value, now: float) -> dict | None:
     """Return a started run saved by :meth:`RaceState.class_codes_to_dict`, or *None*.
 
@@ -1368,6 +1592,8 @@ def _restore_run(value, now: float) -> dict | None:
         run["closed"] = True
     if isinstance(value.get("session_number"), str):
         run["session_number"] = value["session_number"]
+    if isinstance(value.get("start_key"), str) and value["start_key"]:
+        run["start_key"] = value["start_key"]
     return run
 
 

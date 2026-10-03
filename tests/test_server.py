@@ -421,6 +421,43 @@ async def test_a_class_code_run_arriving_while_the_feed_is_lost_is_not_a_recover
 
 
 @pytest.mark.asyncio
+async def test_announcements_ingest_is_not_feed_liveness(client, app):
+    from server.server import race_state_key
+
+    fs = app[feed_state_key]
+    fs["feed_lost"] = True
+    fs["last_ingest_at"] = stale = time.monotonic() - 3600
+    resp = await client.post(
+        "/api/ingest",
+        json={"type": "announcements", "run_id": "0x40002805",
+              "rows": [{"text": "Track clear", "ticks": 1, "priority": "0"}]},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert resp.status == 200
+    assert fs["feed_lost"] is True
+    assert fs["last_ingest_at"] == stale
+    state = app[race_state_key]
+    assert "1" in state.competitors  # not reset
+    assert state.announcements["0x40002805"][0]["text"] == "Track clear"
+
+
+@pytest.mark.asyncio
+async def test_ws_full_message_carries_announcements(client):
+    headers = {"Authorization": "Bearer test-secret"}
+    for msg in (
+        {"type": "class_code_run", "run_id": "0x40002805", "name": "Race 6", "age_seconds": 0},
+        {"type": "run", "unique_number": "6", "description": "Race 6"},
+        {"type": "announcements", "run_id": "0x40002805",
+         "rows": [{"text": "Track clear", "ticks": 1, "priority": "0"}]},
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    async with client.ws_connect("/ws") as ws:
+        msg = await ws.receive_json()
+        assert msg["data"]["announcements"] == [{"key": "1", "text": "Track clear"}]
+
+
+@pytest.mark.asyncio
 async def test_class_codes_during_an_outage_do_not_broadcast_an_update(client, app):
     """The production broadcast path sends no ``update`` while the feed is lost.
 

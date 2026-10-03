@@ -48,3 +48,11 @@ otherwise inferred from the stream going quiet). Guarded by
 `tests/test_race_state.py`, and
 `test_an_incomplete_registry_pull_keeps_the_connection_and_sends_no_preload` in
 `tests/test_class_code_client.py`.
+
+## An announcements push is a change signal; only a subscription reply is the truth
+
+The timing host pushes every create, edit and delete to each open announcements view, but a
+delete push still carries the deleted row, so no push is read as the table. A push only makes
+the client subscribe again on a new view, and that reply is forwarded. Guarded by
+`test_a_delete_push_triggers_a_resubscribe_whose_reply_is_the_truth` and
+`test_the_reply_to_a_resubscribe_does_not_trigger_another` in `tests/test_class_code_client.py`.

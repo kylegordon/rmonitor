@@ -128,7 +128,8 @@
     .update-banner {
       position: fixed;
       left: 50%;
-      bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+      /* Above the announcements stack, whose height the page keeps in --announce-h. */
+      bottom: calc(1rem + var(--announce-h, 0px) + env(safe-area-inset-bottom, 0px));
       transform: translateX(-50%);
       background: var(--yellow);
       color: #000;
@@ -146,7 +147,87 @@
     }
     .update-banner.hidden { display: none; }
 
-    main { padding: 1rem 2rem; }
+    /* The timing host's announcements: one row each along the bottom edge, the
+       newest nearest it, growing upward to a third of the screen and then
+       scrolling.  Above the sticky table head; below the no-feed overlay (200)
+       and the update banner (300). */
+    .announcements {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: 33vh;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: var(--surface);
+      border-top: 2px solid var(--highlight);
+      z-index: 150;
+      display: flex;
+      flex-direction: column;
+    }
+    .announcements[hidden] { display: none; }
+    .announcement-rows {
+      overflow-y: auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Shown only while a row scrolls: moving text needs a way to stop it. */
+    .announce-motion {
+      align-self: flex-end;
+      margin: 0.25rem 1rem 0;
+      padding: 0.15rem 0.6rem;
+      font: inherit;
+      font-size: 0.8rem;
+      color: var(--text);
+      background: var(--accent);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .announce-motion[hidden] { display: none; }
+    .announcement {
+      white-space: nowrap;
+      overflow: hidden;
+      padding: 0.4rem 1rem;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .announcement + .announcement { border-top: 1px solid rgba(255,255,255,0.08); }
+    /* Inert while the row is nowrap; once a long row wraps, an unbroken run such
+       as a URL breaks too rather than being clipped. */
+    .announcement-text { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+    .announcement.marquee .announcement-text { max-width: none; }
+    /* Only a row wider than the screen scrolls; a row that fits stays still. */
+    .announcement.marquee .announcement-text {
+      animation: announce-scroll var(--marquee-s, 12s) linear infinite;
+    }
+    @keyframes announce-scroll {
+      from { transform: translateX(var(--row-w)); }
+      to   { transform: translateX(-100%); }
+    }
+    /* Stopped, a long row wraps and stands still instead. */
+    .announcements.still .announcement.marquee { white-space: normal; }
+    .announcements.still .announcement.marquee .announcement-text { animation: none; max-width: 100%; }
+    @media (prefers-reduced-motion: reduce) {
+      .announcement.marquee { white-space: normal; }
+      .announcement.marquee .announcement-text { animation: none; max-width: 100%; }
+      .announce-motion { display: none; }
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Padded so the announcements stack never hides the last rows. */
+    main { padding: 1rem 2rem calc(1rem + var(--announce-h, 0px)); }
 
     .table-wrapper {
       overflow-x: auto;
@@ -263,7 +344,7 @@
       .header-right { display: contents; }
       .pills-column { grid-area: pills; flex-direction: row; gap: 0.4rem; align-items: center; }
       .status-bar { grid-area: meta; gap: 0.6rem; font-size: 0.8rem; padding-top: 0.1rem; }
-      main { padding: 0.25rem 0.5rem; }
+      main { padding: 0.25rem 0.5rem calc(0.25rem + var(--announce-h, 0px)); }
       td, th { padding: 0.3rem 0.4rem; font-size: 0.8rem; }
       table:has(td.empty-state) thead { display: none; }
     }
@@ -321,6 +402,15 @@
     </table>
     </div>
   </main>
+  <!-- Not a live region: a marquee pass would otherwise be read again.  Each new
+       announcement is read once, through #announce-region. -->
+  <div id="announcements" class="announcements" hidden>
+    <button id="announce-motion" class="announce-motion" type="button" aria-pressed="false" hidden>Stop scrolling</button>
+    <!-- Focusable and named: once the stack passes its height cap, older rows are
+         reachable only by scrolling this region. -->
+    <div id="announcement-rows" class="announcement-rows" role="region" aria-label="Announcements" tabindex="0"></div>
+  </div>
+  <div id="announce-region" class="visually-hidden" role="status" aria-live="polite"></div>
 
   <script>
     const tbody = document.getElementById('entries');
@@ -351,6 +441,13 @@
     const connEl = document.getElementById('conn-status');
     const updateBannerEl = document.getElementById('update-banner');
     const noFeedEl = document.getElementById('no-feed-modal');
+    const announcementsEl = document.getElementById('announcements');
+    const announcementRowsEl = document.getElementById('announcement-rows');
+    const announceMotionEl = document.getElementById('announce-motion');
+    const announceRegionEl = document.getElementById('announce-region');
+    // Every announcement already read out, as key + NUL + text, so a row that is
+    // only re-rendered is never read again and an edited text is read once more.
+    const announced = new Set();
 
     let previousRegs = new Set();
     let rowMap = {};
@@ -397,6 +494,96 @@
       return sign + mins + ':' + secs.toFixed(3).padStart(6, '0');
     }
 
+    // Pixels per second a too-wide announcement scrolls at.
+    const MARQUEE_PX_PER_S = 60;
+
+    // Whether the viewer stopped the scrolling; remembered on this device only.
+    let announcementsStill = false;
+    try {
+      announcementsStill = localStorage.getItem('announcementsStill') === '1';
+    } catch (e) { /* storage unavailable: start scrolling */ }
+
+    function layoutAnnouncements() {
+      // Measured unwrapped, so a stopped row still counts as too wide.
+      announcementsEl.classList.remove('still');
+      let anyLong = false;
+      for (const row of announcementRowsEl.children) {
+        const text = row.firstChild;
+        row.classList.remove('marquee');
+        // clientWidth includes the padding the text starts inside of.
+        const style = getComputedStyle(row);
+        const width = row.clientWidth
+          - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        if (text.scrollWidth > width) {
+          anyLong = true;
+          row.classList.add('marquee');
+          row.style.setProperty('--row-w', width + 'px');
+          row.style.setProperty('--marquee-s', ((width + text.scrollWidth) / MARQUEE_PX_PER_S) + 's');
+        }
+      }
+      announcementsEl.classList.toggle('still', announcementsStill);
+      announceMotionEl.hidden = !anyLong;
+      announceMotionEl.setAttribute('aria-pressed', String(announcementsStill));
+      announceMotionEl.textContent = announcementsStill ? 'Scroll long announcements' : 'Stop scrolling';
+      document.documentElement.style.setProperty(
+        '--announce-h', (announcementsEl.hidden ? 0 : announcementsEl.offsetHeight) + 'px');
+    }
+
+    // The list last drawn: updates arrive several times a second, and redrawing
+    // unchanged rows would restart every marquee before it got anywhere.
+    let announcementsDrawn = '[]';
+
+    // Rows arrive oldest first, so the newest lands at the bottom.  The text is
+    // typed freely by the timing operator, so it only ever goes in as text.
+    function renderAnnouncements(list) {
+      const drawn = JSON.stringify(list);
+      if (drawn === announcementsDrawn) return;
+      announcementsDrawn = drawn;
+      announcementRowsEl.replaceChildren();
+      const fresh = [];
+      for (const a of list) {
+        const row = document.createElement('div');
+        row.className = 'announcement';
+        const text = document.createElement('span');
+        text.className = 'announcement-text';
+        text.textContent = a.text;
+        row.appendChild(text);
+        announcementRowsEl.appendChild(row);
+        const seen = a.key + '\u0000' + a.text;
+        if (!announced.has(seen)) {
+          announced.add(seen);
+          fresh.push('Announcement: ' + a.text);
+        }
+      }
+      // Emptied when nothing new arrived, so a withdrawn announcement does not
+      // linger in the accessibility tree after the stack has changed or gone.
+      announceRegionEl.textContent = fresh.join('. ');
+      announcementsEl.hidden = list.length === 0;
+      layoutAnnouncements();
+      scrollToNewestAnnouncement();
+    }
+
+    // After layout: a wrapped row grows the stack.
+    function scrollToNewestAnnouncement() {
+      announcementRowsEl.scrollTop = announcementRowsEl.scrollHeight;
+    }
+
+    window.addEventListener('resize', layoutAnnouncements);
+    // Turning reduced motion on or off wraps or unwraps long rows without a
+    // resize, and the stack's height with them.
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onMotionChange = () => { layoutAnnouncements(); scrollToNewestAnnouncement(); };
+    if (reducedMotion.addEventListener) reducedMotion.addEventListener('change', onMotionChange);
+    else reducedMotion.addListener(onMotionChange);
+    announceMotionEl.addEventListener('click', () => {
+      announcementsStill = !announcementsStill;
+      try {
+        localStorage.setItem('announcementsStill', announcementsStill ? '1' : '0');
+      } catch (e) { /* storage unavailable: applies to this page only */ }
+      layoutAnnouncements();
+      scrollToNewestAnnouncement();
+    });
+
     function showNoFeedModal() {
       noFeedEl.classList.remove('hidden');
       // Clear the results display
@@ -414,6 +601,7 @@
       timeToGoEl.textContent = '—';
       lapsToGoEl.textContent = '—';
       classCodeMissingWrapEl.hidden = true;
+      renderAnnouncements([]);
     }
 
     function hideNoFeedModal() {
@@ -455,6 +643,7 @@
       }
       flagEl.textContent = data.flag || '—';
       flagEl.className = 'flag-indicator ' + flagClass(data.flag);
+      renderAnnouncements(data.announcements || []);
 
       // Counted only once the server holds any class codes at all: with none,
       // every car would be "without" one and the count says nothing.
