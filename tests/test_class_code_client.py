@@ -2174,3 +2174,39 @@ async def test_a_picked_run_is_resubscribed_after_a_reconnect_without_a_new_star
     (run,) = _runs_sent(calls)
     keys = {c["start_key"] for c in calls if c["type"] == "announcements"}
     assert keys == {run["start_key"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["lowercase stop", "session change"])
+async def test_a_pick_ended_while_its_failed_delivery_was_in_flight_is_not_retried(
+    monkeypatch, ending
+):
+    attempts = []
+    ref = []
+
+    async def on_batch(msg):
+        if msg["type"] != "class_code_run":
+            return
+        attempts.append(msg["run_id"])
+        if len(attempts) == 1:
+            host, client = ref
+            if ending == "lowercase stop":
+                host.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
+            else:
+                client.note_session("6", "Not In Table")
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+            raise ConnectionError("server unreachable")
+
+    task, host, writer, calls, client = await _picking(
+        monkeypatch, on_batch=on_batch, retry_initial=0.05,
+    )
+    ref[:] = [host, client]
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: attempts)
+        await asyncio.sleep(0.4)
+    finally:
+        await _finish(task)
+    assert attempts == [PICKED_ID]
+    assert client._run is None

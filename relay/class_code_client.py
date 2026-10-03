@@ -1248,7 +1248,7 @@ class ClassCodeClient:
                 if self._run is not None and self._run["run_id"].lower() == stopped_id:
                     self._run = None
                 flying = self._run_in_flight
-                if flying is not None and flying["run_id"] == run.run_id:
+                if flying is not None and flying["run_id"].lower() == stopped_id:
                     flying["_stopped"] = True
                 # Every stop clears its run's rows: the server may hold rows
                 # this process never forwarded, from before a relay restart,
@@ -1331,8 +1331,11 @@ class ClassCodeClient:
                 self._drop_announcement_views()
                 self._ann_run = None
                 self._ann_due = None
-            # While picking, only a pick can be held here.
+            # While picking, only a pick can be held here or in flight, and
+            # a failed delivery of one dropped is not retried either.
             self._run = None
+            if self._run_in_flight is not None:
+                self._run_in_flight["_stopped"] = True
             return
         run_id = max(ids, key=lambda r: int(r, 16))
         if self._ann_run is not None and self._ann_run.lower() == run_id.lower():
@@ -1488,7 +1491,8 @@ class ClassCodeClient:
         """Hand the started *run* to *on_batch*; return whether nothing is left to retry.
 
         A failed delivery is kept for the retry unless a newer run has been
-        announced meanwhile, which replaces it, or the run has stopped.
+        announced meanwhile, which replaces it, or the run has stopped — or,
+        for a run picked by name, the pick has been dropped.
         """
         age = time.monotonic() - run["_observed"]
         if age > MAX_ENTRY_AGE:
