@@ -2546,3 +2546,21 @@ def test_a_refresh_restores_nothing_for_another_session_or_a_closed_one(state, c
         _closing(state, "Race 7 - 2nd Race")
     _refresh(state, ("Track clear", 100))
     assert state.class_code_run is None
+
+
+def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
+    """The crash lost the new run's start, and the store still holds the
+    previous run; the next $B discards that, and the refresh restores the
+    current one."""
+    import json
+
+    _started(state, run_id="0x40002805", name="Race 6")
+    _session(state, "Race 6", number="26")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run["run_id"] == "0x40002805"
+    _session(restored)
+    assert restored.class_code_run is None
+    _refresh(restored, ("Track clear", 100))
+    assert restored.class_code_run["run_id"] == "0x40002806"
+    assert _shown(restored) == ["Track clear"]
