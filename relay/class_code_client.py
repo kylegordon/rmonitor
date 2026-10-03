@@ -926,13 +926,15 @@ class ClassCodeClient:
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         # What picks a run by name while no start has been read — the last
-        # complete pull's run table, the last non-95 $B description, whether
-        # a real start has been read, and the lower-cased ids of the runs
-        # seen stopping meanwhile; all outlive a reconnect.
+        # complete pull's run table, the last $B number and non-95
+        # description, whether a real start has been read, and the
+        # lower-cased ids of the runs seen ending meanwhile; all outlive a
+        # reconnect.
         self._runs: list[dict] | None = None
+        self._session_number = ""
         self._session_desc = ""
         self._seen_start = False
-        self._stopped_runs: set[str] = set()
+        self._ended_runs: set[str] = set()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
         self._connected = False
@@ -1267,7 +1269,7 @@ class ClassCodeClient:
                 if not self._seen_start:
                     # A run seen stopping is never picked, under any later
                     # description: it has ended.
-                    self._stopped_runs.add(stopped_id)
+                    self._ended_runs.add(stopped_id)
                 if ann_stopped:
                     self._drop_announcement_views()
                     self._ann_run = None
@@ -1317,30 +1319,51 @@ class ClassCodeClient:
         started.  Names repeat across meetings, so a same-named run from
         elsewhere can be picked; that risk is accepted.
 
-        Picking is edge-triggered: only a changed description or a newly
-        pulled run table picks, never a ``$B,95``.  Nothing is picked when
-        the newest run of the name has been seen stopping, under whatever
-        description — it has ended, and an older one of the name is older
-        still; a newer run of the name, in a later pull, is picked.
+        Picking is edge-triggered: only a new session — the number or the
+        description changing, as the server's ``_run`` reads it — or a newly
+        pulled run table picks, and only while a session is open, never
+        after its ``$B,95``.  A session boundary ends the run picked for the
+        session it closes, as a stop notice does.  Nothing is picked when
+        the newest run of the name has ended, under whatever description —
+        an older one of the name is older still; a newer run of the name, in
+        a later pull, is picked.
 
         :param number: the record's session number.
         :param description: the record's session description.
         """
-        if number == "95" or not description or description == self._session_desc:
+        if number == "95":
+            if self._session_number not in ("", "95"):
+                self._end_session()
+            self._session_number = "95"
             return
+        if not description or (number, description) == (
+            self._session_number, self._session_desc
+        ):
+            return
+        if self._session_number not in ("", "95"):
+            self._end_session()
+        self._session_number = number
         self._session_desc = description
         self._pick_run()
+
+    def _end_session(self) -> None:
+        # Its views stay open until the next pick or its stop notice: the
+        # board still shows the closed session, and the server hides its
+        # rows itself.
+        if not self._seen_start and self._ann_run is not None:
+            self._ended_runs.add(self._ann_run.lower())
 
     def _pick_run(self) -> None:
         if (
             self._seen_start
+            or self._session_number in ("", "95")
             or not self._session_desc
             or self._runs is None
         ):
             return
         ids = [r["run_id"] for r in self._runs if r["name"] == self._session_desc]
         run_id = max(ids, key=lambda r: int(r, 16)) if ids else None
-        if run_id is None or run_id.lower() in self._stopped_runs:
+        if run_id is None or run_id.lower() in self._ended_runs:
             if self._ann_run is not None:
                 # Cleared as a stop clears, so a start for it accepted after
                 # all — a delivery in flight — has no rows to show should a

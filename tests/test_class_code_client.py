@@ -2319,3 +2319,39 @@ async def test_a_newer_run_of_a_stopped_picks_name_is_picked_from_a_later_pull(m
         await _finish(task)
     assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID, "0x4000280B"]
     assert _view_opens(second) == [(1, str(0x4000280B))]
+
+
+@pytest.mark.asyncio
+async def test_a_session_closed_before_the_run_table_arrives_is_not_picked(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch, record_idle=0.2)
+    try:
+        assert client._runs is None
+        client.note_session("5", PICK_NAME)
+        client.note_session("95", PICK_NAME)
+        await _until(lambda: client._runs is not None)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _runs_sent(calls) == []
+    assert _view_opens(writer) == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_session_number_under_the_same_description_ends_the_pick(monkeypatch):
+    """The picked run belongs to the session that picked it; the run table,
+    pulled once per connect, cannot hold the new session's run."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        client.note_session("6", PICK_NAME)
+        await _until(lambda: _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert len(_view_opens(writer)) == 1
+    (clear,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert clear["run_id"] == PICKED_ID and clear["start_key"] == run["start_key"]
+    assert client._ann_run is None
