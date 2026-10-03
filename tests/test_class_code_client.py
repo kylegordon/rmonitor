@@ -1932,3 +1932,35 @@ async def test_a_reply_awaited_when_a_change_was_pushed_is_withheld(monkeypatch)
         await _finish(task)
     assert _announcements(calls) == [[]]
     assert [v for v, _ in _view_opens(writer)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_runs_empty_reply_is_dropped_but_its_stop_clear_kept(monkeypatch):
+    """Only ``stopped`` marks a clear; an empty reply for a run no longer
+    subscribed could otherwise restore that run on the server."""
+    delivered = []
+    host_ref = []
+
+    async def on_batch(msg):
+        if msg["type"] != "announcements":
+            return
+        if msg["run_id"] == RUN_ID and not msg.get("stopped") and not delivered:
+            host_ref[0].queue.append(_run_state("Race 7", run_id=0x40002806))
+            await asyncio.sleep(0.1)  # the hold loop subscribes the new run meanwhile
+            raise ConnectionError("server unreachable")
+        delivered.append((msg["run_id"], bool(msg.get("stopped"))))
+
+    task, host, writer, _, _ = await _running(
+        monkeypatch, on_batch=on_batch, retry_initial=0.05, keepalive_interval=0.05,
+    )
+    host_ref.append(host)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: delivered)
+        host.queue.append(_run_state(state="stopped"))
+        await _until(lambda: (RUN_ID, True) in delivered)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert (RUN_ID, False) not in delivered
+    assert ("0x40002806", False) in delivered

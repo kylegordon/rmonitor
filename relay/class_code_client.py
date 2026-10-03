@@ -1310,9 +1310,11 @@ class ClassCodeClient:
         announcements, self._announcements = self._announcements, {}
         kept: dict[str, dict] = {}
         for run_id, msg in announcements.items():
-            if msg["rows"] and run_id != self._ann_run:
-                # Rows of a run no longer subscribed: delivered now, they
-                # would replace the newer run's in the server's one store.
+            if not msg.get("stopped") and run_id != self._ann_run:
+                # A reply for a run no longer subscribed, even an empty one:
+                # delivered now, it would replace the newer run's rows in the
+                # server's one store, or restore the old run there.  Only a
+                # stop's clear is kept.
                 log.debug("Dropping undelivered announcements for run %s", run_id)
                 continue
             if not await self._deliver_announcement(msg):

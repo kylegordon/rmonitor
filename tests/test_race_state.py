@@ -2564,3 +2564,29 @@ def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
     _refresh(restored, ("Track clear", 100))
     assert restored.class_code_run["run_id"] == "0x40002806"
     assert _shown(restored) == ["Track clear"]
+
+
+def test_a_retired_run_stays_retired_across_a_restart(state):
+    """A same-named next session discarded the run; after a reload, the old
+    subscription's refresh must not restore it."""
+    import json
+
+    _started(state)
+    _session(state)
+    _session(state, number="28")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored, number="28")
+    _refresh(restored, ("Track clear", 100))
+    assert restored.class_code_run is None
+    assert _shown(restored) == []
+
+
+def test_retired_runs_expire_with_the_run_ttl():
+    restored = RaceState()
+    now = time.time()
+    restored.load_class_codes({"retired_runs": {
+        "0x40002806": now - 13 * 3600, "0x40002805": now - 3600,
+        "Race 7": now, "0x40002804": "soon",
+    }})
+    assert restored._retired_runs == {"0x40002805": now - 3600}

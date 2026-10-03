@@ -161,10 +161,10 @@ class RaceState:
         # since and waits for its own $B (see _run).
         self.class_code_run: dict | None = None
         self.class_code_run_next: dict | None = None
-        # Lowercased ids of the started runs a session boundary discarded;
-        # see _restore_started_run.  Not persisted: a run loaded from the
-        # store and then discarded is added like any other.
-        self._retired_runs: set[str] = set()
+        # The started runs a session boundary discarded, lowercased id to the
+        # time it did; see _restore_started_run.  Saved with the class codes,
+        # each kept for _CLASS_CODE_TTL_SECONDS.
+        self._retired_runs: dict[str, float] = {}
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
@@ -316,7 +316,7 @@ class RaceState:
             and nxt["name"] != desc
         ):
             # A session it does not name has begun, so it is not the next one.
-            self._retired_runs.add(nxt["run_id"].lower())
+            self._retire_run(nxt)
             self.class_code_run_next = nxt = None
         if number == "95":
             # With no run bound, a waiting run stands in for the session shown.
@@ -336,7 +336,7 @@ class RaceState:
             "session_number", number
         ) != number:
             if cur is not None:
-                self._retired_runs.add(cur["run_id"].lower())
+                self._retire_run(cur)
             if nxt is not None and nxt["name"] == desc:
                 self.class_code_run = nxt | {"session_number": number}
                 self.class_code_run_next = None
@@ -760,6 +760,15 @@ class RaceState:
         self.announcements = store
         self._dirty = True
         return "announcements"
+
+    def _retire_run(self, run: dict) -> None:
+        """Record that a session boundary discarded *run*; see :meth:`_restore_started_run`."""
+        now = time.time()
+        self._retired_runs = {
+            k: t for k, t in self._retired_runs.items() if now - t <= _CLASS_CODE_TTL_SECONDS
+        }
+        self._retired_runs[run["run_id"].lower()] = now
+        self.class_codes_revision += 1
 
     def _restore_started_run(self, run_id: str, name) -> None:
         """Bind the relay's subscribed run *run_id* when no run is bound.
@@ -1336,7 +1345,8 @@ class RaceState:
         The registry preload is saved beside it under ``"preload"``, for the
         same reason and because the relay pulls it again only on a reconnect;
         the started runs under ``"run"`` and ``"run_next"``, because the host
-        announces each once.
+        announces each once; and the runs a session boundary retired under
+        ``"retired_runs"``, so a restart cannot restore one.
         """
         return {
             "class_codes": self.class_codes,
@@ -1347,6 +1357,7 @@ class RaceState:
             },
             "run": self.class_code_run,
             "run_next": self.class_code_run_next,
+            "retired_runs": self._retired_runs,
         }
 
     def load_class_codes(self, data: dict) -> None:
@@ -1402,6 +1413,7 @@ class RaceState:
         runs = data if isinstance(data, dict) else {}
         self.class_code_run = _restore_run(runs.get("run"), now)
         self.class_code_run_next = _restore_run(runs.get("run_next"), now)
+        self._retired_runs = _restore_retired_runs(runs.get("retired_runs"), now)
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.
@@ -1490,6 +1502,27 @@ def _preload_store(
         "runs_by_name": runs_by_name,
         "has_codes": any(e["class_code"] for e in entries),
     }
+
+
+def _restore_retired_runs(value, now: float) -> dict[str, float]:
+    """Return the retired runs saved by :meth:`RaceState.class_codes_to_dict`.
+
+    A malformed entry, or one retired longer than
+    :data:`_CLASS_CODE_TTL_SECONDS` ago, is dropped; a date is capped at *now*.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for run_id, stamp in value.items():
+        stamp = _finite_stamp(stamp)
+        if (
+            isinstance(run_id, str)
+            and _RUN_ID.fullmatch(run_id)
+            and stamp is not None
+            and now - stamp <= _CLASS_CODE_TTL_SECONDS
+        ):
+            out[run_id.lower()] = min(stamp, now)
+    return out
 
 
 def _restore_run(value, now: float) -> dict | None:
