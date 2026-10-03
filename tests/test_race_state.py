@@ -2586,10 +2586,10 @@ def test_retired_runs_expire_with_the_run_ttl():
     restored = RaceState()
     now = time.time()
     restored.load_class_codes({"retired_runs": {
-        "0x40002806": now - 13 * 3600, "0x40002805": now - 3600,
-        "Race 7": now, "0x40002804": "soon",
+        "0x40002806\tk1": now - 13 * 3600, "0x40002805\tk2": now - 3600,
+        "Race 7\tk3": now, "0x40002804\tk4": "soon", "0x40002803": now,
     }})
-    assert restored._retired_runs == {"0x40002805": now - 3600}
+    assert restored._retired_runs == {"0x40002805\tk2": now - 3600}
 
 
 def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(state):
@@ -2604,25 +2604,44 @@ def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(sta
     assert _shown(state) == ["Next"]
 
 
-def test_a_run_restarted_under_a_retired_id_is_restored(state, monkeypatch):
-    """A restart under the same id is a new start: its refresh, dated after
-    the retirement, restores it; the old start's refresh does not."""
+def test_a_run_restarted_under_a_retired_id_is_restored(state):
+    """A restart under the same id is a new start with its own key: its
+    refresh restores it, while the retired start's never does — however
+    late a retry of it arrives."""
     import json
 
-    import server.race_state as rs
-
-    _started(state)
+    state.process({"type": "class_code_run", "run_id": "0x40002806",
+                   "name": "Race 7 - 2nd Race", "start_key": "first"})
     _session(state)
     _session(state, "Race 8 - Final", number="28")
-    later = time.time() + 3600
-    monkeypatch.setattr(rs.time, "time", lambda: later)
     restored = RaceState()
     restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
     _session(restored, number="29")
     old = {"type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
-           "rows": [{"text": "Track clear", "ticks": 1}], "run_age_seconds": 7200}
+           "rows": [{"text": "Track clear", "ticks": 1}], "start_key": "first"}
     restored.process(old)
     assert restored.class_code_run is None
-    restored.process(old | {"run_age_seconds": 5})
+    restored.process(old | {"start_key": "second"})
     assert restored.class_code_run["run_id"] == "0x40002806"
+    assert _shown(restored) == ["Track clear"]
+
+
+def test_a_restart_lost_in_a_crash_is_restored_after_its_saved_closed_run_retires(state):
+    """The store holds the run's earlier, closed start; the restart was lost.
+    The next $B retires the saved start only, so the restart's refresh restores."""
+    import json
+
+    state.process({"type": "class_code_run", "run_id": "0x40002806",
+                   "name": "Race 7 - 2nd Race", "start_key": "first"})
+    _session(state)
+    _closing(state)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run["closed"]
+    _session(restored, number="28")
+    assert restored.class_code_run is None
+    restored.process({"type": "announcements", "run_id": "0x40002806",
+                      "name": "Race 7 - 2nd Race", "start_key": "second",
+                      "rows": [{"text": "Track clear", "ticks": 1}]})
+    assert restored.class_code_run["start_key"] == "second"
     assert _shown(restored) == ["Track clear"]

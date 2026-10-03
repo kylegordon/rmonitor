@@ -919,7 +919,9 @@ class ClassCodeClient:
         # both outlive a reconnect.
         self._ann_run: str | None = None
         self._ann_name = ""
-        self._ann_started = 0.0
+        # Names the start the relay read, so the server can tell a restart
+        # under the same run id from the start it retired.
+        self._ann_start_key = ""
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         self._keepalive = b""
@@ -1246,12 +1248,16 @@ class ClassCodeClient:
                     self._ann_due = None
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
-            self._run = {"run_id": run.run_id, "name": run.name, "_observed": time.monotonic()}
+            start_key = uuid.uuid4().hex
+            self._run = {
+                "run_id": run.run_id, "name": run.name, "start_key": start_key,
+                "_observed": time.monotonic(),
+            }
             if run.run_id != self._ann_run:
                 self._drop_announcement_views()
                 self._ann_run = run.run_id
             self._ann_name = run.name
-            self._ann_started = time.monotonic()
+            self._ann_start_key = start_key
             # The reply holds the rows that already exist.
             self._ann_due = asyncio.get_running_loop().time()
         for frame in self._ann_parser.feed(data):
@@ -1278,7 +1284,7 @@ class ClassCodeClient:
                 self._queue_announcement({
                     "type": "announcements", "run_id": self._ann_run,
                     "name": self._ann_name, "rows": frame.rows,
-                    "_started": self._ann_started,
+                    "start_key": self._ann_start_key,
                 })
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
@@ -1416,6 +1422,7 @@ class ClassCodeClient:
                 "type": "class_code_run",
                 "run_id": run["run_id"],
                 "name": run["name"],
+                "start_key": run["start_key"],
                 "age_seconds": round(age, 3),
             })
         except Exception:
@@ -1438,16 +1445,9 @@ class ClassCodeClient:
         self._announcements[msg["run_id"]] = msg
 
     async def _deliver_announcement(self, msg: dict) -> bool:
-        """Hand the announcements *msg* to *on_batch*; return whether it was delivered.
-
-        A reply carries ``run_age_seconds``, the time since its run's start
-        was read, measured now so a delayed retry is dated correctly.
-        """
-        out = {k: v for k, v in msg.items() if k != "_started"}
-        if "_started" in msg:
-            out["run_age_seconds"] = round(time.monotonic() - msg["_started"], 3)
+        """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""
         try:
-            await self.on_batch(out)
+            await self.on_batch(msg)
         except Exception:
             log.exception("Could not forward the announcements for run %s", msg["run_id"])
             return False

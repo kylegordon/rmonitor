@@ -164,9 +164,10 @@ class RaceState:
         # since and waits for its own $B (see _run).
         self.class_code_run: dict | None = None
         self.class_code_run_next: dict | None = None
-        # The started runs a session boundary discarded, lowercased id to the
-        # time it did; see _restore_started_run.  Saved with the class codes,
-        # each kept for _CLASS_CODE_TTL_SECONDS.
+        # The run starts a session boundary discarded, keyed "<lowercased
+        # run id>\t<start key>", to the time it did; see
+        # _restore_started_run.  Saved with the class codes, each kept for
+        # _CLASS_CODE_TTL_SECONDS.
         self._retired_runs: dict[str, float] = {}
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
@@ -705,6 +706,9 @@ class RaceState:
         self.class_code_run_next = {
             "run_id": run_id, "name": name, "received_at": time.time() - age,
         }
+        start_key = msg.get("start_key")
+        if isinstance(start_key, str) and start_key:
+            self.class_code_run_next["start_key"] = start_key
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
@@ -737,7 +741,7 @@ class RaceState:
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
         if not msg.get("stopped"):
-            self._restore_started_run(run_id, msg.get("name"), msg.get("run_age_seconds"))
+            self._restore_started_run(run_id, msg.get("name"), msg.get("start_key"))
             self._renew_started_run(run_id)
         rows = []
         for row in raw:
@@ -772,10 +776,10 @@ class RaceState:
         self._retired_runs = {
             k: t for k, t in self._retired_runs.items() if now - t <= _CLASS_CODE_TTL_SECONDS
         }
-        self._retired_runs[run["run_id"].lower()] = now
+        self._retired_runs[_start_id(run["run_id"], run.get("start_key"))] = now
         self.class_codes_revision += 1
 
-    def _restore_started_run(self, run_id: str, name, run_age) -> None:
+    def _restore_started_run(self, run_id: str, name, start_key) -> None:
         """Bind the relay's subscribed run *run_id* when no run is bound.
 
         A server that crashed after accepting a run's start but before saving
@@ -786,10 +790,11 @@ class RaceState:
         (the next ``$B`` binds that), *name* is the running session's
         description, and the session has not closed.  Never a run a session
         boundary discarded (``_retired_runs``): a same-named next session must
-        not take the old run back.  A run restarted under the same id is a new
-        start, though, so a retired id is restored when *run_age* — seconds
-        since the relay read the run's start — dates that start after the
-        retirement.
+        not take the old run back.  The relay names each start it reads with
+        a *start_key*, carried by the start and every refresh, and that start
+        is what is retired: a run restarted under the same id has another key
+        and may be restored.  A message without one matches only a start
+        retired without one.
 
         A known limitation, accepted: run names repeat, and the next run's
         start can arrive before the current session ends.  If the server loses
@@ -803,7 +808,7 @@ class RaceState:
         if (
             self.class_code_run is not None
             or (nxt is not None and nxt["run_id"].lower() == run_id.lower())
-            or self._retired_since_start(run_id, run_age)
+            or _start_id(run_id, start_key) in self._retired_runs
             or not isinstance(name, str)
             or not name
             or name != self.run_description
@@ -815,25 +820,10 @@ class RaceState:
             "run_id": run_id, "name": name, "received_at": time.time(),
             "session_number": self._run_number,
         }
+        if isinstance(start_key, str) and start_key:
+            self.class_code_run["start_key"] = start_key
         self.class_codes_revision += 1
         self._dirty = True
-
-    def _retired_since_start(self, run_id: str, run_age) -> bool:
-        """Whether *run_id* was retired after the start *run_age* seconds ago.
-
-        With no usable age the retirement stands.
-        """
-        retired_at = self._retired_runs.get(run_id.lower())
-        if retired_at is None:
-            return False
-        # _coerce_scalars has made it a string.
-        try:
-            age = float(run_age)
-        except (TypeError, ValueError):
-            return True
-        if not math.isfinite(age) or age < 0:
-            return True
-        return time.time() - age <= retired_at
 
     def _renew_started_run(self, run_id: str) -> None:
         """Re-date the held started run *run_id* as read now, at most hourly."""
@@ -1537,6 +1527,11 @@ def _preload_store(
     }
 
 
+def _start_id(run_id: str, start_key) -> str:
+    """Return the key one run start is retired under: lowercased id, tab, start key."""
+    return run_id.lower() + "\t" + (start_key if isinstance(start_key, str) else "")
+
+
 def _restore_retired_runs(value, now: float) -> dict[str, float]:
     """Return the retired runs saved by :meth:`RaceState.class_codes_to_dict`.
 
@@ -1546,15 +1541,17 @@ def _restore_retired_runs(value, now: float) -> dict[str, float]:
     if not isinstance(value, dict):
         return {}
     out = {}
-    for run_id, stamp in value.items():
+    for key, stamp in value.items():
         stamp = _finite_stamp(stamp)
+        run_id = key.split("\t", 1)[0] if isinstance(key, str) else None
         if (
-            isinstance(run_id, str)
+            run_id is not None
+            and "\t" in key
             and _RUN_ID.fullmatch(run_id)
             and stamp is not None
             and now - stamp <= _CLASS_CODE_TTL_SECONDS
         ):
-            out[run_id.lower()] = min(stamp, now)
+            out[key] = min(stamp, now)
     return out
 
 
@@ -1583,6 +1580,8 @@ def _restore_run(value, now: float) -> dict | None:
         run["closed"] = True
     if isinstance(value.get("session_number"), str):
         run["session_number"] = value["session_number"]
+    if isinstance(value.get("start_key"), str) and value["start_key"]:
+        run["start_key"] = value["start_key"]
     return run
 
 
