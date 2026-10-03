@@ -1257,8 +1257,9 @@ class ClassCodeClient:
                 # replaces any rows of that run not yet delivered, and keeps a
                 # failed delivery of them from being put back.
                 self._queue_announcement({
-                    "type": "announcements", "run_id": run.run_id, "rows": [],
-                    "stopped": True,
+                    "type": "announcements",
+                    "run_id": self._ann_run if ann_stopped else run.run_id,
+                    "rows": [], "stopped": True,
                     # So a late clear of a retired start never clears a
                     # restart of the same run.
                     "start_key": self._ann_start_key if ann_stopped else "",
@@ -1422,7 +1423,9 @@ class ClassCodeClient:
         announcements, self._announcements = self._announcements, {}
         kept: dict[str, dict] = {}
         for run_id, msg in announcements.items():
-            if not msg.get("stopped") and run_id != self._ann_run:
+            if not msg.get("stopped") and (
+                self._ann_run is None or run_id != self._ann_run.lower()
+            ):
                 # A reply for a run no longer subscribed: its rows still
                 # matter — that run can be the one shown until the session
                 # boundary — but marked, so the server never restores or
@@ -1543,9 +1546,13 @@ class ClassCodeClient:
 
         Kept per run, so a clear for one run never displaces another run's
         message; delivered oldest first, so the server ends on the newest.
+        The queue is keyed by the lower-cased run id.
         """
-        self._announcements.pop(msg["run_id"], None)
-        self._announcements[msg["run_id"]] = msg
+        # Keyed without case: a notice's id may be lower-case hex where a
+        # picked run's, from the run table, is upper-case.
+        key = msg["run_id"].lower()
+        self._announcements.pop(key, None)
+        self._announcements[key] = msg
 
     async def _deliver_announcement(self, msg: dict) -> bool:
         """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""

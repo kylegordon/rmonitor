@@ -2243,3 +2243,36 @@ async def test_the_picked_run_starting_keeps_the_picks_start(monkeypatch, lowerc
     assert client._ann_start_key == run["start_key"]
     assert client._ann_run == PICKED_ID
     assert len(_view_opens(writer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lowercase_stop_replaces_the_picks_failed_rows(monkeypatch):
+    """The clear and the picked run's rows are queued as one run, so rows
+    whose delivery failed during the stop are never sent after its clear."""
+    sent = []
+    ref = []
+
+    async def on_batch(msg):
+        if msg["type"] != "announcements":
+            return
+        sent.append(msg)
+        if msg["rows"] and len(sent) == 1:
+            ref[0].queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
+            await asyncio.sleep(0.15)  # the hold loop reads the stop meanwhile
+            raise ConnectionError("server unreachable")
+
+    writer = FakeWriter()
+    host = PullingViewHost(writer, rows=[("Track clear", 5)])
+    ref.append(host)
+    task, _, _, _, client = await _picking(
+        monkeypatch, connections=[(host, writer)], on_batch=on_batch, retry_initial=0.05,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: any(m.get("stopped") for m in sent))
+        await asyncio.sleep(0.3)
+    finally:
+        await _finish(task)
+    assert [bool(m["rows"]) for m in sent] == [True, False]
+    assert sent[-1]["run_id"] == PICKED_ID
