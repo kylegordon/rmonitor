@@ -63,6 +63,9 @@ _PRACTICE_KEYWORDS = (
 # reused across meetings, so a longer life would pair a reused transponder
 # with last meeting's code — a plausible wrong value, never shown.
 _CLASS_CODE_TTL_SECONDS = 12 * 3600
+# How often an announcements refresh renews its started run's date, at most;
+# each renewal makes the periodic save rewrite the class-code store.
+_RUN_RENEW_SECONDS = 3600
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
@@ -710,10 +713,18 @@ class RaceState:
         lands at the bottom of the page — and never by priority, which
         nothing reads.  An unchanged message returns *None*, so the relay's
         periodic refresh broadcasts nothing.
+
+        A message not marked ``stopped`` comes from a subscription to a run
+        the relay holds as started, so it renews that run's date when it is
+        the started run held here (:meth:`_renew_started_run`): a session
+        running past :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so
+        its announcements, while the relay still refreshes it.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
+        if not msg.get("stopped"):
+            self._renew_started_run(run_id)
         rows = []
         for row in raw:
             if not isinstance(row, dict):
@@ -741,6 +752,19 @@ class RaceState:
         self.announcements = store
         self._dirty = True
         return "announcements"
+
+    def _renew_started_run(self, run_id: str) -> None:
+        """Re-date the held started run *run_id* as read now, at most hourly."""
+        now = time.time()
+        for run in (self.class_code_run, self.class_code_run_next):
+            if (
+                run is not None
+                and not run.get("closed")
+                and run["run_id"].lower() == run_id.lower()
+                and now - run["received_at"] > _RUN_RENEW_SECONDS
+            ):
+                run["received_at"] = now
+                self.class_codes_revision += 1
 
     def _shown_announcements(self) -> list[dict]:
         """Return the announcements to show, as ``{"key", "text"}`` dicts.

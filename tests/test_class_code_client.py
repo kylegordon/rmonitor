@@ -1818,7 +1818,7 @@ async def test_a_stop_clears_announcements_this_process_never_forwarded(monkeypa
     finally:
         await _finish(task)
     assert [c for c in calls if c["type"] == "announcements"] == [
-        {"type": "announcements", "run_id": RUN_ID, "rows": []},
+        {"type": "announcements", "run_id": RUN_ID, "rows": [], "stopped": True},
     ]
 
 
@@ -1871,3 +1871,36 @@ async def test_a_failed_clear_is_retried_beside_another_runs_clear(monkeypatch):
         await _finish(task)
     assert attempts.count(RUN_ID) == 2
     assert attempts.count("0x40002804") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivery_of_an_earlier_runs_rows_is_not_retried_over_a_newer_run(
+    monkeypatch
+):
+    """The server holds one run's rows; a retry of the old run's would hide the new one's."""
+    delivered = []
+    host_ref = []
+
+    async def on_batch(msg):
+        if msg["type"] != "announcements":
+            return
+        if msg["run_id"] == RUN_ID and not delivered:
+            host = host_ref[0]
+            host.rows = [("New", 6)]
+            host.queue.append(_run_state("Race 7", run_id=0x40002806))
+            await asyncio.sleep(0.1)  # the hold loop subscribes the new run meanwhile
+            raise ConnectionError("server unreachable")
+        delivered.append((msg["run_id"], [r["text"] for r in msg["rows"]]))
+
+    task, host, writer, _, _ = await _running(
+        monkeypatch, [("Old", 5)], on_batch=on_batch,
+        retry_initial=0.05, keepalive_interval=0.05,
+    )
+    host_ref.append(host)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: delivered)
+        await asyncio.sleep(0.3)
+    finally:
+        await _finish(task)
+    assert delivered == [("0x40002806", ["New"])]

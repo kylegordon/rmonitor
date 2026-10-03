@@ -1234,9 +1234,10 @@ class ClassCodeClient:
                 # and it applies the clear only to the run it holds.  It
                 # replaces any rows of that run not yet delivered, and keeps a
                 # failed delivery of them from being put back.
-                self._queue_announcement(
-                    {"type": "announcements", "run_id": run.run_id, "rows": []}
-                )
+                self._queue_announcement({
+                    "type": "announcements", "run_id": run.run_id, "rows": [],
+                    "stopped": True,
+                })
                 if run.run_id == self._ann_run:
                     self._drop_announcement_views()
                     self._ann_run = None
@@ -1300,6 +1301,11 @@ class ClassCodeClient:
         announcements, self._announcements = self._announcements, {}
         kept: dict[str, dict] = {}
         for run_id, msg in announcements.items():
+            if msg["rows"] and run_id != self._ann_run:
+                # Rows of a run no longer subscribed: delivered now, they
+                # would replace the newer run's in the server's one store.
+                log.debug("Dropping undelivered announcements for run %s", run_id)
+                continue
             if not await self._deliver_announcement(msg):
                 failed = True
                 # Unless a newer message for the run was read meanwhile.

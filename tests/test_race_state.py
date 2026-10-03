@@ -1,5 +1,7 @@
 """Tests for race state management."""
 
+import time
+
 import pytest
 
 from server.race_state import RaceState
@@ -2482,3 +2484,31 @@ def test_another_runs_stop_does_not_clear_the_announcements_held(state):
     _announce(state, ("Track clear", 100))
     assert _announce(state, run_id="0x40002805") is None
     assert _shown(state) == ["Track clear"]
+
+
+def test_a_refreshed_session_keeps_its_announcements_past_the_run_ttl(state, monkeypatch):
+    """The relay's refreshes prove the run is still started, so a session
+    running past the 12-hour run TTL keeps its announcements."""
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    for hours in (2, 4, 6, 8, 10, 12, 14):
+        monkeypatch.setattr(rs.time, "time", lambda h=hours: t0 + h * 3600)
+        _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    monkeypatch.setattr(rs.time, "time", lambda: t0 + 2 * 3600)
+    state.process({"type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True})
+    assert state.class_code_run["received_at"] == t0
