@@ -2473,3 +2473,12 @@ def test_announcements_do_not_carry_into_a_same_named_session_through_the_preloa
     snap = state.snapshot()
     assert snap["class_code_scope"] == "0x40002806"  # the fallback still picks it
     assert snap["announcements"] == []
+
+
+def test_another_runs_stop_does_not_clear_the_announcements_held(state):
+    """The relay clears on every stop, including runs it never subscribed."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    assert _announce(state, run_id="0x40002805") is None
+    assert _shown(state) == ["Track clear"]

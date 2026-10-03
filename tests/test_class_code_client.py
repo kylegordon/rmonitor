@@ -1178,10 +1178,12 @@ def test_run_state_parser_ignores_other_text():
 
 
 def _recording():
+    """Record what *on_batch* is handed, except the announcements clear every stop sends."""
     calls = []
 
     async def on_batch(msg):
-        calls.append(msg)
+        if msg["type"] != "announcements":
+            calls.append(msg)
     return calls, on_batch
 
 
@@ -1294,6 +1296,8 @@ async def test_a_run_stopped_while_its_failed_delivery_was_in_flight_is_not_retr
     calls = []
 
     async def on_batch(msg):
+        if msg["type"] == "announcements":
+            return
         calls.append(msg["run_id"])
         if len(calls) == 1:
             reader._items.append(b"".join(
@@ -1327,6 +1331,8 @@ async def test_a_run_stopped_while_the_preload_is_delivered_is_not_forwarded(mon
     calls = []
 
     async def on_batch(msg):
+        if msg["type"] == "announcements":
+            return
         calls.append(msg["type"])
         if msg["type"] == "class_code_preload":
             reader._then.append(_run_state(state="stopped"))
@@ -1799,3 +1805,18 @@ async def test_a_failed_announcements_delivery_is_retried_and_a_newer_one_replac
     finally:
         await _finish(task)
     assert attempts == ([["First"], ["Second"]] if newer else [["First"], ["First"]])
+
+
+@pytest.mark.asyncio
+async def test_a_stop_clears_announcements_this_process_never_forwarded(monkeypatch):
+    """After a relay restart the server may still hold the run's rows, so
+    the stop's clear does not depend on what this process forwarded."""
+    task, host, writer, calls, _ = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state(state="stopped"))
+        await _until(lambda: _announcements(calls))
+    finally:
+        await _finish(task)
+    assert [c for c in calls if c["type"] == "announcements"] == [
+        {"type": "announcements", "run_id": RUN_ID, "rows": []},
+    ]

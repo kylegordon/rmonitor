@@ -701,7 +701,8 @@ class RaceState:
 
         Every message is the relay's full truth for ``run_id``, read from a
         fresh subscription, and replaces whatever was held; ``rows: []`` is
-        also how the relay clears them when the run stops.  A message whose
+        also how the relay clears them when the run stops — on every stop,
+        so empty rows for a run other than the one held are ignored.  A message whose
         run id is not of the host's ``0x4000xxxx`` form, or whose rows are not
         a list, is ignored.  Each row keeps its text, its creation ``ticks``
         (0 when unusable) and its priority, forwarded raw; a row with no text
@@ -729,6 +730,10 @@ class RaceState:
                 "ticks": ticks,
                 "priority": priority if isinstance(priority, str) else "",
             })
+        if not rows and run_id.lower() != self.announcements["run_id"].lower():
+            # The relay clears on every stop, so this is another run's stop,
+            # and must not erase the rows of the run held.
+            return None
         rows.sort(key=lambda r: r["ticks"])
         store = {"run_id": run_id, "rows": rows}
         if store == self.announcements:

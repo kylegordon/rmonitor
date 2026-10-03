@@ -739,3 +739,36 @@ def test_the_page_never_reads_announcement_priority() -> None:
     assert not re.search(r"""\.priority\b|\[\s*['"]priority['"]""", page), (
         "the page must never read an announcement's priority"
     )
+
+
+def test_scrolling_announcements_can_be_stopped() -> None:
+    """Guards WCAG 2.2.2: text that moves for more than five seconds needs a control
+    that stops it, beyond the system's reduced-motion setting.
+
+    A toggle button in the stack wraps a long row and stands it still. It is a real
+    ``<button>`` with ``aria-pressed`` so it is reachable by keyboard and its state is
+    announced. As elsewhere on the page the guard is textual, since nothing renders the
+    template.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    button = re.search(r'<button id="announce-motion"[^>]*>', page)
+    assert button and "aria-pressed" in button.group(0), (
+        "the stop-scrolling control must be a button carrying aria-pressed"
+    )
+    assert ".announcements.still .announcement.marquee .announcement-text { animation: none; }" in page, (
+        "stopping must remove the marquee animation"
+    )
+
+
+def test_the_announcement_live_region_is_emptied_when_nothing_new_arrives() -> None:
+    """A withdrawn announcement must not linger in the hidden live region, where a
+    screen reader can still reach it after the visible stack has gone."""
+    lines = (ROOT / "server" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    first, last = _js_block(lines, "function renderAnnouncements")
+    body = "\n".join(lines[first - 1 : last])
+    assert "announceRegionEl.textContent = fresh.join('. ');" in body
+    assert "if (fresh.length > 0) announceRegionEl" not in body, (
+        "the region must be emptied on every changed list, not only set on new rows"
+    )

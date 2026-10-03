@@ -840,7 +840,8 @@ class ClassCodeClient:
     *announce_refresh_interval* seconds, and every reply forwarded, so a
     restarted server recovers within that; a subscription not answered
     within *announce_reply_timeout* seconds is sent again.  When the run
-    stops, empty rows are forwarded and its view closed.  The run is
+    stops, empty rows are forwarded and its view closed — on every stop,
+    since the server may hold rows forwarded before a relay restart.  The run is
     remembered across a reconnect and re-subscribed once the registry is
     pulled; a relay started mid-run has seen no start, and subscribes
     nothing until the next run starts.
@@ -917,9 +918,6 @@ class ClassCodeClient:
         # message not yet delivered; both outlive a reconnect.
         self._ann_run: str | None = None
         self._announcement: dict | None = None
-        # The run whose rows were last queued non-empty, so a stop knows
-        # whether the server holds rows to clear.
-        self._ann_shown: str | None = None
         self._reset_announcement_views()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
@@ -1230,13 +1228,17 @@ class ClassCodeClient:
                 flying = self._run_in_flight
                 if flying is not None and flying["run_id"] == run.run_id:
                     flying["_stopped"] = True
-                if run.run_id == self._ann_shown:
-                    # Replaces any rows not yet delivered, and keeps a failed
-                    # delivery of them from being put back.
+                # Every stop clears its run's rows: the server may hold rows
+                # this process never forwarded, from before a relay restart,
+                # and it applies the clear only to the run it holds.  It
+                # replaces any rows of that run not yet delivered, and keeps a
+                # failed delivery of them from being put back; rows waiting
+                # for another run already replace whatever the server holds.
+                waiting = self._announcement
+                if waiting is None or waiting["run_id"] == run.run_id:
                     self._announcement = {
                         "type": "announcements", "run_id": run.run_id, "rows": [],
                     }
-                    self._ann_shown = None
                 if run.run_id == self._ann_run:
                     self._drop_announcement_views()
                     self._ann_run = None
@@ -1267,8 +1269,6 @@ class ClassCodeClient:
                 self._announcement = {
                     "type": "announcements", "run_id": self._ann_run, "rows": frame.rows,
                 }
-                if frame.rows:
-                    self._ann_shown = self._ann_run
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
             if self._ann_view is not None:

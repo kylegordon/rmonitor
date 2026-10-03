@@ -157,7 +157,6 @@
       right: 0;
       bottom: 0;
       max-height: 33vh;
-      overflow-y: auto;
       padding-bottom: env(safe-area-inset-bottom, 0px);
       background: var(--surface);
       border-top: 2px solid var(--highlight);
@@ -166,6 +165,27 @@
       flex-direction: column;
     }
     .announcements[hidden] { display: none; }
+    .announcement-rows {
+      overflow-y: auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Shown only while a row scrolls: moving text needs a way to stop it. */
+    .announce-motion {
+      align-self: flex-end;
+      margin: 0.25rem 1rem 0;
+      padding: 0.15rem 0.6rem;
+      font: inherit;
+      font-size: 0.8rem;
+      color: var(--text);
+      background: var(--accent);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .announce-motion[hidden] { display: none; }
     .announcement {
       white-space: nowrap;
       overflow: hidden;
@@ -183,9 +203,13 @@
       from { transform: translateX(var(--row-w)); }
       to   { transform: translateX(-100%); }
     }
+    /* Stopped, a long row wraps and stands still instead. */
+    .announcements.still .announcement.marquee { white-space: normal; }
+    .announcements.still .announcement.marquee .announcement-text { animation: none; }
     @media (prefers-reduced-motion: reduce) {
       .announcement.marquee { white-space: normal; }
       .announcement.marquee .announcement-text { animation: none; }
+      .announce-motion { display: none; }
     }
     .visually-hidden {
       position: absolute;
@@ -377,7 +401,10 @@
   </main>
   <!-- Not a live region: a marquee pass would otherwise be read again.  Each new
        announcement is read once, through #announce-region. -->
-  <div id="announcements" class="announcements" hidden></div>
+  <div id="announcements" class="announcements" hidden>
+    <button id="announce-motion" class="announce-motion" type="button" aria-pressed="false" hidden>Stop scrolling</button>
+    <div id="announcement-rows" class="announcement-rows"></div>
+  </div>
   <div id="announce-region" class="visually-hidden" role="status" aria-live="polite"></div>
 
   <script>
@@ -410,6 +437,8 @@
     const updateBannerEl = document.getElementById('update-banner');
     const noFeedEl = document.getElementById('no-feed-modal');
     const announcementsEl = document.getElementById('announcements');
+    const announcementRowsEl = document.getElementById('announcement-rows');
+    const announceMotionEl = document.getElementById('announce-motion');
     const announceRegionEl = document.getElementById('announce-region');
     // Every announcement already read out, as key + NUL + text, so a row that is
     // only re-rendered is never read again and an edited text is read once more.
@@ -463,8 +492,17 @@
     // Pixels per second a too-wide announcement scrolls at.
     const MARQUEE_PX_PER_S = 60;
 
+    // Whether the viewer stopped the scrolling; remembered on this device only.
+    let announcementsStill = false;
+    try {
+      announcementsStill = localStorage.getItem('announcementsStill') === '1';
+    } catch (e) { /* storage unavailable: start scrolling */ }
+
     function layoutAnnouncements() {
-      for (const row of announcementsEl.children) {
+      // Measured unwrapped, so a stopped row still counts as too wide.
+      announcementsEl.classList.remove('still');
+      let anyLong = false;
+      for (const row of announcementRowsEl.children) {
         const text = row.firstChild;
         row.classList.remove('marquee');
         // clientWidth includes the padding the text starts inside of.
@@ -472,11 +510,16 @@
         const width = row.clientWidth
           - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
         if (text.scrollWidth > width) {
+          anyLong = true;
           row.classList.add('marquee');
           row.style.setProperty('--row-w', width + 'px');
           row.style.setProperty('--marquee-s', ((width + text.scrollWidth) / MARQUEE_PX_PER_S) + 's');
         }
       }
+      announcementsEl.classList.toggle('still', announcementsStill);
+      announceMotionEl.hidden = !anyLong;
+      announceMotionEl.setAttribute('aria-pressed', String(announcementsStill));
+      announceMotionEl.textContent = announcementsStill ? 'Scroll long announcements' : 'Stop scrolling';
       document.documentElement.style.setProperty(
         '--announce-h', (announcementsEl.hidden ? 0 : announcementsEl.offsetHeight) + 'px');
     }
@@ -491,7 +534,7 @@
       const drawn = JSON.stringify(list);
       if (drawn === announcementsDrawn) return;
       announcementsDrawn = drawn;
-      announcementsEl.replaceChildren();
+      announcementRowsEl.replaceChildren();
       const fresh = [];
       for (const a of list) {
         const row = document.createElement('div');
@@ -500,21 +543,35 @@
         text.className = 'announcement-text';
         text.textContent = a.text;
         row.appendChild(text);
-        announcementsEl.appendChild(row);
+        announcementRowsEl.appendChild(row);
         const seen = a.key + '\u0000' + a.text;
         if (!announced.has(seen)) {
           announced.add(seen);
           fresh.push('Announcement: ' + a.text);
         }
       }
-      if (fresh.length > 0) announceRegionEl.textContent = fresh.join('. ');
+      // Emptied when nothing new arrived, so a withdrawn announcement does not
+      // linger in the accessibility tree after the stack has changed or gone.
+      announceRegionEl.textContent = fresh.join('. ');
       announcementsEl.hidden = list.length === 0;
       layoutAnnouncements();
-      // After layout: a wrapped row (reduced motion) grows the stack.
-      if (list.length > 0) announcementsEl.scrollTop = announcementsEl.scrollHeight;
+      scrollToNewestAnnouncement();
+    }
+
+    // After layout: a wrapped row grows the stack.
+    function scrollToNewestAnnouncement() {
+      announcementRowsEl.scrollTop = announcementRowsEl.scrollHeight;
     }
 
     window.addEventListener('resize', layoutAnnouncements);
+    announceMotionEl.addEventListener('click', () => {
+      announcementsStill = !announcementsStill;
+      try {
+        localStorage.setItem('announcementsStill', announcementsStill ? '1' : '0');
+      } catch (e) { /* storage unavailable: applies to this page only */ }
+      layoutAnnouncements();
+      scrollToNewestAnnouncement();
+    });
 
     function showNoFeedModal() {
       noFeedEl.classList.remove('hidden');
