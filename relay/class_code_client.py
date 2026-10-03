@@ -843,8 +843,9 @@ class ClassCodeClient:
     stops, empty rows are forwarded and its view closed — on every stop,
     since the server may hold rows forwarded before a relay restart.  The run is
     remembered across a reconnect and re-subscribed once the registry is
-    pulled; a relay started mid-run has seen no start, and subscribes
-    nothing until the next run starts.
+    pulled.  A relay started mid-run has seen no start, so until it reads
+    one it picks the run by the session's name instead
+    (:meth:`note_session`).
 
     *on_status*, if given, is called with a :class:`ClassCodeStatus` on each
     connect attempt, completed handshake, connection failure, delivery and
@@ -924,6 +925,16 @@ class ClassCodeClient:
         self._ann_start_key = ""
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
+        # What picks a run by name while no start has been read — the last
+        # complete pull's run table, the last $B number and non-95
+        # description, whether a real start has been read, and the
+        # lower-cased ids of the runs seen ending meanwhile; all outlive a
+        # reconnect.
+        self._runs: list[dict] | None = None
+        self._session_number = ""
+        self._session_desc = ""
+        self._seen_start = False
+        self._ended_runs: set[str] = set()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
         self._connected = False
@@ -1080,6 +1091,9 @@ class ClassCodeClient:
             return
         pulled_at = time.monotonic()
         entries, runs = await asyncio.to_thread(_parse_model, bytes(model))
+        # The run table holds even when the preload is withheld below.
+        self._runs = runs
+        self._pick_run()
         if not entries:
             log.warning(
                 "Class-code registry pull of %d bytes held no usable records – "
@@ -1228,10 +1242,16 @@ class ClassCodeClient:
                 # A run that stopped before its start was delivered is not
                 # running; a newer started run is left alone.  A delivery in
                 # flight for it is marked, so it is not retried either.
-                if self._run is not None and self._run["run_id"] == run.run_id:
+                # A picked id is the run table's upper-case hex; a notice's
+                # may not be.
+                stopped_id = run.run_id.lower()
+                ann_stopped = (
+                    self._ann_run is not None and self._ann_run.lower() == stopped_id
+                )
+                if self._run is not None and self._run["run_id"].lower() == stopped_id:
                     self._run = None
                 flying = self._run_in_flight
-                if flying is not None and flying["run_id"] == run.run_id:
+                if flying is not None and flying["run_id"].lower() == stopped_id:
                     flying["_stopped"] = True
                 # Every stop clears its run's rows: the server may hold rows
                 # this process never forwarded, from before a relay restart,
@@ -1239,32 +1259,136 @@ class ClassCodeClient:
                 # replaces any rows of that run not yet delivered, and keeps a
                 # failed delivery of them from being put back.
                 self._queue_announcement({
-                    "type": "announcements", "run_id": run.run_id, "rows": [],
-                    "stopped": True,
+                    "type": "announcements",
+                    "run_id": self._ann_run if ann_stopped else run.run_id,
+                    "rows": [], "stopped": True,
                     # So a late clear of a retired start never clears a
                     # restart of the same run.
-                    "start_key": self._ann_start_key if run.run_id == self._ann_run else "",
+                    "start_key": self._ann_start_key if ann_stopped else "",
                 })
-                if run.run_id == self._ann_run:
+                if not self._seen_start:
+                    # A run seen stopping is never picked, under any later
+                    # description: it has ended.
+                    self._ended_runs.add(stopped_id)
+                if ann_stopped:
                     self._drop_announcement_views()
                     self._ann_run = None
                     self._ann_due = None
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
-            start_key = uuid.uuid4().hex
-            self._run = {
-                "run_id": run.run_id, "name": run.name, "start_key": start_key,
-                "_observed": time.monotonic(),
-            }
-            if run.run_id != self._ann_run:
-                self._drop_announcement_views()
-                self._ann_run = run.run_id
-            self._ann_name = run.name
-            self._ann_start_key = start_key
-            # The reply holds the rows that already exist.
-            self._ann_due = asyncio.get_running_loop().time()
+            picked = (
+                not self._seen_start
+                and self._ann_run is not None
+                and self._ann_run.lower() == run.run_id.lower()
+            )
+            self._seen_start = True
+            if picked:
+                # The run picked by name has started: the server ignores a
+                # repeat of the run it holds, so the pick's start key and
+                # subscription stand, and refreshes keep naming its start.
+                self._ann_name = run.name
+                continue
+            self._take_run(run.run_id, run.name)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
+
+    def _take_run(self, run_id: str, name: str) -> None:
+        """Treat *run_id* as the started run: forward it and subscribe."""
+        start_key = uuid.uuid4().hex
+        self._run = {
+            "run_id": run_id, "name": name, "start_key": start_key,
+            "_observed": time.monotonic(),
+        }
+        if run_id != self._ann_run:
+            self._drop_announcement_views()
+            self._ann_run = run_id
+        self._ann_name = name
+        self._ann_start_key = start_key
+        # The reply holds the rows that already exist.
+        self._ann_due = asyncio.get_running_loop().time()
+
+    def note_session(self, number: str, description: str) -> None:
+        """Note the session a feed ``$B`` record names.
+
+        A relay started mid-run has read no start notice, so it would show
+        no announcements and leave class codes on the server's name fallback
+        until the next run starts.  Until the first real start notice this
+        process reads, it picks instead the newest run (largest id) in the
+        run table whose name equals the description exactly — the rule of
+        the server's ``_class_code_scope`` fallback — and treats it as
+        started.  Names repeat across meetings, so a same-named run from
+        elsewhere can be picked; that risk is accepted.
+
+        Picking is edge-triggered: only a new session — the number or the
+        description changing, as the server's ``_run`` reads it — or a newly
+        pulled run table picks, and only while a session is open, never
+        after its ``$B,95``.  A session boundary ends the run picked for the
+        session it closes, as a stop notice does.  Nothing is picked when
+        the newest run of the name has ended, under whatever description —
+        an older one of the name is older still; a newer run of the name, in
+        a later pull, is picked.
+
+        :param number: the record's session number.
+        :param description: the record's session description.
+        """
+        if number == "95":
+            if self._session_number not in ("", "95"):
+                self._end_session()
+            self._session_number = "95"
+            return
+        if not description or (number, description) == (
+            self._session_number, self._session_desc
+        ):
+            return
+        if self._session_number not in ("", "95"):
+            self._end_session()
+        self._session_number = number
+        self._session_desc = description
+        self._pick_run()
+
+    def _end_session(self) -> None:
+        # Its views stay open until the next pick or its stop notice: the
+        # board still shows the closed session, and the server hides its
+        # rows itself.
+        if not self._seen_start and self._ann_run is not None:
+            self._ended_runs.add(self._ann_run.lower())
+
+    def _pick_run(self) -> None:
+        if (
+            self._seen_start
+            or self._session_number in ("", "95")
+            or not self._session_desc
+            or self._runs is None
+        ):
+            return
+        ids = [r["run_id"] for r in self._runs if r["name"] == self._session_desc]
+        run_id = max(ids, key=lambda r: int(r, 16)) if ids else None
+        if run_id is None or run_id.lower() in self._ended_runs:
+            if self._ann_run is not None:
+                # Cleared as a stop clears, so a start for it accepted after
+                # all — a delivery in flight — has no rows to show should a
+                # later session of its name bind it on the server.
+                self._queue_announcement({
+                    "type": "announcements", "run_id": self._ann_run, "rows": [],
+                    "stopped": True, "start_key": self._ann_start_key,
+                })
+                self._drop_announcement_views()
+                self._ann_run = None
+                self._ann_due = None
+            # While picking, only a pick can be held here or in flight, and
+            # a failed delivery of one dropped is not retried either.
+            self._run = None
+            if self._run_in_flight is not None:
+                self._run_in_flight["_stopped"] = True
+            return
+        if self._ann_run is not None and self._ann_run.lower() == run_id.lower():
+            # The server ignores a repeat of the run it holds, so a new
+            # start key would no longer match its own.
+            return
+        log.info(
+            "No run start seen – picked run %s %r by name", run_id, self._session_desc
+        )
+        self._take_run(run_id, self._session_desc)
 
     def _absorb_announcement(self, frame: AnnouncementFrame) -> None:
         if self._ann_run is None:
@@ -1322,7 +1446,9 @@ class ClassCodeClient:
         announcements, self._announcements = self._announcements, {}
         kept: dict[str, dict] = {}
         for run_id, msg in announcements.items():
-            if not msg.get("stopped") and run_id != self._ann_run:
+            if not msg.get("stopped") and (
+                self._ann_run is None or run_id != self._ann_run.lower()
+            ):
                 # A reply for a run no longer subscribed: its rows still
                 # matter — that run can be the one shown until the session
                 # boundary — but marked, so the server never restores or
@@ -1410,7 +1536,8 @@ class ClassCodeClient:
         """Hand the started *run* to *on_batch*; return whether nothing is left to retry.
 
         A failed delivery is kept for the retry unless a newer run has been
-        announced meanwhile, which replaces it, or the run has stopped.
+        announced meanwhile, which replaces it, or the run has stopped — or,
+        for a run picked by name, the pick has been dropped.
         """
         age = time.monotonic() - run["_observed"]
         if age > MAX_ENTRY_AGE:
@@ -1442,9 +1569,13 @@ class ClassCodeClient:
 
         Kept per run, so a clear for one run never displaces another run's
         message; delivered oldest first, so the server ends on the newest.
+        The queue is keyed by the lower-cased run id.
         """
-        self._announcements.pop(msg["run_id"], None)
-        self._announcements[msg["run_id"]] = msg
+        # Keyed without case: a notice's id may be lower-case hex where a
+        # picked run's, from the run table, is upper-case.
+        key = msg["run_id"].lower()
+        self._announcements.pop(key, None)
+        self._announcements[key] = msg
 
     async def _deliver_announcement(self, msg: dict) -> bool:
         """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""

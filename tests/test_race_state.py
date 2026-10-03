@@ -2365,6 +2365,37 @@ def _shown(state):
     return [a["text"] for a in state.snapshot()["announcements"]]
 
 
+def test_a_run_announced_after_its_session_shows_then_binds_on_the_next_repeat(state):
+    """A relay started mid-run picks the run by name and sends it after the
+    session's ``$B``; the server needs nothing more to show and bind it."""
+    _session(state, number="5")
+    _started(state)
+    assert state.class_code_run is None
+    assert state.class_code_run_next["run_id"] == "0x40002806"
+    _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+    _session(state, number="5")
+    assert state.class_code_run["run_id"] == "0x40002806"
+    assert state.class_code_run["session_number"] == "5"
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_dropped_pick_accepted_late_resurfaces_no_rows_in_a_later_same_named_session(state):
+    """The relay drops a pick on a session it does not name, but its start
+    may still land afterwards; the clear the relay sends behind it leaves a
+    later session of the same name nothing to show."""
+    _session(state, number="5")
+    _announce(state, ("Old notice", 100))
+    _session(state, "Race 8", number="6")
+    _started(state)  # the pick's delivery, accepted after the drop
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+    })
+    _session(state, number="7")
+    assert _shown(state) == []
+
+
 def test_announcements_show_while_their_run_is_the_running_session(state):
     _started(state)
     _session(state)

@@ -228,7 +228,19 @@ async def main(
         cfg.server_url,
     )
     async with aiohttp.ClientSession() as http:
+        codes_client: ClassCodeClient | None = None
+
         async def on_message(msg: dict) -> None:
+            if msg.get("type") == "run" and codes_client is not None:
+                # Lets a relay started mid-run pick the running run by name.
+                # Guarded as the status callbacks are: a raising hook must
+                # not stop the feed.
+                try:
+                    codes_client.note_session(
+                        msg.get("unique_number", ""), msg.get("description", "")
+                    )
+                except Exception:
+                    log.exception("Class-code session hook failed")
             await post_message(http, msg, cfg, on_attempt=on_server_attempt)
 
         async def on_class_codes(msg: dict) -> None:

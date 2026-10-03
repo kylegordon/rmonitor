@@ -154,6 +154,12 @@ def fake_sources(monkeypatch):
     class-code client's ``run()`` records its start, optionally delivers
     ``state["batch"]`` through its callback (recording what it raised) and
     ``state["status"]`` through its status hook, then waits to be cancelled.
+    The feed keeps its ``on_message`` in ``state["on_message"]`` and sets
+    ``state["feed_built"]``; the class-code client records each
+    ``note_session`` call in ``state["sessions"]``, raising
+    ``state["session_error"]`` if one is set.  The autouse ``fast_sleep``
+    makes ``asyncio.sleep`` return without yielding, so wait on an event
+    here, never a sleep poll.
     """
     state = {
         "feed_done": asyncio.Event(),
@@ -163,11 +169,16 @@ def fake_sources(monkeypatch):
         "batch": None,
         "batch_error": None,
         "status": None,
+        "on_message": None,
+        "feed_built": asyncio.Event(),
+        "sessions": [],
+        "session_error": None,
     }
 
     class FakeFeed:
         def __init__(self, *args, **kwargs):
-            pass
+            state["on_message"] = args[2]
+            state["feed_built"].set()
 
         async def run(self):
             await state["feed_done"].wait()
@@ -179,6 +190,11 @@ def fake_sources(monkeypatch):
             self.on_batch = on_batch
             self.on_status = kwargs.get("on_status")
             state["codes_clients"].append(self)
+
+        def note_session(self, number, description):
+            state["sessions"].append((number, description))
+            if state["session_error"] is not None:
+                raise state["session_error"]
 
         async def run(self):
             if state["status"] is not None:
@@ -294,6 +310,60 @@ async def test_a_raising_disabled_status_hook_does_not_stop_the_feed(fake_source
     fake_sources["feed_done"].set()
     await asyncio.wait_for(task, timeout=2.0)
     assert "status callback failed" in caplog.text
+
+
+RUN_MESSAGE = {"type": "run", "unique_number": "5", "description": "Race 2"}
+
+
+@pytest.mark.asyncio
+async def test_main_feeds_each_session_record_to_the_class_code_client(
+    fake_sources, monkeypatch
+):
+    post = AsyncMock(return_value=True)
+    monkeypatch.setattr(relay_main, "post_message", post)
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    on_message = fake_sources["on_message"]
+    await on_message(RUN_MESSAGE)
+    await on_message({"type": "heartbeat", "flag": "Green"})
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert fake_sources["sessions"] == [("5", "Race 2")]
+    assert post.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_raising_session_hook_does_not_stop_the_feed(
+    fake_sources, monkeypatch, caplog
+):
+    post = AsyncMock(return_value=True)
+    monkeypatch.setattr(relay_main, "post_message", post)
+    fake_sources["session_error"] = RuntimeError("bad table")
+    task = asyncio.ensure_future(relay_main.main(_relay_config()))
+    await asyncio.wait_for(fake_sources["codes_started"].wait(), timeout=2.0)
+    await fake_sources["on_message"](RUN_MESSAGE)
+    assert post.await_count == 1
+    assert not task.done()
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert "session hook failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_session_records_are_harmless_when_class_codes_are_disabled(
+    fake_sources, monkeypatch
+):
+    post = AsyncMock(return_value=True)
+    monkeypatch.setattr(relay_main, "post_message", post)
+    task = asyncio.ensure_future(
+        relay_main.main(_relay_config(class_codes_enabled=False))
+    )
+    await asyncio.wait_for(fake_sources["feed_built"].wait(), timeout=2.0)
+    await fake_sources["on_message"](RUN_MESSAGE)
+    fake_sources["feed_done"].set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert post.await_count == 1
+    assert fake_sources["sessions"] == []
 
 
 def test_class_code_status_reaches_the_runner_callback(fake_sources):
