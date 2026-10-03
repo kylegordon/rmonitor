@@ -2276,3 +2276,46 @@ async def test_a_lowercase_stop_replaces_the_picks_failed_rows(monkeypatch):
         await _finish(task)
     assert [bool(m["rows"]) for m in sent] == [True, False]
     assert sent[-1]["run_id"] == PICKED_ID
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_pick_is_not_picked_again_after_another_description(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
+        await _until(lambda: _view_closes(writer))
+        client.note_session("6", "Race 1 - Qualifying")
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+        client.note_session("7", PICK_NAME)
+        await _until(lambda: len(_view_closes(writer)) >= 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID, "0x40002803"]
+    assert [u for _, u in _view_opens(writer)] == [PICKED_DECIMAL, str(0x40002803)]
+    assert client._ann_run is None
+
+
+@pytest.mark.asyncio
+async def test_a_newer_run_of_a_stopped_picks_name_is_picked_from_a_later_pull(monkeypatch):
+    first, second = FakeWriter(), FakeWriter()
+    host1 = PullingViewHost(first)
+    host2 = PullingViewHost(second, PICK_REGISTRY + _run_record(0x4000280B, name=PICK_NAME))
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host1.queue.append(_run_state(PICK_NAME, 0x4000280A, "stopped"))
+        await _until(lambda: _view_closes(first))
+        host1.queue.append(b"")
+        await _until(lambda: _view_opens(second) and len(_runs_sent(calls)) >= 2)
+    finally:
+        await _finish(task)
+    assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID, "0x4000280B"]
+    assert _view_opens(second) == [(1, str(0x4000280B))]

@@ -927,12 +927,12 @@ class ClassCodeClient:
         self._reset_announcement_views()
         # What picks a run by name while no start has been read — the last
         # complete pull's run table, the last non-95 $B description, whether
-        # a real start has been read, and whether a stop ended the pick for
-        # that description; all outlive a reconnect.
+        # a real start has been read, and the lower-cased ids of the runs
+        # seen stopping meanwhile; all outlive a reconnect.
         self._runs: list[dict] | None = None
         self._session_desc = ""
         self._seen_start = False
-        self._pick_ended = False
+        self._stopped_runs: set[str] = set()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
         self._connected = False
@@ -1264,11 +1264,11 @@ class ClassCodeClient:
                     # restart of the same run.
                     "start_key": self._ann_start_key if ann_stopped else "",
                 })
+                if not self._seen_start:
+                    # A run seen stopping is never picked, under any later
+                    # description: it has ended.
+                    self._stopped_runs.add(stopped_id)
                 if ann_stopped:
-                    if not self._seen_start:
-                        # Picking is edge-triggered: the description that
-                        # picked this run does not pick it again.
-                        self._pick_ended = True
                     self._drop_announcement_views()
                     self._ann_run = None
                     self._ann_due = None
@@ -1318,8 +1318,10 @@ class ClassCodeClient:
         elsewhere can be picked; that risk is accepted.
 
         Picking is edge-triggered: only a changed description or a newly
-        pulled run table picks, never a ``$B,95``, and a run whose stop
-        notice ended a pick is not picked again for the same description.
+        pulled run table picks, never a ``$B,95``.  Nothing is picked when
+        the newest run of the name has been seen stopping, under whatever
+        description — it has ended, and an older one of the name is older
+        still; a newer run of the name, in a later pull, is picked.
 
         :param number: the record's session number.
         :param description: the record's session description.
@@ -1327,19 +1329,18 @@ class ClassCodeClient:
         if number == "95" or not description or description == self._session_desc:
             return
         self._session_desc = description
-        self._pick_ended = False
         self._pick_run()
 
     def _pick_run(self) -> None:
         if (
             self._seen_start
-            or self._pick_ended
             or not self._session_desc
             or self._runs is None
         ):
             return
         ids = [r["run_id"] for r in self._runs if r["name"] == self._session_desc]
-        if not ids:
+        run_id = max(ids, key=lambda r: int(r, 16)) if ids else None
+        if run_id is None or run_id.lower() in self._stopped_runs:
             if self._ann_run is not None:
                 # Cleared as a stop clears, so a start for it accepted after
                 # all — a delivery in flight — has no rows to show should a
@@ -1357,7 +1358,6 @@ class ClassCodeClient:
             if self._run_in_flight is not None:
                 self._run_in_flight["_stopped"] = True
             return
-        run_id = max(ids, key=lambda r: int(r, 16))
         if self._ann_run is not None and self._ann_run.lower() == run_id.lower():
             # The server ignores a repeat of the run it holds, so a new
             # start key would no longer match its own.
