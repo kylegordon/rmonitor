@@ -1518,6 +1518,59 @@ def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):
     assert restored.class_codes == {}
 
 
+def _aged(entry, seconds):
+    return {**entry, "age_seconds": seconds}
+
+
+def test_a_list_omitting_an_entrant_hides_its_older_sibling_push(state):
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SL"
+
+
+def test_a_list_clearing_a_code_hides_the_older_run_push_too(state):
+    # A push's entrant id need not equal the list's car reg, so the list's
+    # time, not a key match, supersedes it.
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DD, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_a_push_newer_than_the_list_still_counts(state):
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _entry_list(state, DD, _aged(_code_entry("a0000007", "7", SLW, "SL", "1234567"), 600))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL C", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL C"
+
+
+def test_without_a_list_for_the_running_run_every_in_scope_push_counts(state):
+    # Only the running run's own list stands for this session's entries.
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DD, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    _entry_list(state, DC, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+
+
+def test_a_rental_car_takes_the_list_code_over_a_conflicting_older_push(state):
+    _race_15(state)
+    _car_in_class(state, "26", "NE5", SLW)
+    _codes(state, DC, _aged(_code_entry("e26", "26", SLW, "F3", "3776411"), 600))
+    _entry_list(state, DD, _code_entry("a0000026", "26", SLW, "SL C", "NE5"))
+    assert _entry_for(state.snapshot(), "26")["class_code"] == "SL C"
+
+
 def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
     _add_car(state, "7")

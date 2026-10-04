@@ -1277,6 +1277,16 @@ class RaceState:
         this session's entries.  ``0x80000000`` tags every push, so it is
         never a scope.  *None* keeps every push.
 
+        Within the scope, the running run's latest entry list is the host's
+        view of the run as of its time, so every record older than its
+        newest row — a push under any key, or a sibling run's list — is
+        superseded and takes no part, the guard's view included: a push's
+        entrant id need not equal the list's car reg, so only time can match
+        them.  A code the list drops or clears therefore cannot fall back to
+        an older push.  A newer push is a later edit and counts.  A list with
+        no rows — every entrant codeless — leaves no row to date it, so it
+        supersedes nothing.
+
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
         """
@@ -1285,8 +1295,24 @@ class RaceState:
         by_tx: dict[tuple[str, str], dict] = {}
         by_nc: dict[tuple[str, str], set[str]] = {}
         pushed_class: dict[str, set[str]] = {}
+        running = scope[0].lower() if scope is not None else None
+        list_at = max(
+            (
+                rec["received_at"] for key, rec in self.class_codes.items()
+                if rec.get("origin") == _ENTRY_LIST_ORIGIN
+                and key.split("\t", 1)[0].lower() == running
+            ),
+            default=None,
+        )
         for key, rec in self.class_codes.items():
-            if scope is not None and key.split("\t", 1)[0].lower() not in scope[1]:
+            run = key.split("\t", 1)[0].lower()
+            if scope is not None and run not in scope[1]:
+                continue
+            if (
+                list_at is not None
+                and rec["received_at"] < list_at
+                and not (rec.get("origin") == _ENTRY_LIST_ORIGIN and run == running)
+            ):
                 continue
             pushed_class.setdefault(rec["class_name"], set()).add(rec["class_code"])
             tx, cls = rec["transponder"], rec["class_name"]
