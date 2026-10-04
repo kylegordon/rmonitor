@@ -58,16 +58,20 @@ _PRACTICE_KEYWORDS = (
     "untimed",
 )
 
-# How long the registry preload, a started run and a retired run stay
-# usable.  Twelve hours covers a meeting day, including a server restart;
-# the relay pulls the preload again on every connect.
+# How long the registry preload's records, a started run and a retired run
+# stay usable.  Twelve hours covers a meeting day, including a server
+# restart; the relay pulls the preload again on every connect.  The
+# preload's run table is kept as long as the pushes it scopes; see
+# RaceState._prune_class_code_preload.
 _CLASS_CODE_TTL_SECONDS = 12 * 3600
 # How long every ``class_codes`` record, pushed or listed, stays joinable
 # after its push.  Thirty-six hours spans a two-day meeting, whose grids are
 # often built on day 1 and raced on day 2.  Transponders are reused across
 # meetings; group scope keeps another meeting's records out, but an
-# unscoped read (no run known) admits a day-old one — an accepted risk,
-# since the class gate and the distinct-code rule blank a conflict.
+# unscoped read (no run known) admits a day-old one.  That is an accepted
+# risk, and not a guarded one: the distinct-code rule guards only layer 2, so
+# a transponder reused in a same-named class at another meeting within the
+# TTL can give layer 1 that meeting's code (see _resolve_class_codes).
 _PUSHED_CODE_TTL_SECONDS = 36 * 3600
 # How often an announcements refresh renews its started run's date, at most;
 # each renewal makes the periodic save rewrite the class-code store.
@@ -165,6 +169,10 @@ class RaceState:
         # Keyed ``"<lower-cased run id>\t<entrant id>"``; see _class_codes.  Created here,
         # not in reset(), because reset() must never clear it.
         self.class_codes: dict[str, dict] = {}
+        # The date of each run's latest entry list, keyed by lower-cased run
+        # id; see _class_codes.  Kept apart from the rows because a list may
+        # have none.  Never cleared by reset(), for the same reason.
+        self.class_code_lists: dict[str, float] = {}
         # The last registry preload; see _class_code_preload.  Never cleared
         # by reset(), for the same reason.
         self.class_code_preload: dict = _preload_store([], None)
@@ -624,6 +632,12 @@ class RaceState:
         taken off the run, is withdrawn rather than kept until it expires.  A
         push stored under the same key since then is newer and stays; an
         entry list storing over a push replaces it, as any later batch does.
+        The list's date goes into ``class_code_lists``, even for a list with
+        no rows — the relay drops codeless rows, so one whose every code was
+        cleared arrives empty — for :meth:`_resolve_class_codes` to supersede
+        older records by.  It is its newest row's date or, with no row, the
+        batch's own ``age_seconds``, so a retried empty list is not dated
+        fresh.
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
@@ -664,7 +678,14 @@ class RaceState:
             ]
             for k in stale:
                 del self.class_codes[k]
-            changed = bool(stale)
+            # The rows share the batch's age, but the newest is taken anyway;
+            # a list with no rows is dated by the batch's own.
+            listed_at = max(
+                (now - _entry_age(item.get("age_seconds")) for _, item in rows),
+                default=now - _entry_age(msg.get("age_seconds")),
+            )
+            self.class_code_lists[run_key] = listed_at
+            changed = True
         for entry, item in rows:
             age = _entry_age(item.get("age_seconds"))
             if age > _PUSHED_CODE_TTL_SECONDS:
@@ -695,8 +716,9 @@ class RaceState:
         whole rather than accumulating.  It is kept apart from the pushed
         registry so a push always overrides it, and only
         :meth:`_resolve_class_codes`'s third layer reads it.  Like the pushed
-        registry it survives :meth:`reset` and expires by
-        :data:`_CLASS_CODE_TTL_SECONDS`.
+        registry it survives :meth:`reset`; it expires as
+        :meth:`_prune_class_code_preload` says, its run table outliving its
+        records.
 
         ``entries`` is untrusted and coerced as in :meth:`_class_codes`; an item
         without a class name, or with transponder ``""`` or ``"0"``, is
@@ -1174,7 +1196,9 @@ class RaceState:
             return None
         tags = {run_id.lower()}
         group = self.class_code_preload["run_group"].get(run_id.lower())
-        if group:
+        # The tag on every push is also the group of a run that has none, so
+        # taking it as a group would make every ungrouped run a sibling.
+        if group and group != _ALL_PUSHES_TAG:
             tags |= self.class_code_preload["group_runs"].get(group, frozenset())
             tags.add(group)
         # It tags every push, so it would admit them all.
@@ -1207,22 +1231,41 @@ class RaceState:
         return expired
 
     def _prune_class_code_preload(self, now: float) -> bool:
-        """Drop the preload once past its TTL; return whether it went."""
-        stamp = self.class_code_preload["received_at"]
+        """Expire the preload in two parts; return whether either went.
+
+        Its records go after :data:`_CLASS_CODE_TTL_SECONDS`, but its run
+        table only after :data:`_PUSHED_CODE_TTL_SECONDS`: the relay pulls
+        the preload only on connect, so one held overnight would otherwise
+        leave a day-2 run scoped to itself alone, cut off from its group's
+        day-1 pushes, which live that long.
+        """
+        pre = self.class_code_preload
+        stamp = pre["received_at"]
         if stamp is None or now - stamp <= _CLASS_CODE_TTL_SECONDS:
             return False
-        self.class_code_preload = _preload_store([], None)
+        if now - stamp > _PUSHED_CODE_TTL_SECONDS or not pre["runs"]:
+            self.class_code_preload = _preload_store([], None)
+            return True
+        if not pre["entries"]:
+            return False
+        self.class_code_preload = _preload_store([], stamp, pre["runs"])
         return True
 
     def _prune_class_codes(self, now: float) -> bool:
-        """Drop registry entries past their TTL; return whether any went."""
+        """Drop registry entries and list dates past their TTL; return whether any went."""
         expired = [
             k for k, v in self.class_codes.items()
             if now - v["received_at"] > _PUSHED_CODE_TTL_SECONDS
         ]
         for k in expired:
             del self.class_codes[k]
-        return bool(expired)
+        lists = [
+            k for k, stamp in self.class_code_lists.items()
+            if now - stamp > _PUSHED_CODE_TTL_SECONDS
+        ]
+        for k in lists:
+            del self.class_code_lists[k]
+        return bool(expired or lists)
 
     def _resolve_class_codes(
         self, entries: list[dict], *, scope: tuple[str, frozenset[str]] | None = None
@@ -1245,7 +1288,8 @@ class RaceState:
            matching record carries one distinct code.  Distinct codes, not
            records, because the same entrant is pushed under several run ids.
         3. **The registry preload**, only when neither push layer gives a
-           code.  Each registry record is one registration (its Car/Bike Reg,
+           code and the running run has no entry list (see below).  Each
+           registry record is one registration (its Car/Bike Reg,
            ``registration_id``), edited in place, so its number and class are
            current rather than an archived season's.  First, number and class
            → a registration only when exactly one carries that pair; two
@@ -1278,14 +1322,16 @@ class RaceState:
         never a scope.  *None* keeps every push.
 
         Within the scope, the running run's latest entry list is the host's
-        view of the run as of its time, so every record older than its
-        newest row — a push under any key, or a sibling run's list — is
-        superseded and takes no part, the guard's view included: a push's
-        entrant id need not equal the list's car reg, so only time can match
-        them.  A code the list drops or clears therefore cannot fall back to
-        an older push.  A newer push is a later edit and counts.  A list with
-        no rows — every entrant codeless — leaves no row to date it, so it
-        supersedes nothing.
+        view of the run as of its date in ``class_code_lists``, so every
+        record older than that — a push under any key, or a sibling run's
+        list — is superseded and takes no part, the guard's view included: a
+        push's entrant id need not equal the list's car reg, so only time can
+        match them.  A code the list drops or clears therefore cannot fall
+        back to an older push, even when the list has no rows left, nor to
+        the registry: layer 3 is skipped while that list stands, as the
+        host's current list is authoritative and a uniform registry class is
+        no proof of a car the list leaves uncoded.  A newer push is a later
+        edit and counts.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
@@ -1296,14 +1342,7 @@ class RaceState:
         by_nc: dict[tuple[str, str], set[str]] = {}
         pushed_class: dict[str, set[str]] = {}
         running = scope[0].lower() if scope is not None else None
-        list_at = max(
-            (
-                rec["received_at"] for key, rec in self.class_codes.items()
-                if rec.get("origin") == _ENTRY_LIST_ORIGIN
-                and key.split("\t", 1)[0].lower() == running
-            ),
-            default=None,
-        )
+        list_at = self.class_code_lists.get(running) if running is not None else None
         for key, rec in self.class_codes.items():
             run = key.split("\t", 1)[0].lower()
             if scope is not None and run not in scope[1]:
@@ -1333,7 +1372,9 @@ class RaceState:
                     codes = by_nc.get((e.get("number", ""), desc), set())
                     if len(codes) == 1:
                         code = next(iter(codes))
-                if not code:
+                # While the running run has a list, the registry never fills
+                # a code the list and the newer pushes leave blank.
+                if not code and list_at is None:
                     codes = self._preload_candidate(e.get("number", ""), tx, desc)
                     if (
                         len(codes) == 1
@@ -1657,11 +1698,14 @@ class RaceState:
         The registry preload is saved beside it under ``"preload"``, for the
         same reason and because the relay pulls it again only on a reconnect;
         the started runs under ``"run"`` and ``"run_next"``, because the host
-        announces each once; and the runs a session boundary retired under
-        ``"retired_runs"``, so a restart cannot restore one.
+        announces each once; the runs a session boundary retired under
+        ``"retired_runs"``, so a restart cannot restore one; and each run's
+        latest entry-list date under ``"class_code_lists"``, so a restart
+        cannot readmit what a list superseded.
         """
         return {
             "class_codes": self.class_codes,
+            "class_code_lists": self.class_code_lists,
             "preload": {
                 "received_at": self.class_code_preload["received_at"],
                 "entries": self.class_code_preload["entries"],
@@ -1680,7 +1724,8 @@ class RaceState:
         is restored the same way and independently: a missing or malformed
         ``"preload"`` leaves it empty without touching the pushed registry.  A
         preload saved before registration ids and runs were carried loads
-        with them empty.  The started run is restored likewise.
+        with them empty.  The started run and the entry-list dates are
+        restored likewise.
         """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
@@ -1713,6 +1758,9 @@ class RaceState:
             self.class_codes = restored
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
+        self.class_code_lists = _restore_list_dates(
+            data.get("class_code_lists") if isinstance(data, dict) else None, now
+        )
         self._prune_class_codes(now)
         self.class_code_preload = _preload_store([], None)
         try:
@@ -1730,10 +1778,10 @@ class RaceState:
                 and str(item["class_name"])
                 and str(item["transponder"]) not in ("", "0")
             ]
-            if stamp is not None and entries:
-                self.class_code_preload = _preload_store(
-                    entries, min(stamp, now), _coerce_runs(preload.get("runs"))
-                )
+            runs = _coerce_runs(preload.get("runs"))
+            # A store saved past the records' TTL holds the run table alone.
+            if stamp is not None and (entries or runs):
+                self.class_code_preload = _preload_store(entries, min(stamp, now), runs)
         except (AttributeError, TypeError, ValueError):
             pass
         self._prune_class_code_preload(now)
@@ -1864,6 +1912,22 @@ def _restore_retired_runs(value, now: float) -> dict[str, float]:
             and now - stamp <= _CLASS_CODE_TTL_SECONDS
         ):
             out[key] = min(stamp, now)
+    return out
+
+
+def _restore_list_dates(value, now: float) -> dict[str, float]:
+    """Return the entry-list dates saved by :meth:`RaceState.class_codes_to_dict`.
+
+    A malformed store degrades to none, and a malformed entry is dropped;
+    a date is capped at *now*.  Expiry is left to the caller's prune.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, stamp in value.items():
+        stamp = _finite_stamp(stamp)
+        if isinstance(key, str) and key and stamp is not None:
+            out[key.lower()] = min(stamp, now)
     return out
 
 
