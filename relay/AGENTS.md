@@ -64,16 +64,16 @@ the run's views until the next run, and the server shows them past `$B,95`. Guar
 
 ## The entry list rides the held connection, as a snapshot
 
-The running run's results view lists every entrant with the host's code, filling codes no push
-carried. It is subscribed only on the held `:51738` connection, and an unanswered subscription is
-retried on that socket, since every connect raises an operator notice. Its reply is taken once and
-the view closed, as an open results view streams the whole table each second. The code is only the
-host's own, and a reply whose rows disagree with its count is withheld. A list replaces its run's
-earlier one, withdrawing a cleared code, and the running run's latest list supersedes older in-scope
-pushes. Guarded by `test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection`,
-`test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows` and
+The running run's results view lists every entrant with the host's own code field, never one
+derived from a class name, filling codes no push carried. It is subscribed only on the held
+`:51738` connection, an unanswered subscription retried on that socket, as every connect raises an
+operator notice. Each reply is taken and the view closed, as an open one streams the whole table
+each second, and subscribed again every `entry_list_refresh_interval` (60 s) for mid-run edits. A
+reply whose rows disagree with its count is withheld. Each list is the run's whole entry list, so
+it safely replaces the run's earlier one, withdrawing a cleared code, and the running run's latest
+list supersedes older in-scope pushes. Guarded by
+`test_the_entry_list_is_refreshed_after_its_interval`,
+`test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection` and
 `test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees` in
-`tests/test_class_code_client.py`, and
-`test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave`,
-`test_a_list_omitting_an_entrant_hides_its_older_sibling_push` and
-`test_a_list_clearing_a_code_hides_the_older_run_push_too` in `tests/test_race_state.py`.
+`tests/test_class_code_client.py`, and `test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave`
+and `test_an_empty_list_still_supersedes_an_older_sibling_push` in `tests/test_race_state.py`.

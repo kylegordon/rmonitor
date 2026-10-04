@@ -2970,6 +2970,8 @@ async def test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows(mon
     finally:
         await _finish(task)
     (msg,) = _entry_lists(calls)
+    # The list carries its own age, as a list with no rows has no row's.
+    assert 0 <= msg.pop("age_seconds") < 5
     assert msg == {
         "type": "class_codes", "run_id": RUN_ID, "entry_list": True,
         "entries": [_listed("7"), _listed("8", "TD")],

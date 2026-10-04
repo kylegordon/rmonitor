@@ -2082,6 +2082,8 @@ class ClassCodeClient:
                 "type": "class_codes",
                 "run_id": held["run_id"],
                 "entry_list": True,
+                # The list's own age too, as a list with no rows has none.
+                "age_seconds": round(age, 3),
                 "entries": [e | {"age_seconds": round(age, 3)} for e in entries],
             })
         except Exception:
