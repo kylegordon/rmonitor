@@ -2,9 +2,10 @@
 
 The script lives in ``.github/scripts/`` rather than an importable package, and this
 repository has no ``conftest.py`` to put it on the path, so it is loaded by file
-location.  Every test builds its own miniature repository under ``tmp_path``: the
-checks must be exercised against fixtures, not against the real instruction files,
-or the suite would turn red every time the real documentation legitimately changed.
+location.  Every test builds its own miniature repository under ``tmp_path``, so each
+check's behaviour is pinned independently of what the real files happen to say. The
+real files are checked too, by ``test_the_instruction_files_pass_their_own_check`` in
+``tests/test_repo_invariants.py``.
 """
 
 from __future__ import annotations
