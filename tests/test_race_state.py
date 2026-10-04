@@ -1426,6 +1426,55 @@ def test_an_entry_list_entry_gives_a_rental_transponder_car_its_code(state):
     assert snap["class_code_missing"] == 0
 
 
+def _entry_list(state, run_id, *entries):
+    return state.process({
+        "type": "class_codes", "run_id": run_id, "entry_list": True,
+        "entries": [{**e, "kind": "entry list"} for e in entries],
+    })
+
+
+def test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _add_car(state, "8", transponder="7654321")
+    _entry_list(state, "0x4000AAAA",
+                _code_entry("a0000007", "7", "Saloon Cup", "SC", "1234567"),
+                _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # The host cleared car 7's code, so the next list leaves it out.
+    assert _entry_list(
+        state, "0x4000aaaa", _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321")
+    ) == "class_codes"
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+    # An empty list withdraws the rest.
+    assert _entry_list(state, "0x4000AAAA") == "class_codes"
+    assert state.class_codes == {}
+
+
+def test_an_entry_list_leaves_pushes_and_other_runs_lists_alone(state):
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    _entry_list(state, "0x4000BBBB", _code_entry("a0000009", "9", "Saloon Cup", "SC", "9"))
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000008", "8", "Saloon Cup", "SC", "8"))
+    _entry_list(state, "0x4000AAAA")
+    assert sorted(state.class_codes) == ["0x4000AAAA\te1", "0x4000BBBB\ta0000009"]
+    # A plain batch never withdraws anything.
+    _codes(state, "0x4000BBBB")
+    assert "0x4000BBBB\ta0000009" in state.class_codes
+
+
+def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):
+    import json
+
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_codes == state.class_codes
+    _entry_list(restored, "0x4000AAAA")
+    assert restored.class_codes == {}
+
+
 def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
     _add_car(state, "7")

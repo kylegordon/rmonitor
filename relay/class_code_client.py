@@ -1164,8 +1164,12 @@ class ClassCodeClient:
     start, pick and reconnect: its reply lists every entrant of the run with
     the code the host holds, DNS entrants included.  The reply is taken once
     and the view closed, since an open one streams the whole table about
-    once a second; its rows join the pushes as ``class_codes`` entries of
-    ``kind`` ``"entry list"`` for that run, after the run itself.  The run is
+    once a second; its rows go as a ``class_codes`` message for that run
+    marked ``entry_list``, entries of ``kind`` ``"entry list"``, after the
+    run and before the pushes of the same burst, and retried like them — the
+    latest per run replacing any not yet delivered.  The server takes it as
+    the run's whole entry list, replacing the codes of the run's earlier
+    ones (:meth:`_deliver_entry_list`).  The run is
     subscribed again every *entry_list_refresh_interval* seconds, to catch an
     entry edited mid-run that no push carried, and a subscription not
     answered within *announce_reply_timeout* seconds is closed and sent again
@@ -1257,6 +1261,9 @@ class ClassCodeClient:
         # under the same run id from the start it retired.
         self._ann_start_key = ""
         self._announcements: dict[str, dict] = {}
+        # The latest entry list per run not yet delivered, keyed by the
+        # lower-cased run id; it outlives a reconnect.
+        self._entry_lists: dict[str, dict] = {}
         self._reset_announcement_views()
         # What picks a run by name while no start has been read — the last
         # complete pull's run table and group names, the last $B number and
@@ -1613,6 +1620,7 @@ class ClassCodeClient:
             or self._preload is not None
             or self._run is not None
             or bool(self._announcements)
+            or bool(self._entry_lists)
         )
 
     def _absorb(self, data: bytes) -> None:
@@ -1882,11 +1890,11 @@ class ClassCodeClient:
             "Entry list for run %s: %d rows, %d with a code",
             run_id, len(reply.rows), len(entries),
         )
-        observed = time.monotonic()
-        by_entrant = self._pending.setdefault(run_id, {})
-        for entry in entries:
-            entry["_observed"] = observed
-            by_entrant[entry["entrant_id"]] = entry
+        # The newest replaces any of the run's not yet delivered.
+        self._entry_lists.pop(run_id.lower(), None)
+        self._entry_lists[run_id.lower()] = {
+            "run_id": run_id, "entries": entries, "_observed": time.monotonic(),
+        }
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}
@@ -1921,6 +1929,14 @@ class ClassCodeClient:
                     )
         # Kept ones go back ahead of any read meanwhile, which are newer.
         self._announcements = kept | self._announcements
+        # Before the pushes, so a push of the same flush is the newer on the
+        # server.
+        entry_lists, self._entry_lists = self._entry_lists, {}
+        for key, held in entry_lists.items():
+            if not await self._deliver_entry_list(held):
+                failed = True
+                # Unless a newer one for the run was read meanwhile.
+                self._entry_lists.setdefault(key, held)
         for run_id, by_entrant in pending.items():
             now = time.monotonic()
             expired = [
@@ -2025,6 +2041,38 @@ class ClassCodeClient:
             return False
         finally:
             self._run_in_flight = None
+        self._delivered()
+        return True
+
+    async def _deliver_entry_list(self, held: dict) -> bool:
+        """Hand an entry list to *on_batch*; return whether nothing is left to retry.
+
+        It goes as a ``class_codes`` message marked ``entry_list``, which the
+        server takes as the run's whole entry list: it replaces the entries
+        of the run's earlier lists, so a code cleared on the host, or an
+        entrant removed, is withdrawn rather than kept until it expires.
+        """
+        age = time.monotonic() - held["_observed"]
+        if age > MAX_ENTRY_AGE:
+            log.warning(
+                "Dropping an undelivered entry list for run %s – older than %.0fh",
+                held["run_id"], MAX_ENTRY_AGE / 3600,
+            )
+            return True
+        entries = held["entries"]
+        log.info("Forwarding an entry list of %d class codes for run %s",
+                 len(entries), held["run_id"])
+        try:
+            await self.on_batch({
+                "type": "class_codes",
+                "run_id": held["run_id"],
+                "entry_list": True,
+                "entries": [e | {"age_seconds": round(age, 3)} for e in entries],
+            })
+        except Exception:
+            log.exception("Could not forward the entry list for run %s", held["run_id"])
+            return False
+        self._pushed += len(entries)
         self._delivered()
         return True
 

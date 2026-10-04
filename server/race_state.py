@@ -72,6 +72,9 @@ _MAX_ANNOUNCED_RUNS = 4
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
+# Marks a stored class code that came from a run's entry list, which the
+# run's next entry list replaces; see _class_codes.
+_ENTRY_LIST_ORIGIN = "entry list"
 
 # The fields a ``class_code_preload`` entry carries, all strings.
 _PRELOAD_FIELDS = ("transponder", "class_name", "class_code")
@@ -589,12 +592,29 @@ class RaceState:
         ``age_seconds`` — a duration on the relay's own clock, so the two
         hosts' clocks need not agree — and an entry already past the TTL is
         not stored.  A missing or unusable age counts as zero.
+
+        A batch marked ``entry_list`` is the run's whole entry list as the
+        timing host holds it, so it first removes every code an earlier entry
+        list stored for that run: a code cleared on the host, or an entrant
+        taken off the run, is withdrawn rather than kept until it expires.  A
+        push stored under the same key since then is newer and stays; an
+        entry list storing over a push replaces it, as any later batch does.
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
         now = time.time()
         changed = False
         stored = 0
+        entry_list = bool(msg.get("entry_list"))
+        if entry_list:
+            stale = [
+                k for k, v in self.class_codes.items()
+                if v.get("origin") == _ENTRY_LIST_ORIGIN
+                and k.split("\t", 1)[0].lower() == run_id.lower()
+            ]
+            for k in stale:
+                del self.class_codes[k]
+            changed = bool(stale)
         if isinstance(entries, list):
             for item in entries:
                 if not isinstance(item, dict):
@@ -609,6 +629,8 @@ class RaceState:
                 if age > _CLASS_CODE_TTL_SECONDS:
                     continue
                 entry["received_at"] = now - age
+                if entry_list:
+                    entry["origin"] = _ENTRY_LIST_ORIGIN
                 self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
                 changed = True
                 stored += 1
@@ -1525,6 +1547,9 @@ class RaceState:
             self.class_codes = {
                 k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
                 | {"received_at": min(stamp, now)}
+                # So the run's next entry list still replaces it.
+                | ({"origin": _ENTRY_LIST_ORIGIN}
+                   if v.get("origin") == _ENTRY_LIST_ORIGIN else {})
                 for k, v in (data.get("class_codes") or {}).items()
                 if isinstance(k, str) and isinstance(v, dict)
                 # The invariant _class_codes holds on ingest: never a codeless record.

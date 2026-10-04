@@ -2959,7 +2959,7 @@ async def test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows(mon
         await _finish(task)
     (msg,) = _entry_lists(calls)
     assert msg == {
-        "type": "class_codes", "run_id": RUN_ID,
+        "type": "class_codes", "run_id": RUN_ID, "entry_list": True,
         "entries": [_listed("7"), _listed("8", "TD")],
     }
     types = [c["type"] for c in calls]
@@ -3104,16 +3104,54 @@ async def test_a_withheld_entry_list_reply_forwards_nothing(monkeypatch, caplog)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("push_first", [False, True])
-async def test_a_push_read_with_an_entry_list_reply_wins_over_it(push_first):
+async def test_a_push_read_with_an_entry_list_reply_goes_to_the_server_after_it(push_first):
     """Read in one chunk, a push after the reply is newer, and one before it
-    carries an edit the reply already holds, so the push wins either way."""
-    client = ccc.ClassCodeClient("timing-host", _collect([]), **{**FAST, "entry_list": True})
+    carries an edit the reply already holds, so the push must win either
+    way: it is read after the reply and delivered after it."""
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
     client._ann_run = RUN_ID
     client._ent_pending = (6, 0.0, RUN_ID)
     client._ent_parser = ccc.EntryListParser(6)
     reply = _results_frame(b"\x24\x80", 6, [_entrant("7", "TC")])
     push = _push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TD"))
     client._absorb(push + reply if push_first else reply + push)
-    entry = client._pending[RUN_ID]["a0000007"]
-    assert (entry["kind"], entry["class_code"]) == ("modified", "TD")
     assert client._ent_pending is None
+    listed = client._entry_lists[RUN_ID.lower()]["_observed"]
+    assert listed <= client._pending[RUN_ID]["a0000007"]["_observed"]
+    await client._flush()
+    assert [(c.get("entry_list", False), [e["class_code"] for e in c["entries"]])
+            for c in calls] == [(True, ["TC"]), (False, ["TD"])]
+
+
+def _held(*numbers):
+    return {"run_id": RUN_ID, "entries": [_listed(n) for n in numbers],
+            "_observed": ccc.time.monotonic()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer", [False, True])
+async def test_a_failed_entry_list_delivery_is_retried_and_a_newer_one_replaces_it(newer):
+    calls = []
+    failures = [True]
+    client = None
+
+    async def on_batch(msg):
+        if failures:
+            failures.pop()
+            if newer:
+                # Read while the failing delivery was in flight.
+                client._entry_lists[RUN_ID.lower()] = _held("8")
+            raise RuntimeError("server down")
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    await client._flush()
+    assert calls == []
+    await client._flush()
+    assert [[e["number"] for e in c["entries"]] for c in calls] == [["8" if newer else "7"]]
+    assert calls[0]["entry_list"] is True
+    assert client._entry_lists == {}

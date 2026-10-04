@@ -65,8 +65,10 @@ of its own, and an unanswered subscription is retried on that same socket: every
 operator notice, so a per-run or per-retry connection would be a stream of them. Its reply is
 taken once and the view closed, because an open results view streams the whole table about once a
 second; a slow refresh catches mid-run edits. The code comes only from the host's own code field,
-and a reply whose rows disagree with its count is withheld. Guarded by
-`test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection`,
+and a reply whose rows disagree with its count is withheld. Each list is the run's whole entry
+list, so the server replaces the run's earlier list with it, withdrawing a code since cleared.
+Guarded by `test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection`,
 `test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows` and
 `test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees` in
-`tests/test_class_code_client.py`.
+`tests/test_class_code_client.py`, and
+`test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave` in `tests/test_race_state.py`.
