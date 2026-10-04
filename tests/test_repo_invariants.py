@@ -12,6 +12,7 @@ repository's shape, not about its runtime behaviour.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 import sys
@@ -193,6 +194,26 @@ def test_there_is_no_conftest_py() -> None:
         if not set(path.relative_to(ROOT).parts) & _SKIP_DIRS
     ]
     assert not found, f"conftest.py appeared at {found}; see tests/AGENTS.md"
+
+
+def test_the_instruction_files_pass_their_own_check() -> None:
+    """Guards AGENTS.md §Keeping this file current: the real instruction files pass.
+
+    ``.github/scripts/check_agents_md.py`` is a CI job of its own, and
+    ``tests/test_check_agents_md.py`` only exercises it against fixtures. So a change
+    that broke a real file -- a scoped ``AGENTS.md`` grown to its 80-line budget, a
+    path that no longer exists -- passed ``./test.sh`` and first failed on the PR,
+    which is how this test came to exist. Running the same checks here makes the
+    local suite the whole gate, as ``AGENTS.md`` §Commands says it is.
+    """
+    script = ROOT / ".github" / "scripts" / "check_agents_md.py"
+    spec = importlib.util.spec_from_file_location("check_agents_md", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    findings = module.run_checks(ROOT)
+    assert not findings, "instruction-file problems:\n" + "\n".join(findings)
 
 
 def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:

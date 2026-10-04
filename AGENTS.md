@@ -47,7 +47,7 @@ comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
 - **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
   wait-for-display poll this repo has twice seen hang indefinitely.
 - **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 574 tests CI runs.
+  than skips when a display is missing. A local run is the same 575 tests CI runs.
 - **Both interpreters are reachable locally** — the fence's last line switches to the
   3.13 matrix leg, so it is reproducible here rather than CI-only.
 
@@ -91,8 +91,8 @@ tooling), `server/requirements.txt` — **never** a workflow's inline `pip insta
 
 A PR that changes a command, an environment variable, a workflow or the project layout **updates
 this file in the same PR**, and an agent that hits a non-obvious failure **adds it to the pitfalls
-list in the same PR** — the only way this memory grows. A CI check validates the mechanical half
-(referenced paths and environment variables are real); the prose half is on you.
+list in the same PR** — the only way this memory grows. `./test.sh` and CI check the mechanical half
+(referenced paths and environment variables are real, budgets hold); the prose half is on you.
 
 Growth needs a matching drain, or any budget is only a deferred failure. So **every pitfall entry
 names the test that guards it**. Prose cannot fail; a rule with no test is a rule an agent breaks
