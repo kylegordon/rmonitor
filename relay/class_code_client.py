@@ -1616,6 +1616,12 @@ class ClassCodeClient:
         )
 
     def _absorb(self, data: bytes) -> None:
+        # The entry list goes first, so a push read in the same chunk wins
+        # whichever order they came in: a push after the reply is newer, and
+        # one before it carries an edit the reply already holds.
+        if self._ent_parser is not None:
+            for reply in self._ent_parser.feed(data):
+                self._absorb_entry_list(reply)
         for rec in self._parser.feed(data):
             entry = record_entry(rec)
             if entry is None:
@@ -1678,9 +1684,6 @@ class ClassCodeClient:
             self._take_run(run.run_id, run.name, run.event)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
-        if self._ent_parser is not None:
-            for reply in self._ent_parser.feed(data):
-                self._absorb_entry_list(reply)
 
     def _take_run(self, run_id: str, name: str, event: str = "") -> None:
         """Treat *run_id* as the started run: forward it and subscribe.

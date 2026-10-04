@@ -3100,3 +3100,20 @@ async def test_a_withheld_entry_list_reply_forwards_nothing(monkeypatch, caplog)
         await _finish(task)
     assert _entry_lists(calls) == []
     assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("push_first", [False, True])
+async def test_a_push_read_with_an_entry_list_reply_wins_over_it(push_first):
+    """Read in one chunk, a push after the reply is newer, and one before it
+    carries an edit the reply already holds, so the push wins either way."""
+    client = ccc.ClassCodeClient("timing-host", _collect([]), **{**FAST, "entry_list": True})
+    client._ann_run = RUN_ID
+    client._ent_pending = (6, 0.0, RUN_ID)
+    client._ent_parser = ccc.EntryListParser(6)
+    reply = _results_frame(b"\x24\x80", 6, [_entrant("7", "TC")])
+    push = _push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TD"))
+    client._absorb(push + reply if push_first else reply + push)
+    entry = client._pending[RUN_ID]["a0000007"]
+    assert (entry["kind"], entry["class_code"]) == ("modified", "TD")
+    assert client._ent_pending is None
