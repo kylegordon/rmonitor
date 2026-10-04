@@ -12,6 +12,7 @@ repository's shape, not about its runtime behaviour.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 import sys
@@ -195,6 +196,26 @@ def test_there_is_no_conftest_py() -> None:
     assert not found, f"conftest.py appeared at {found}; see tests/AGENTS.md"
 
 
+def test_the_instruction_files_pass_their_own_check() -> None:
+    """Guards AGENTS.md §Keeping this file current: the real instruction files pass.
+
+    ``.github/scripts/check_agents_md.py`` is a CI job of its own, and
+    ``tests/test_check_agents_md.py`` only exercises it against fixtures. So a change
+    that broke a real file -- a scoped ``AGENTS.md`` grown to its 80-line budget, a
+    path that no longer exists -- passed ``./test.sh`` and first failed on the PR,
+    which is how this test came to exist. Running the same checks here makes the
+    local suite the whole gate, as ``AGENTS.md`` §Commands says it is.
+    """
+    script = ROOT / ".github" / "scripts" / "check_agents_md.py"
+    spec = importlib.util.spec_from_file_location("check_agents_md", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    findings = module.run_checks(ROOT)
+    assert not findings, "instruction-file problems:\n" + "\n".join(findings)
+
+
 def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
     """Guards server/AGENTS.md: ``index.html`` reads ``sort_mode``, never re-derives it.
 
@@ -227,6 +248,68 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
     assert not offenders, (
         "index.html derives a sort condition from the session mode instead of reading "
         f"data.sort_mode: {offenders}"
+    )
+
+
+def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
+    """Guards server/AGENTS.md: the time columns follow ``sort_mode`` too.
+
+    Under a position sort -- a race, from its first ``$G`` through Finish -- the page
+    shows each car's Total Time in place of Last Lap and Best Lap; under a best-lap
+    sort it shows the lap times. The in-place row update matches cells by index, so
+    the column set never changes: every row always carries all ten cells, and a class
+    on the table decides which time cells CSS hides. A colspan that disagrees with the
+    header count would leave the placeholder rows short.
+
+    A total that is not a time -- empty, the ``00:00:00.000`` a reset leaves, or the
+    feed's ``00:59:59.999`` no-time sentinel -- is withheld as a dash, never shown.
+
+    Like its sibling above, this guard is textual: it asserts the page keys the toggle
+    on the server's sort answer, and that no race condition is re-derived from the mode
+    label or the flag. What the page then *draws* stays unguarded.
+    """
+    page = ROOT / "server" / "templates" / "index.html"
+    source = page.read_text(encoding="utf-8")
+
+    for header in (
+        '<th class="lap-col">Last Lap</th>',
+        '<th class="lap-col">Best Lap</th>',
+        '<th class="total-col">Total Time</th>',
+    ):
+        assert header in source, f"index.html is missing the header {header}"
+
+    assert "{ text: totalText(e.total_time), cls: 'total-col' }" in source, (
+        "index.html's row cells no longer show total_time through totalText()"
+    )
+    assert "classList.toggle('race', !bestLapSort)" in source, (
+        "index.html no longer picks the time columns from the server's sort answer"
+    )
+    for sentinel in ("'00:00:00.000'", "'00:59:59.999'"):
+        assert sentinel in source, (
+            f"index.html no longer withholds the total time {sentinel} as a dash"
+        )
+
+    # A race decision keyed on the mode label or the flag rather than the server's answer.
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(source.splitlines(), 1)
+        if re.search(
+            r"(session_mode|\bmode\b|flag)\s*===?\s*['\"](Race|Green|Yellow|Red|Finish)",
+            line,
+        )
+    ]
+    assert not offenders, (
+        "index.html derives a race condition from the session mode or flag instead of "
+        f"reading data.sort_mode: {offenders}"
+    )
+
+    thead = re.search(r"<thead>(.*?)</thead>", source, re.DOTALL)
+    assert thead, "index.html has no <thead>"
+    columns = thead.group(1).count("<th")
+    assert columns == 10, f"index.html's table has {columns} columns, expected 10"
+    colspans = [int(n) for n in re.findall(r'colspan="(\d+)"', source)]
+    assert colspans and all(n == columns for n in colspans), (
+        f"index.html's colspans {colspans} do not all span its {columns} columns"
     )
 
 
