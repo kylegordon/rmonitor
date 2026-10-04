@@ -1137,8 +1137,8 @@ class ClassCodeClient:
     restarted server recovers within that; a subscription not answered
     within *announce_reply_timeout* seconds is sent again.  A stop leaves the
     run subscribed — its views, refreshes and entry list alike — until
-    another run starts or is picked, since race control posts the reason for
-    a stop after it.  The run is
+    another run starts or is picked, or, while picking, a session names no
+    run, since race control posts the reason for a stop after it.  The run is
     remembered across a reconnect and re-subscribed once the registry is
     pulled.  A relay started mid-run has seen no start, so until it reads
     one it picks the run by the session's name instead
@@ -1730,8 +1730,9 @@ class ClassCodeClient:
         self._pick_run()
 
     def _end_session(self) -> None:
-        # Its views stay open until the next run starts or is picked: the
-        # board still shows the closed session, and its rows with it.
+        # Its views stay open until the next run starts or is picked, or the
+        # next session names none: the board still shows the closed session,
+        # and its rows with it.
         if not self._seen_start and self._ann_run is not None:
             self._ended_runs.add(self._ann_run.lower())
 

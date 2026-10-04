@@ -58,9 +58,9 @@ the client subscribe again on a new view, and that reply is forwarded. Guarded b
 `test_the_reply_to_a_resubscribe_does_not_trigger_another` in `tests/test_class_code_client.py`.
 
 A stop never ends a run's announcements: race control posts the reason after it, so the relay keeps
-the run's views and entry list until the next run, and the server shows them past `$B,95`. Guarded
-by `test_an_announcement_created_after_the_stop_is_forwarded` in `tests/test_class_code_client.py`
-and `test_announcements_stay_shown_through_the_95_close_edge` in `tests/test_race_state.py`.
+the run's views and entry list until the next run (or session, if picking), and the server shows them
+past `$B,95`. Guarded by `test_an_announcement_created_after_the_stop_is_forwarded` in
+`tests/test_class_code_client.py` and `test_announcements_stay_shown_through_the_95_close_edge`.
 
 ## The entry list rides the held connection, as a snapshot
 
