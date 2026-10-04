@@ -2716,6 +2716,20 @@ def test_a_stop_of_the_waiting_run_on_show_keeps_its_race_name(state):
     assert state.snapshot()["race_name"] == EVENT
 
 
+def test_a_stop_between_init_and_its_b_keeps_the_waiting_runs_race_name(state):
+    """``$I`` blanks the description, which is no sign the waiting run was
+    dropped; the same session's ``$B`` then binds it with its name."""
+    _session(state)
+    _started_with_event(state)
+    state.process({"type": "init"})
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "start_key": "k1",
+    })
+    _session(state)
+    assert state.snapshot()["race_name"] == EVENT
+
+
 def test_an_event_correction_after_the_95_does_not_revive_the_closed_start(state):
     _started_with_event(state, event="")
     _session(state)

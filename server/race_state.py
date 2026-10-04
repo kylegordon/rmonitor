@@ -784,12 +784,13 @@ class RaceState:
         late one never touches a restart of the same run.
 
         A ``stopped`` message for the start waiting in
-        ``class_code_run_next`` drops its event unless that run is the one
-        shown: the relay sends one when it drops a pick, whose start can
-        still land afterwards, and a same-named later session would
-        otherwise bind it and show the old race name.  A stopped run that is
-        shown — bound, or waiting under the session's name — keeps its race
-        name until the session's ``$B,95``, as the board still shows it.
+        ``class_code_run_next`` drops its event when the running session's
+        description names another run: the relay sends one when it drops a
+        pick, whose start can still land afterwards, and a same-named later
+        session would otherwise bind it and show the old race name.  A
+        stopped run bound, or waiting under the session's name — or under an
+        empty one, after ``$I`` — keeps its race name until the session's
+        ``$B,95``, as the board still shows it.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
@@ -811,9 +812,11 @@ class RaceState:
             if (
                 nxt is not None
                 and "event" in nxt
-                # A waiting run already shown is the session's, not a
-                # dropped pick: $B can come before a mid-run pick.
-                and self._shown_run() is not nxt
+                # Only a run another session's $B shows not to be its own is
+                # a dropped pick: $B can come before a mid-run pick, and $I
+                # blanks the description without the run being dropped.
+                and self.run_description
+                and nxt["name"] != self.run_description
                 and _start_id(nxt["run_id"], nxt.get("start_key"))
                 == _start_id(run_id, msg.get("start_key"))
             ):
