@@ -1593,7 +1593,7 @@ def test_expired_class_codes_are_not_joined(state, monkeypatch):
     _add_car(state, "7", transponder="1234567")
     _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
-    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS + 1
     snap = state.snapshot()
     assert _entry_for(snap, "7")["class_code"] == ""
     assert snap["class_codes_available"] is False
@@ -1605,7 +1605,7 @@ def test_a_class_code_is_dated_from_its_push_not_its_arrival(state, monkeypatch)
 
     now = [1_000_000.0]
     monkeypatch.setattr(rs.time, "time", lambda: now[0])
-    ttl = rs._CLASS_CODE_TTL_SECONDS
+    ttl = rs._PUSHED_CODE_TTL_SECONDS
     late = {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": ttl - 60}
     _codes(state, "r", late)
     (rec,) = state.class_codes.values()
@@ -1722,7 +1722,7 @@ def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path
     restored.load_class_codes(codes_store.load())
     assert len(restored.class_codes) == 1
 
-    now[0] += rs._CLASS_CODE_TTL_SECONDS  # the entry's own expiry still applies
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS  # the entry's own expiry still applies
     later = RaceState()
     later.load_class_codes(codes_store.load())
     assert later.class_codes == {}
@@ -2074,8 +2074,13 @@ def test_expiry_of_either_store_dirties_the_state(state, monkeypatch):
     now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
     assert state.prune_expired_class_codes() is True
     assert state.dirty
-    assert state.class_codes == {}
     assert state.class_code_preload["entries"] == []
+    assert state.class_codes != {}
+    state.mark_clean()
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.dirty
+    assert state.class_codes == {}
 
 
 def test_an_expiry_found_by_a_snapshot_dirties_the_state(state, monkeypatch):
@@ -2196,6 +2201,93 @@ def test_scope_from_the_run_table_picks_the_newest_run_with_that_name(state):
     _session(state)
     assert state.snapshot()["class_code_scope"] == "0x40002806"
     assert state._class_code_scope()[1] == frozenset({"0x40002806", "0x80000985"})
+
+
+# One class's meeting as the timing host groups it: the warm-up whose grid
+# edits were pushed, the race they feed, and another class's warm-up.
+DC, DD, E1 = "0x400035DC", "0x400035DD", "0x400035E1"
+GROUP_D3 = "0x800009D3"
+RACE_15 = "Race 15 - 2nd Race"
+SLW = "Scottish Lightweights"
+
+
+def _race_15(state):
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        _run_row(E1, "0x800009D4", "Warm Up"),
+    )
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+
+
+def test_scope_takes_in_every_run_of_the_running_runs_group(state):
+    _race_15(state)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dc", "0x400035dd", "0x800009d3"})
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL", "1234567"))
+    _codes(state, E1, _code_entry("e8", "8", SLW, "SL", "7654321"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == DD
+    assert _entry_for(snap, "7")["class_code"] == "SL"
+    assert _entry_for(snap, "8")["class_code"] == ""
+
+
+def test_a_sibling_push_conflict_resolves_by_transponder_to_the_latest(state):
+    _race_15(state)
+    _car_in_class(state, "461", "3456789", SLW)
+    _codes(state, DC, {**_code_entry("e461", "461", SLW, "F3", "3456789"), "age_seconds": 960})
+    _codes(state, DD, _code_entry("e461", "461", SLW, "SL C", "3456789"))
+    assert _entry_for(state.snapshot(), "461")["class_code"] == "SL C"
+
+
+def test_a_sibling_push_conflict_without_a_usable_transponder_stays_blank(state):
+    # A rental: the feed carries the transponder's name, the pushes its number.
+    _race_15(state)
+    _car_in_class(state, "26", "NE5", SLW)
+    _codes(state, DC, {**_code_entry("e26", "26", SLW, "F3", "3776411"), "age_seconds": 960})
+    _codes(state, DD, _code_entry("e26", "26", SLW, "SL C", "3776411"))
+    assert _entry_for(state.snapshot(), "26")["class_code"] == ""
+
+
+def test_a_run_missing_from_the_table_scopes_to_itself_alone(state):
+    _runs_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dd"})
+
+
+def test_a_nameless_run_gives_its_group_but_is_never_picked_by_name(state):
+    _runs_preload(state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, ""))
+    assert "" not in state.class_code_preload["runs_by_name"]
+    _session(state, RACE_15, "15")
+    assert state._class_code_scope() is None
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dc", "0x400035dd", "0x800009d3"})
+
+
+def test_class_code_records_survive_past_twelve_hours_but_not_past_thirty_six(state, monkeypatch):
+    """A two-day meeting's grids are often built on day 1 and raced on day 2."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _car_in_class(state, "8", "7654321", "Saloon Cup")
+    _preload(state, _pre("9999999", "Unused Class", "UC"))
+    _codes(state, "0x4000AAAA", _code_entry("e7", "7", "Saloon Cup", "SC", "1234567"))
+    _entry_list(state, "0x4000BBBB", _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321"))
+    now[0] += 13 * 3600
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+    # The preload keeps its own, shorter life.
+    assert state.class_code_preload["received_at"] is None
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    state.prune_expired_class_codes()
+    assert state.class_codes == {}
 
 
 def test_an_unknown_run_falls_back_to_unscoped_and_reports_it(state, caplog):

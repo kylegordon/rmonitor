@@ -58,11 +58,17 @@ _PRACTICE_KEYWORDS = (
     "untimed",
 )
 
-# How long a pushed class code stays joinable after its last push.  Twelve
-# hours covers a meeting day, including a server restart; transponders are
-# reused across meetings, so a longer life would pair a reused transponder
-# with last meeting's code — a plausible wrong value, never shown.
+# How long the registry preload, a started run and a retired run stay
+# usable.  Twelve hours covers a meeting day, including a server restart;
+# the relay pulls the preload again on every connect.
 _CLASS_CODE_TTL_SECONDS = 12 * 3600
+# How long every ``class_codes`` record, pushed or listed, stays joinable
+# after its push.  Thirty-six hours spans a two-day meeting, whose grids are
+# often built on day 1 and raced on day 2.  Transponders are reused across
+# meetings; group scope keeps another meeting's records out, but an
+# unscoped read (no run known) admits a day-old one — an accepted risk,
+# since the class gate and the distinct-code rule blank a conflict.
+_PUSHED_CODE_TTL_SECONDS = 36 * 3600
 # How often an announcements refresh renews its started run's date, at most;
 # each renewal makes the periodic save rewrite the class-code store.
 _RUN_RENEW_SECONDS = 3600
@@ -598,7 +604,7 @@ class RaceState:
         accumulates across runs: pushes cover runs other than the one on the
         rMonitor feed, and :meth:`_resolve_class_codes` gates both of its
         layers on an exact class-name match.  It survives :meth:`reset` for the
-        reason given there, and expires by :data:`_CLASS_CODE_TTL_SECONDS`
+        reason given there, and expires by :data:`_PUSHED_CODE_TTL_SECONDS`
         instead.
 
         ``entries`` is untrusted: :func:`_coerce_scalars` leaves lists alone,
@@ -661,7 +667,7 @@ class RaceState:
             changed = bool(stale)
         for entry, item in rows:
             age = _entry_age(item.get("age_seconds"))
-            if age > _CLASS_CODE_TTL_SECONDS:
+            if age > _PUSHED_CODE_TTL_SECONDS:
                 continue
             entry["received_at"] = now - age
             if entry_list:
@@ -1132,9 +1138,12 @@ class RaceState:
         the preload's run table by exact name.  Names repeat across meetings,
         so the newest run id with that name is taken; a wrong pick only
         filters pushes out, so it costs blanks, never a wrong code.  The tags
-        are the run id and its group id, lowercased: pushes are tagged with
-        either, and a save fans out one push per tag.  *None* — no
-        description, or no run by that name — leaves pushes unscoped.
+        are the run id, every run of its group and the group id, lowercased:
+        a save fans out one push per tag, and one meeting's pushes are
+        tagged with whichever run was being edited — often a sibling, as a
+        warm-up's grid edits feed the race — so the whole group is in scope.
+        A run missing from the run table scopes to itself alone.  *None* —
+        no description, or no run by that name — leaves pushes unscoped.
 
         A closing ``$B,95`` keeps its session in scope until the next
         session's ``$B``: the board still shows that session's cars, so its
@@ -1166,6 +1175,7 @@ class RaceState:
         tags = {run_id.lower()}
         group = self.class_code_preload["run_group"].get(run_id.lower())
         if group:
+            tags |= self.class_code_preload["group_runs"].get(group, frozenset())
             tags.add(group)
         # It tags every push, so it would admit them all.
         tags.discard(_ALL_PUSHES_TAG)
@@ -1208,7 +1218,7 @@ class RaceState:
         """Drop registry entries past their TTL; return whether any went."""
         expired = [
             k for k, v in self.class_codes.items()
-            if now - v["received_at"] > _CLASS_CODE_TTL_SECONDS
+            if now - v["received_at"] > _PUSHED_CODE_TTL_SECONDS
         ]
         for k in expired:
             del self.class_codes[k]
@@ -1259,12 +1269,13 @@ class RaceState:
         The caller prunes expired codes first, as :meth:`snapshot` does.
 
         *scope*, from :meth:`_class_code_scope`, limits the push layers — and
-        the guard's view of pushes — to pushes tagged with the running run
-        or its group.  It is applied here, when codes are read, never on
-        ingest: every push is stored, so one arriving before its scope is
-        known is filtered once it is.  Pushes from other runs are other meetings' or finished
-        runs' edits, not this session's entries.  ``0x80000000`` tags every
-        push, so it is never a scope.  *None* keeps every push.
+        the guard's view of pushes — to pushes tagged with a run of the
+        running run's group, or the group itself.  It is applied here, when
+        codes are read, never on ingest: every push is stored, so one
+        arriving before its scope is known is filtered once it is.  Pushes
+        from other runs are other meetings' or finished runs' edits, not
+        this session's entries.  ``0x80000000`` tags every push, so it is
+        never a scope.  *None* keeps every push.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
@@ -1616,7 +1627,7 @@ class RaceState:
         and a restart after a quiet gap between sessions would then lose codes
         pushed for runs not yet started, which are never pushed again.  The
         registry needs no such cutoff: every entry expires on its own
-        :data:`_CLASS_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
+        :data:`_PUSHED_CODE_TTL_SECONDS`, applied by :meth:`load_class_codes`.
         The registry preload is saved beside it under ``"preload"``, for the
         same reason and because the relay pulls it again only on a reconnect;
         the started runs under ``"run"`` and ``"run_next"``, because the host
@@ -1757,9 +1768,11 @@ def _preload_store(
     the set of non-empty registration ids carrying the pair — ``nc_regs``
     only from entries with both an id and a number — and ``reg_codes`` a
     registration id to its codes.  ``run_group`` maps a lowercased run id to
-    its lowercased group id, and ``runs_by_name`` a run name to its run ids.
-    All of them, and ``has_codes``, are built once per store so a snapshot
-    does not rebuild them.
+    its lowercased group id, ``group_runs`` a lowercased group id to its
+    lowercased run ids, and ``runs_by_name`` a run name to its run ids.  A
+    nameless run is in the first two only: it gives its group, but a name
+    lookup never picks it.  All of them, and ``has_codes``, are built once
+    per store so a snapshot does not rebuild them.
     """
     runs = runs or []
     by_tx: dict[tuple[str, str], set[str]] = {}
@@ -1777,8 +1790,13 @@ def _preload_store(
             if e["number"]:
                 nc_regs.setdefault((e["number"], cls), set()).add(reg)
     runs_by_name: dict[str, list[str]] = {}
+    run_group: dict[str, str] = {}
+    group_runs: dict[str, set[str]] = {}
     for r in runs:
-        runs_by_name.setdefault(r["name"], []).append(r["run_id"])
+        if r["name"]:
+            runs_by_name.setdefault(r["name"], []).append(r["run_id"])
+        run_group[r["run_id"].lower()] = r["group_id"].lower()
+        group_runs.setdefault(r["group_id"].lower(), set()).add(r["run_id"].lower())
     return {
         "received_at": received_at,
         "entries": entries,
@@ -1788,7 +1806,8 @@ def _preload_store(
         "tx_regs": tx_regs,
         "nc_regs": nc_regs,
         "reg_codes": reg_codes,
-        "run_group": {r["run_id"].lower(): r["group_id"].lower() for r in runs},
+        "run_group": run_group,
+        "group_runs": {g: frozenset(ids) for g, ids in group_runs.items()},
         "runs_by_name": runs_by_name,
         "has_codes": any(e["class_code"] for e in entries),
     }
@@ -1857,9 +1876,10 @@ def _restore_run(value, now: float) -> dict | None:
 def _coerce_runs(value) -> list[dict]:
     """Return a preload's untrusted ``runs`` as ``{"run_id", "group_id", "name"}`` dicts.
 
-    An item that is not a dict, lacks a field, or carries a run id not of the
-    form ``0x4000xxxx`` or a group id not of the form ``0x8000xxxx`` is
-    skipped; anything else not a list reads as none.
+    An item that is not a dict, or carries a run id not of the form
+    ``0x4000xxxx`` or a group id not of the form ``0x8000xxxx``, is skipped;
+    anything else not a list reads as none.  A run with no name is kept, for
+    its group only: see :func:`_preload_store`.
     """
     if not isinstance(value, list):
         return []
@@ -1868,9 +1888,7 @@ def _coerce_runs(value) -> list[dict]:
         if not isinstance(item, dict):
             continue
         run = {k: str(item[k]) if item.get(k) is not None else "" for k in _RUN_FIELDS}
-        if run["name"] and _RUN_ID.fullmatch(run["run_id"]) and _GROUP_ID.fullmatch(
-            run["group_id"]
-        ):
+        if _RUN_ID.fullmatch(run["run_id"]) and _GROUP_ID.fullmatch(run["group_id"]):
             runs.append(run)
     return runs
 
