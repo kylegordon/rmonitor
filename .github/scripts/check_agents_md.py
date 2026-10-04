@@ -83,7 +83,7 @@ _SKILL_NAME_RE = re.compile(r"^(?:rmonitor-[a-z0-9]+(?:-[a-z0-9]+)*|rpi-artifact
 
 #: A YAML block-scalar header: ``|`` or ``>``, an optional indent digit and chomping
 #: indicator in either order, and an optional trailing comment.
-_BLOCK_SCALAR_RE = re.compile(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?\s*(?:#.*)?")
+_BLOCK_SCALAR_RE = re.compile(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:\s+#.*)?\s*")
 
 #: Maximum depth Claude Code follows ``@`` imports.
 MAX_IMPORT_DEPTH = 5
@@ -557,6 +557,19 @@ def _as_text(value: str | list[str] | None) -> str:
     return value
 
 
+def _pattern_matches(root: Path, pattern: str) -> bool:
+    """Return whether the glob *pattern* matches any path of this checkout."""
+    try:
+        matches = root.glob(pattern)
+        return any(
+            not set(m.relative_to(root).parts) & _SKIP_DIRS
+            and not m.relative_to(root).as_posix().startswith(_SKIP_PREFIXES)
+            for m in matches
+        )
+    except (ValueError, NotImplementedError):  # absolute or otherwise unusable
+        return False
+
+
 def check_skills(root: Path) -> list[str]:
     """Assert every project skill is well-formed and inside its budgets.
 
@@ -593,6 +606,20 @@ def check_skills(root: Path) -> list[str]:
                 f"{name}: description is {chars} characters, over the "
                 f"{MAX_SKILL_DESCRIPTION_CHARS} the skill listing truncates at"
             )
+        if not _SKILL_NAME_RE.match(directory.name):
+            findings.append(
+                f"{name}: skill directory `{directory.name}` is not named `rmonitor-*`, "
+                "so citations of it cannot be checked"
+            )
+        patterns = fields.get("paths", [])
+        if isinstance(patterns, str):
+            patterns = [p.strip() for p in patterns.split(",") if p.strip()]
+        for pattern in patterns:
+            if not _pattern_matches(root, pattern):
+                findings.append(
+                    f"{name}: `paths` pattern `{pattern}` matches no file, so the skill "
+                    "never auto-loads for it"
+                )
         count = len(text.splitlines())
         if count >= MAX_SKILL_LINES:
             findings.append(
@@ -668,6 +695,12 @@ def check_named_skills_and_agents(root: Path) -> list[str]:
     if not agents.is_file():
         return findings  # already reported by check_claude_import
     spans = set(backtick_spans(agents.read_text(encoding="utf-8")))
+    for name in role_agent_files(root):
+        if Path(name).stem not in ROLE_AGENTS:
+            findings.append(
+                f"{name}: not in ROLE_AGENTS in check_agents_md.py — a new role is "
+                "added to both, and named in AGENTS.md"
+            )
     for role in ROLE_AGENTS:
         if not (root / AGENTS_DIR / f"{role}.md").is_file():
             findings.append(

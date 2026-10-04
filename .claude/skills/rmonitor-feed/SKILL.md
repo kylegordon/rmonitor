@@ -6,7 +6,7 @@ paths:
   - relay/rmonitor_client.py
   - tests/test_parser.py
   - tests/test_race_state.py
-  - "tests/fixtures/**"
+  - "captures/*.log"
 ---
 
 # rMonitor feed and race state
