@@ -470,7 +470,7 @@ def test_stale_worktree_copies_are_not_checked(tmp_path: Path) -> None:
     assert check_agents_md.run_checks(root) == []
 
 
-@pytest.mark.parametrize("indicator", [">", ">-", "|", "|-"])
+@pytest.mark.parametrize("indicator", [">", ">-", "|", "|-", ">2", "|+", ">- # folded"])
 def test_frontmatter_parser_reads_block_scalars(indicator: str) -> None:
     """A folded description must be read, or the truncation check counts its indicator."""
     text = f"---\ndescription: {indicator}\n  First line,\n  second line.\nname: x\n---\n"
@@ -541,6 +541,16 @@ def test_cited_skill_that_exists_is_clean(tmp_path: Path) -> None:
     _add_skill(root, "rmonitor-present")
     (root / "AGENTS.md").write_text(
         AGENTS_BODY + "\nLoad `rmonitor-present` first.\n", encoding="utf-8"
+    )
+
+    assert check_agents_md.run_checks(root) == []
+
+
+def test_user_level_rpi_skills_may_be_named(tmp_path: Path) -> None:
+    """Only ``rpi-artifacts`` is this repository's; the other RPI phase skills are not."""
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nRun `rpi-plan` after `rpi-research`.\n", encoding="utf-8"
     )
 
     assert check_agents_md.run_checks(root) == []

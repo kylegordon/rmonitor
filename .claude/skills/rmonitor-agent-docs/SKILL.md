@@ -52,7 +52,7 @@ both together. That script finds environment variables only through the
 `os.environ.get("NAME", "default")` idiom, so a setting read any other way and named in
 an instruction file is reported as drift.
 
-Every project skill is named `rmonitor-*` or `rpi-*`, so the checker can fail on a cited
+Every project skill is named `rmonitor-*`, or is `rpi-artifacts`, so the checker can fail on a cited
 skill that no longer exists; the role agents root `AGENTS.md` names are also listed in the
 checker, and adding or removing one changes both.
 

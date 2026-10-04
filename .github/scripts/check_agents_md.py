@@ -75,9 +75,15 @@ AGENTS_DIR = ".claude/agents"
 ROLE_AGENTS = ("programmer", "tester", "docs-keeper", "reviewer")
 
 #: A backtick span of this form in an instruction file names a project skill, and
-#: must therefore have a ``SKILL.md``: every project skill is ``rmonitor-*`` or
-#: ``rpi-*``, which is what lets a deleted or renamed skill be caught by its citations.
-_SKILL_NAME_RE = re.compile(r"^(?:rmonitor|rpi)-[a-z0-9]+(?:-[a-z0-9]+)*$")
+#: must therefore have a ``SKILL.md``: every project skill is ``rmonitor-*`` or the one
+#: ``rpi-artifacts``, which is what lets a deleted or renamed skill be caught by its
+#: citations.  Not ``rpi-*`` as a whole: the other RPI phase skills are user-level, not
+#: this repository's, and naming one in an instruction file is legitimate.
+_SKILL_NAME_RE = re.compile(r"^(?:rmonitor-[a-z0-9]+(?:-[a-z0-9]+)*|rpi-artifacts)$")
+
+#: A YAML block-scalar header: ``|`` or ``>``, an optional indent digit and chomping
+#: indicator in either order, and an optional trailing comment.
+_BLOCK_SCALAR_RE = re.compile(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?\s*(?:#.*)?")
 
 #: Maximum depth Claude Code follows ``@`` imports.
 MAX_IMPORT_DEPTH = 5
@@ -302,7 +308,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str] | Non
         if not value:
             fields[key] = []
             current = key
-        elif value[0] in "|>" and value[1:] in {"", "-", "+"}:
+        elif _BLOCK_SCALAR_RE.fullmatch(value):
             block = (key, value[0], [])
         elif value.startswith("[") and value.endswith("]"):
             fields[key] = [_unquote(v.strip()) for v in value[1:-1].split(",") if v.strip()]
