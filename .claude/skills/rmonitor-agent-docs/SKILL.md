@@ -48,7 +48,13 @@ from the instructions once it lives there.
 | one function | that function's docstring | — |
 
 The budgets are the `MAX_*` constants in `.github/scripts/check_agents_md.py`; change
-both together.
+both together. That script finds environment variables only through the
+`os.environ.get("NAME", "default")` idiom, so a setting read any other way and named in
+an instruction file is reported as drift.
+
+Every project skill is named `rmonitor-*` or `rpi-*`, so the checker can fail on a cited
+skill that no longer exists; the role agents root `AGENTS.md` names are also listed in the
+checker, and adding or removing one changes both.
 
 The scoped files are `relay/AGENTS.md`, `server/AGENTS.md` and `tests/AGENTS.md`. The shim
 is the only way Claude Code sees a file by that name, and CI fails if one is missing.
@@ -61,7 +67,7 @@ SKILL.md or into the docstring of the code it describes.
 ## Nothing is ever copied
 
 Two divergent copies is the one genuinely undefined configuration. `.github/copilot-instructions.md`
-stays a pointer. `.github/instructions/*.instructions.md` and a .github/agents directory
+stays a pointer. `.github/instructions/*.instructions.md` and GitHub's custom-agent files
 are deliberately unused for the same reason: a second mechanism read alongside this one, with
 no defined precedence between them, is that trap wearing a different hat.
 

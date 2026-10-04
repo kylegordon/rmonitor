@@ -7,6 +7,7 @@ skills:
   - rmonitor-display
   - rmonitor-testing
   - rmonitor-pr
+  - rmonitor-agent-docs
 ---
 
 You review one rmonitor change and never edit it.

@@ -68,6 +68,17 @@ MAX_SKILL_DESCRIPTION_CHARS = 1536
 SKILLS_DIR = ".claude/skills"
 AGENTS_DIR = ".claude/agents"
 
+#: The role agents root ``AGENTS.md`` promises.  Discovery alone cannot notice one
+#: being deleted — there is no file left to check — so they are listed here, and
+#: ``check_named_skills_and_agents`` asserts both that each exists and that
+#: ``AGENTS.md`` still names it, so neither list can drift from the other silently.
+ROLE_AGENTS = ("programmer", "tester", "docs-keeper", "reviewer")
+
+#: A backtick span of this form in an instruction file names a project skill, and
+#: must therefore have a ``SKILL.md``: every project skill is ``rmonitor-*`` or
+#: ``rpi-*``, which is what lets a deleted or renamed skill be caught by its citations.
+_SKILL_NAME_RE = re.compile(r"^(?:rmonitor|rpi)-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
 #: Maximum depth Claude Code follows ``@`` imports.
 MAX_IMPORT_DEPTH = 5
 
@@ -246,9 +257,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str] | Non
 
     Returns ``None`` when *text* does not open with a ``---`` line closed by another.
     This is a deliberate subset of YAML — ``key: value`` scalars with matching
-    surrounding quotes stripped, a ``key:`` line followed by ``  - item`` lines, and an
-    inline ``key: [a, b]`` list; anything else stays a raw string — because the check
-    is stdlib only and the files it reads are written to this subset.
+    surrounding quotes stripped, a ``key:`` line followed by ``  - item`` lines, an
+    inline ``key: [a, b]`` list, and ``|`` / ``>`` block scalars, folded to one string;
+    anything else stays a raw string — because the check is stdlib only and the files
+    it reads are written to this subset.  Block scalars are read rather than left raw
+    because a long folded ``description`` is exactly what the truncation check is for.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -259,8 +272,21 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str] | Non
         return None
     fields: dict[str, str | list[str]] = {}
     current: str | None = None
+    block: tuple[str, str, list[str]] | None = None  # (key, style, lines)
+
+    def close_block() -> None:
+        if block is not None:
+            key, style, parts = block
+            fields[key] = ("\n" if style == "|" else " ").join(parts).strip()
+
     for line in lines[1:end]:
         stripped = line.strip()
+        if block is not None and (not stripped or line[:1].isspace()):
+            if stripped:
+                block[2].append(stripped)
+            continue
+        close_block()
+        block = None
         if not stripped or stripped.startswith("#"):
             continue
         if stripped.startswith("- ") and current is not None:
@@ -272,15 +298,17 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str] | Non
         if not sep or line[:1].isspace():
             continue
         key, value = key.strip(), value.strip()
+        current = None
         if not value:
             fields[key] = []
             current = key
-            continue
-        current = None
-        if value.startswith("[") and value.endswith("]"):
+        elif value[0] in "|>" and value[1:] in {"", "-", "+"}:
+            block = (key, value[0], [])
+        elif value.startswith("[") and value.endswith("]"):
             fields[key] = [_unquote(v.strip()) for v in value[1:-1].split(",") if v.strip()]
         else:
             fields[key] = _unquote(value)
+    close_block()
     return fields, "\n".join(lines[end + 1 :])
 
 
@@ -610,6 +638,43 @@ def check_role_agents(root: Path) -> list[str]:
     return findings
 
 
+def check_named_skills_and_agents(root: Path) -> list[str]:
+    """Assert every skill an instruction file cites, and every promised role agent, exists.
+
+    The skill and agent checks are discovery-only: they validate the files that are
+    there, so on their own they pass when a file ``AGENTS.md`` points an agent at has
+    been deleted, leaving the instructions naming nothing.
+    """
+    findings: list[str] = []
+    for name in instruction_files(root):
+        path = root / name
+        if not path.is_file():
+            continue  # already reported by check_paths
+        prose, _ = split_fences(path.read_text(encoding="utf-8"))
+        for span in sorted(set(backtick_spans(prose))):
+            if not _SKILL_NAME_RE.match(span):
+                continue
+            if not (root / SKILLS_DIR / span / "SKILL.md").is_file():
+                findings.append(
+                    f"{name}: names skill `{span}`, which has no {SKILLS_DIR}/{span}/SKILL.md"
+                )
+    agents = root / "AGENTS.md"
+    if not agents.is_file():
+        return findings  # already reported by check_claude_import
+    spans = set(backtick_spans(agents.read_text(encoding="utf-8")))
+    for role in ROLE_AGENTS:
+        if not (root / AGENTS_DIR / f"{role}.md").is_file():
+            findings.append(
+                f"{AGENTS_DIR}/{role}.md: missing — AGENTS.md promises this role agent"
+            )
+        if role not in spans:
+            findings.append(
+                f"AGENTS.md: no longer names role agent `{role}`; drop it from "
+                "ROLE_AGENTS in check_agents_md.py or name it again"
+            )
+    return findings
+
+
 def run_checks(root: Path) -> list[str]:
     """Run every check and return all findings, not merely the first."""
     findings: list[str] = []
@@ -621,6 +686,7 @@ def run_checks(root: Path) -> list[str]:
         check_scoped_budgets,
         check_skills,
         check_role_agents,
+        check_named_skills_and_agents,
         check_paths,
         check_env_names,
     ):

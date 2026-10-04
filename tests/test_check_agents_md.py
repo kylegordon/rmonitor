@@ -26,6 +26,7 @@ AGENTS_BODY = """# AGENTS.md — fixture
 
 Run the suite with `REQUIRE_DISPLAY=1`. The relay entry point is `relay/main.py` and
 the dependencies live in `relay/requirements.txt`.
+Role agents: `programmer`, `tester`, `docs-keeper`, `reviewer`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->
@@ -56,6 +57,12 @@ def make_repo(root: Path) -> Path:
         'import os\n\nREQUIRE_DISPLAY = os.environ.get("REQUIRE_DISPLAY", "0")\n',
         encoding="utf-8",
     )
+    (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+    for role in check_agents_md.ROLE_AGENTS:
+        (root / ".claude" / "agents" / f"{role}.md").write_text(
+            f"---\nname: {role}\ndescription: Use for testing.\n---\n\nFollow AGENTS.md.\n",
+            encoding="utf-8",
+        )
     return root
 
 
@@ -459,5 +466,81 @@ def test_stale_worktree_copies_are_not_checked(tmp_path: Path) -> None:
     worktree = root / ".claude" / "worktrees" / "x"
     worktree.mkdir(parents=True)
     (worktree / "AGENTS.md").write_text("filler\n" * 100, encoding="utf-8")
+
+    assert check_agents_md.run_checks(root) == []
+
+
+@pytest.mark.parametrize("indicator", [">", ">-", "|", "|-"])
+def test_frontmatter_parser_reads_block_scalars(indicator: str) -> None:
+    """A folded description must be read, or the truncation check counts its indicator."""
+    text = f"---\ndescription: {indicator}\n  First line,\n  second line.\nname: x\n---\n"
+
+    parsed = check_agents_md.parse_frontmatter(text)
+
+    assert parsed is not None
+    fields, _ = parsed
+    separator = "\n" if indicator.startswith("|") else " "
+    assert fields == {"description": f"First line,{separator}second line.", "name": "x"}
+
+
+def test_frontmatter_parser_keeps_colons_inside_a_value() -> None:
+    parsed = check_agents_md.parse_frontmatter("---\ndescription: Use when: testing\n---\n")
+
+    assert parsed is not None
+    assert parsed[0] == {"description": "Use when: testing"}
+
+
+def test_long_folded_skill_description_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    path = _add_skill(root, "fixture-skill")
+    long_line = "x" * (check_agents_md.MAX_SKILL_DESCRIPTION_CHARS + 1)
+    path.write_text(
+        f"---\nname: fixture-skill\ndescription: >-\n  {long_line}\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/fixture-skill/SKILL.md" in f and "truncates" in f for f in findings)
+
+
+def test_deleted_role_agent_is_reported(tmp_path: Path) -> None:
+    """Discovery alone validates only the files left, so a deletion has to be caught."""
+    root = make_repo(tmp_path)
+    (root / ".claude" / "agents" / "reviewer.md").unlink()
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/reviewer.md" in f and "missing" in f for f in findings)
+
+
+def test_role_agent_dropped_from_agents_md_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY.replace(", `reviewer`", ""), encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("AGENTS.md" in f and "`reviewer`" in f for f in findings)
+
+
+def test_cited_skill_that_does_not_exist_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nLoad `rmonitor-deleted` first.\n", encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("AGENTS.md" in f and "rmonitor-deleted" in f for f in findings)
+
+
+def test_cited_skill_that_exists_is_clean(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-present")
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nLoad `rmonitor-present` first.\n", encoding="utf-8"
+    )
 
     assert check_agents_md.run_checks(root) == []

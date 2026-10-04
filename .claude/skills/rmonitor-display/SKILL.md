@@ -9,8 +9,8 @@ paths:
 
 # Timing page and payload
 
-The page and the server are two halves of one behaviour. These are the rules that keep
-them agreeing; how an interval is measured stays in `server/AGENTS.md`.
+Rules that keep the timing page and the server's payload agreeing. How an interval is
+measured stays in `server/AGENTS.md`.
 
 ## A long-open tab can run an old page against a new server
 

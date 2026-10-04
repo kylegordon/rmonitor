@@ -5,6 +5,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 skills:
   - rmonitor-testing
   - rmonitor-feed
+  - rmonitor-display
 ---
 
 You write guard tests and run rmonitor's suite.

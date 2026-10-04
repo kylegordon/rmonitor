@@ -6,13 +6,14 @@ the traps below are the only safety net: turn anything learned the hard way into
 
 ## Always
 
-- `git fetch origin`, branch from `origin/master`, and land every change through a PR, using
-  Conventional Commits with a scope (relay, server, release, ci, deploy, agents). Load the
-  `rmonitor-pr` skill before committing.
+- `git fetch origin`, branch from `origin/master` and land every change through a PR, with
+  Conventional Commits scoped relay, server, release, ci, deploy or agents. Load `rmonitor-pr`.
 - Run the full suite with `./test.sh` (extra arguments go to pytest) before opening any PR.
   Load `rmonitor-testing` before writing tests or touching tests, workflows or dependencies.
-- Code style: match the head of `server/race_state.py`. That means PEP 8, type hints on public
-  functions, reST docstrings, keyword-only parameters after `*`, and double quotes in tests.
+- Code style (no linter exists): match the head of `server/race_state.py`. That means PEP 8, 4-space
+  indent, type hints on public functions, reST docstrings, keyword-only parameters after `*`, double
+  quotes in tests, `os.environ.get("NAME", "default")` for settings and `getLogger(__name__)`.
+- Non-trivial work goes through the RPI phases; load `rpi-artifacts` when running one.
 - Changing a command, environment variable, workflow, layout, skill or instruction file: load
   `rmonitor-agent-docs` and update the instructions in the same PR.
 
@@ -26,7 +27,7 @@ the traps below are the only safety net: turn anything learned the hard way into
 - Commit or push to `master`, or hand-write a commit subject beginning `chore(master): release `.
 - pip-install, run tests or start the app on the host. Everything runs in Docker.
 - Put a dependency anywhere but the scope-matching `requirements*.txt` (never a workflow's inline
-  `pip install`); use `xvfb-run`; commit secrets (`.env` is gitignored).
+  `pip install`); use `xvfb-run`; commit secrets (`.env.example` holds placeholders only).
 - Cite a `.rpi-tracking/` path in anything committed. It is local and git-ignored.
 
 ## Where knowledge lives
