@@ -1361,7 +1361,11 @@ class RaceState:
         the registry: layer 3 is skipped while that list stands, as the
         host's current list is authoritative and a uniform registry class is
         no proof of a car the list leaves uncoded.  A newer push is a later
-        edit and counts.
+        edit and counts.  "Newer" is by date, and a date is arrival less the
+        relay's age, so it carries that POST's own delivery time: a push read
+        within about that time — normally well under a second — before a list
+        can still count as newer.  An accepted limit; ordering by the relay's
+        own observation sequence would close it.
 
         Nothing ever derives a code from a class name — the mapping between
         them is many-to-many.
