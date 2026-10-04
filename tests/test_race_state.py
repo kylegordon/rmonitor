@@ -2703,6 +2703,37 @@ def test_a_stop_of_the_bound_run_keeps_its_race_name_until_the_95(state):
     assert state.snapshot()["race_name"] == ""
 
 
+def test_a_stop_of_the_waiting_run_on_show_keeps_its_race_name(state):
+    """``$B`` can come before a mid-run pick, which then waits — shown — until
+    a ``$B`` repeat binds it; a stop meanwhile is not a dropped pick."""
+    _session(state)
+    _started_with_event(state)
+    assert state.class_code_run is None
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "start_key": "k1",
+    })
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_an_event_correction_after_the_95_does_not_revive_the_closed_start(state):
+    _started_with_event(state, event="")
+    _session(state)
+    _closing(state)
+    assert _started_with_event(state) is None
+    assert state.class_code_run_next is None
+    _session(state, number="28")
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_a_restart_after_the_95_under_a_new_start_key_is_taken(state):
+    _started_with_event(state)
+    _session(state)
+    _closing(state)
+    assert _started_with_event(state, start_key="k2") == "class_codes"
+    assert state.class_code_run_next["start_key"] == "k2"
+
+
 def test_a_stop_of_another_start_leaves_the_waiting_runs_event(state):
     _started_with_event(state)
     state.process({

@@ -705,7 +705,8 @@ class RaceState:
         ):
             return None
         # A relay retries a delivery whose answer it lost, so a repeat of a
-        # run already held changes nothing; one that closed is a restart.  A
+        # run already held changes nothing but its event; one that closed is
+        # a restart unless it repeats the closed start's own key.  A
         # start a session boundary retired is never taken back, or its old
         # rows would show again for a same-named next session.
         if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
@@ -713,7 +714,20 @@ class RaceState:
         event = msg.get("event")
         if not isinstance(event, str):
             event = ""
+        start_key = msg.get("start_key")
         for held in (self.class_code_run, self.class_code_run_next):
+            if (
+                held is not None
+                and held.get("closed")
+                and isinstance(start_key, str)
+                and start_key
+                and _start_id(held["run_id"], held.get("start_key"))
+                == _start_id(run_id, start_key)
+            ):
+                # A late resend of the start that closed — the relay's event
+                # correction or a retry — is not a restart: taken as one, a
+                # same-named next session would bind the old start.
+                return None
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
                 # Only the same start's: a restart under this id must not
                 # rename the start the board still shows.
@@ -732,7 +746,6 @@ class RaceState:
         self.class_code_run_next = {
             "run_id": run_id, "name": name, "received_at": time.time() - age,
         }
-        start_key = msg.get("start_key")
         if isinstance(start_key, str) and start_key:
             self.class_code_run_next["start_key"] = start_key
         if event:
@@ -771,11 +784,12 @@ class RaceState:
         late one never touches a restart of the same run.
 
         A ``stopped`` message for the start waiting in
-        ``class_code_run_next`` drops its event: the relay sends one when it
-        drops a pick, whose start can still land afterwards, and a
-        same-named later session would otherwise bind it and show the old
-        race name.  A stopped run already bound keeps its race name until
-        the session's ``$B,95``, as the board still shows that session.
+        ``class_code_run_next`` drops its event unless that run is the one
+        shown: the relay sends one when it drops a pick, whose start can
+        still land afterwards, and a same-named later session would
+        otherwise bind it and show the old race name.  A stopped run that is
+        shown — bound, or waiting under the session's name — keeps its race
+        name until the session's ``$B,95``, as the board still shows it.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
@@ -797,6 +811,9 @@ class RaceState:
             if (
                 nxt is not None
                 and "event" in nxt
+                # A waiting run already shown is the session's, not a
+                # dropped pick: $B can come before a mid-run pick.
+                and self._shown_run() is not nxt
                 and _start_id(nxt["run_id"], nxt.get("start_key"))
                 == _start_id(run_id, msg.get("start_key"))
             ):
