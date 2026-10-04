@@ -1454,12 +1454,19 @@ class ClassCodeClient:
         self._runs = runs
         self._groups = groups
         self._pick_run()
-        if not entries:
+        if not entries and not runs:
             log.warning(
-                "Class-code registry pull of %d bytes held no usable records – "
-                "not forwarding a preload", len(model),
+                "Class-code registry pull of %d bytes held no usable records "
+                "and no runs – not forwarding a preload", len(model),
             )
             return
+        if not entries:
+            # The server scopes codes to the running run's group from the run
+            # table, and keeps the records it already holds.
+            log.warning(
+                "Class-code registry pull of %d bytes held no usable records – "
+                "forwarding its run table of %d runs only", len(model), len(runs),
+            )
         # Measured as the POST body will be, with an age as wide as a
         # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({

@@ -2106,6 +2106,9 @@ def test_load_class_codes_accepts_an_old_format_preload(state):
     state.load_class_codes({"preload": {"received_at": _time.time(), "entries": [old]}})
     assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
     assert state.class_code_preload["runs"] == []
+    # Saved before the run table had its own date: it shares the records'.
+    pre = state.class_code_preload
+    assert pre["runs_received_at"] == pre["received_at"]
     _car_in_class(state, "7", "1234567", "Saloon Cup")
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
 
@@ -2161,6 +2164,142 @@ def test_a_preloads_run_table_outlives_its_registry_for_day_two(state, monkeypat
     now[0] += rs._PUSHED_CODE_TTL_SECONDS
     assert state.prune_expired_class_codes() is True
     assert state.class_code_preload["runs"] == []
+
+
+def _runs_only_preload(state, *runs, age_seconds=0.0):
+    return state.process({
+        "type": "class_code_preload", "entries": [], "runs": list(runs),
+        "age_seconds": age_seconds,
+    })
+
+
+def test_a_runs_only_preload_gives_the_running_run_its_group_scope(state):
+    """A pull whose registry held no usable record still carries the run
+    table, without which a known running run scopes to itself alone."""
+    assert _runs_only_preload(
+        state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15),
+    ) == "class_codes"
+    assert state.class_code_preload["entries"] == []
+    assert state.class_code_preload["received_at"] is None
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({DC.lower(), DD.lower(), GROUP_D3.lower()})
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+
+
+def test_a_runs_only_preload_keeps_the_prior_records_without_renewing_them(
+    state, monkeypatch
+):
+    import server.race_state as rs
+
+    start = 1_000_000.0
+    now = [start]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    now[0] += 6 * 3600
+    revision = state.class_codes_revision
+    state.mark_clean()
+    assert _runs_only_preload(
+        state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15),
+        age_seconds=60.0,
+    ) == "class_codes"
+    assert state.class_codes_revision > revision and state.dirty
+    pre = state.class_code_preload
+    assert pre["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+    assert pre["received_at"] == start
+    runs_at = now[0] - 60.0
+    assert pre["runs_received_at"] == runs_at
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # The records still go 12 h after their own pull, the run table stays.
+    now[0] = start + rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.prune_expired_class_codes() is False
+    assert state.class_code_preload["entries"] == []
+    assert len(state.class_code_preload["runs"]) == 2
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+    # The run table lives 36 h from its own pull.
+    now[0] = runs_at + rs._PUSHED_CODE_TTL_SECONDS
+    assert state.prune_expired_class_codes() is False
+    assert len(state.class_code_preload["runs"]) == 2
+    now[0] += 1
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_preload == rs._preload_store([], None)
+    assert state.prune_expired_class_codes() is False
+
+
+def test_a_runs_only_preload_with_no_records_expires_with_its_run_table(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is False
+    assert state.class_code_preload["runs"] == [_run_row(DC, GROUP_D3, "Warm Up")]
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_preload == rs._preload_store([], None)
+
+
+def test_a_preload_with_neither_records_nor_runs_is_ignored(state):
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    before = state.class_code_preload
+    assert _runs_only_preload(state) is None
+    assert state.class_code_preload is before
+
+
+def test_a_runs_only_preload_round_trips_through_the_class_code_store(state):
+    import json
+
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"), age_seconds=60.0)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_preload == state.class_code_preload
+    assert restored.class_code_preload["runs"] == [_run_row(DC, GROUP_D3, "Warm Up")]
+
+
+def test_the_run_tables_own_date_round_trips(state, monkeypatch):
+    import json
+
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    now[0] += 3600
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    saved = json.loads(json.dumps(state.class_codes_to_dict()))
+    assert saved["preload"]["runs_received_at"] == now[0]
+    restored = RaceState()
+    restored.load_class_codes(saved)
+    assert restored.class_code_preload == state.class_code_preload
+    assert restored.class_code_preload["received_at"] == 1_000_000.0
+    assert restored.class_code_preload["runs_received_at"] == now[0]
+
+
+@pytest.mark.parametrize("runs_received_at, kept", [
+    ("nonsense", False),
+    (float("inf"), False),
+    (2_000_000.0, True),
+])
+def test_load_class_codes_checks_the_run_tables_date(
+    state, monkeypatch, runs_received_at, kept
+):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    state.load_class_codes({"preload": {
+        "received_at": 1_000_000.0, "entries": [_pre("1234567", "Saloon Cup", "SC")],
+        "runs": [_run_row()], "runs_received_at": runs_received_at,
+    }})
+    assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+    assert state.class_code_preload["runs"] == ([_run_row()] if kept else [])
+    if kept:
+        # A future date is capped at now.
+        assert state.class_code_preload["runs_received_at"] == 1_000_000.0
 
 
 def test_a_preload_is_dated_from_its_pull_not_its_arrival(state, monkeypatch):

@@ -714,9 +714,9 @@ class RaceState:
     def _class_code_preload(self, msg: dict) -> str | None:
         """Store the competitor registry the relay pulled from ``:51738``.
 
-        Each pull is a full snapshot, so it replaces the previous preload
-        whole rather than accumulating.  It is kept apart from the pushed
-        registry so a push always overrides it, and only
+        Each pull is a full snapshot, so one with usable records replaces the
+        previous preload whole rather than accumulating.  It is kept apart
+        from the pushed registry so a push always overrides it, and only
         :meth:`_resolve_class_codes`'s third layer reads it.  Like the pushed
         registry it survives :meth:`reset`; it expires as
         :meth:`_prune_class_code_preload` says, its run table outliving its
@@ -724,8 +724,7 @@ class RaceState:
 
         ``entries`` is untrusted and coerced as in :meth:`_class_codes`; an item
         without a class name, or with transponder ``""`` or ``"0"``, is
-        skipped, and a preload with nothing usable leaves the previous one in
-        place.  An item with no code is kept, as ``""``: it takes part in the
+        skipped.  An item with no code is kept, as ``""``: it takes part in the
         class-uniform guard, and withholds its class's code.  An item without
         ``registration_id`` or ``number`` — from an older relay — is kept with
         them ``""``, and takes part only in the transponder join.
@@ -733,6 +732,9 @@ class RaceState:
         :meth:`_class_code_scope` reads.
         The store is dated from the pull — now minus the message's
         ``age_seconds`` — and a message already past the TTL is ignored.
+        A preload with no usable record but a run table replaces only the run
+        table, dating it alone: the previous records are kept, their date
+        unrenewed.  One with neither is ignored.
         """
         entries = msg.get("entries")
         if not isinstance(entries, list):
@@ -754,9 +756,16 @@ class RaceState:
             len(usable), len(entries), len(runs),
         )
         age = _entry_age(msg.get("age_seconds"))
-        if not usable or age > _CLASS_CODE_TTL_SECONDS:
+        if not (usable or runs) or age > _CLASS_CODE_TTL_SECONDS:
             return None
-        self.class_code_preload = _preload_store(usable, time.time() - age, runs)
+        pulled_at = time.time() - age
+        if usable:
+            self.class_code_preload = _preload_store(usable, pulled_at, runs)
+        else:
+            pre = self.class_code_preload
+            self.class_code_preload = _preload_store(
+                pre["entries"], pre["received_at"], runs, runs_received_at=pulled_at
+            )
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
@@ -1247,22 +1256,27 @@ class RaceState:
     def _prune_class_code_preload(self, now: float) -> bool:
         """Expire the preload in two parts; return whether either went.
 
-        Its records go after :data:`_CLASS_CODE_TTL_SECONDS`, but its run
-        table only after :data:`_PUSHED_CODE_TTL_SECONDS`: the relay pulls
-        the preload only on connect, so one held overnight would otherwise
-        leave a day-2 run scoped to itself alone, cut off from its group's
-        day-1 pushes, which live that long.
+        Its records go :data:`_CLASS_CODE_TTL_SECONDS` after ``received_at``,
+        but its run table only :data:`_PUSHED_CODE_TTL_SECONDS` after
+        ``runs_received_at``: the relay pulls the preload only on connect, so
+        one held overnight would otherwise leave a day-2 run scoped to itself
+        alone, cut off from its group's day-1 pushes, which live that long.
         """
         pre = self.class_code_preload
-        stamp = pre["received_at"]
-        if stamp is None or now - stamp <= _CLASS_CODE_TTL_SECONDS:
+        stamp, runs_stamp = pre["received_at"], pre["runs_received_at"]
+        entries, runs = pre["entries"], pre["runs"]
+        if entries and now - stamp > _CLASS_CODE_TTL_SECONDS:
+            entries = []
+        if runs and now - runs_stamp > _PUSHED_CODE_TTL_SECONDS:
+            runs = []
+        if entries is pre["entries"] and runs is pre["runs"]:
             return False
-        if now - stamp > _PUSHED_CODE_TTL_SECONDS or not pre["runs"]:
+        if entries or runs:
+            self.class_code_preload = _preload_store(
+                entries, stamp, runs, runs_received_at=runs_stamp
+            )
+        else:
             self.class_code_preload = _preload_store([], None)
-            return True
-        if not pre["entries"]:
-            return False
-        self.class_code_preload = _preload_store([], stamp, pre["runs"])
         return True
 
     def _prune_class_codes(self, now: float) -> bool:
@@ -1735,6 +1749,7 @@ class RaceState:
                 "received_at": self.class_code_preload["received_at"],
                 "entries": self.class_code_preload["entries"],
                 "runs": self.class_code_preload["runs"],
+                "runs_received_at": self.class_code_preload["runs_received_at"],
             },
             "run": self.class_code_run,
             "run_next": self.class_code_run_next,
@@ -1749,8 +1764,9 @@ class RaceState:
         is restored the same way and independently: a missing or malformed
         ``"preload"`` leaves it empty without touching the pushed registry.  A
         preload saved before registration ids and runs were carried loads
-        with them empty.  The started run and the entry-list dates are
-        restored likewise.
+        with them empty, and one saved before its run table had a date of its
+        own dates it by its records'.  The started run and the entry-list
+        dates are restored likewise.
         """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
@@ -1799,6 +1815,10 @@ class RaceState:
         try:
             preload = data.get("preload") or {}
             stamp = _finite_stamp(preload.get("received_at"))
+            runs_stamp = (
+                _finite_stamp(preload["runs_received_at"])
+                if "runs_received_at" in preload else stamp
+            )
             entries = [
                 {f: str(item[f]) for f in _PRELOAD_FIELDS}
                 | {
@@ -1812,9 +1832,17 @@ class RaceState:
                 and str(item["transponder"]) not in ("", "0")
             ]
             runs = _coerce_runs(preload.get("runs"))
-            # A store saved past the records' TTL holds the run table alone.
-            if stamp is not None and (entries or runs):
-                self.class_code_preload = _preload_store(entries, min(stamp, now), runs)
+            # Each part needs its own date; a store saved past the records'
+            # TTL, or from a pull with no usable record, holds runs alone.
+            if stamp is None:
+                entries = []
+            if runs_stamp is None:
+                runs = []
+            if entries or runs:
+                self.class_code_preload = _preload_store(
+                    entries, None if stamp is None else min(stamp, now), runs,
+                    runs_received_at=None if runs_stamp is None else min(runs_stamp, now),
+                )
         except (AttributeError, TypeError, ValueError):
             pass
         self._prune_class_code_preload(now)
@@ -1865,9 +1893,17 @@ class RaceState:
 
 
 def _preload_store(
-    entries: list[dict], received_at: float | None, runs: list[dict] | None = None
+    entries: list[dict],
+    received_at: float | None,
+    runs: list[dict] | None = None,
+    *,
+    runs_received_at: float | None = None,
 ) -> dict:
-    """Return a preload store: its *entries*, *runs*, their date, and the indexes.
+    """Return a preload store: its *entries*, *runs*, their dates, and the indexes.
+
+    *received_at* dates the entries and *runs_received_at* the runs,
+    defaulting to *received_at*: a pull with no usable record replaces only
+    the run table, so the two can differ.
 
     ``by_tx`` maps ``(transponder, class name)`` and ``by_class`` a class name
     to the set of codes the entries carry, ``""`` included.  ``tx_regs`` maps
@@ -1906,6 +1942,7 @@ def _preload_store(
         group_runs.setdefault(r["group_id"].lower(), set()).add(r["run_id"].lower())
     return {
         "received_at": received_at,
+        "runs_received_at": received_at if runs_received_at is None else runs_received_at,
         "entries": entries,
         "runs": runs,
         "by_tx": by_tx,

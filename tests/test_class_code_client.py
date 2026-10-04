@@ -1109,7 +1109,31 @@ async def test_a_complete_registry_pull_is_forwarded_as_one_preload(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_pull_with_no_registry_records_forwards_nothing(monkeypatch, caplog):
+async def test_a_pull_with_runs_but_no_registry_records_forwards_the_run_table(
+    monkeypatch, caplog
+):
+    """The server scopes a code to the running run's group from the run
+    table, so the runs travel even when no registry record is usable."""
+    writer = FakeWriter()
+    _harness(monkeypatch, [(_pulling(writer, registry=_run_record()), writer)])
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: batches)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (msg,) = _preloads(batches)
+    assert msg["entries"] == []
+    assert msg["runs"] == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
+    assert "held no usable records" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_pull_with_no_registry_records_or_runs_forwards_nothing(monkeypatch, caplog):
     writer = FakeWriter()
     _harness(monkeypatch, [(_pulling(writer, registry=bytes(range(200))), writer)])
     batches = []
