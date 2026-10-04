@@ -1163,7 +1163,9 @@ class ClassCodeClient:
 
     With *entry_list* set, the client also subscribes to the same run's
     results view (:data:`RESULTS_VIEW`, :class:`EntryListParser`) on every
-    start, pick and reconnect: its reply lists every entrant of the run with
+    start, pick and reconnect — not when a picked run's own start notice
+    arrives, which keeps the pick's subscription: its reply lists every
+    entrant of the run with
     the code the host holds, DNS entrants included.  The reply is taken once
     and the view closed, since an open one streams the whole table about
     once a second; its rows go as a ``class_codes`` message for that run
