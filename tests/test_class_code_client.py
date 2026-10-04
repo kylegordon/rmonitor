@@ -2278,6 +2278,7 @@ async def test_a_stopped_pick_stays_subscribed_through_a_reconnect_before_the_95
     assert not [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
     assert len(_runs_sent(calls)) == 1
 
+
 @pytest.mark.asyncio
 async def test_a_new_description_with_no_matching_run_drops_the_pick(monkeypatch):
     task, host, writer, calls, client = await _picking(monkeypatch)

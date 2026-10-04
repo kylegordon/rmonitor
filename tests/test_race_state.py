@@ -2842,6 +2842,7 @@ def test_a_restart_does_not_carry_past_a_session_with_no_run(state):
     _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
     assert _shown(state) == ["Restart over 5 laps"]
 
+
 def test_a_run_whose_name_only_shares_a_prefix_does_not_carry(state):
     _started(state)
     _session(state)
@@ -2885,6 +2886,7 @@ def test_a_closed_run_refreshed_overnight_keeps_its_announcements(state, monkeyp
         _announce(state, ("Track clear", 100))
         state.prune_expired_class_codes()
     assert _shown(state) == ["Track clear"]
+
 
 def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
     import server.race_state as rs
