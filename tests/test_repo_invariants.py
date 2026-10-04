@@ -794,6 +794,23 @@ def test_announcement_text_is_rendered_with_textcontent_never_innerhtml() -> Non
     assert "innerHTML" not in body, "announcement text must never go through innerHTML"
 
 
+def test_the_page_sets_the_race_name_as_text_and_hides_it_when_blank() -> None:
+    """Guards the race name: Event text typed on the timing host, gated by the server.
+
+    The page shows ``race_name`` verbatim, as text, and hides it when blank — so a
+    display without the relay's enrichment looks unchanged. No test renders the
+    template, so this guard is textual.
+    """
+    page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'id="race-name"' in page and 'id="race-name-wrap" hidden' in page
+    assert "data.race_name" in page, "the page no longer reads the server's race_name"
+    assert "raceNameEl.textContent = raceName" in page, "the race name must be set as text"
+    assert "raceNameWrapEl.hidden = !raceName" in page, "a blank race name must hide"
+    assert not re.search(r"innerHTML\s*[+]?=\s*[^;\n]*race[_N]ame", page), (
+        "the race name must never go through innerHTML"
+    )
+
+
 def test_announcements_are_announced_through_their_own_polite_live_region() -> None:
     """Guards the user's decision that each new announcement is read once.
 
