@@ -1467,6 +1467,11 @@ class ClassCodeClient:
                 "Class-code registry pull of %d bytes held no usable records – "
                 "forwarding its run table of %d runs only", len(model), len(runs),
             )
+            held = self._preload
+            if held is not None and held["entries"]:
+                # An earlier pull's records still wait to be delivered; they
+                # travel with this run table, dated as they were read.
+                entries, pulled_at = held["entries"], held["_observed"]
         # Measured as the POST body will be, with an age as wide as a
         # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({
@@ -2026,7 +2031,9 @@ class ClassCodeClient:
             log.exception("Could not forward the class-code preload")
             self._preload = preload
             return False
-        self._preloaded = len(entries)
+        # A run table alone leaves the server's records as they were.
+        if entries:
+            self._preloaded = len(entries)
         self._delivered()
         return True
 

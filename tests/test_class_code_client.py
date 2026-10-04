@@ -1220,6 +1220,40 @@ async def test_a_failed_preload_is_retried_and_a_newer_pull_replaces_it(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_runs_only_pull_keeps_an_undelivered_preloads_records(monkeypatch):
+    """A pull with no usable record must not discard the registry an earlier
+    pull read and could not yet deliver: the server would never get it."""
+    closing = asyncio.Event()
+    first, second = FakeWriter(), FakeWriter()
+    connections = [
+        (_pulling(first, then=[closing, b""]), first),
+        (_pulling(second, registry=_run_record()), second),
+    ]
+    _harness(monkeypatch, connections, stop_after=2)
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+        if len(calls) == 2:
+            closing.set()
+        if len(calls) <= 2:
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "retry_initial": 0.05})
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(calls) >= 3)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert calls[2]["entries"] == REGISTRY_ENTRIES
+    assert calls[2]["runs"] == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
+    assert client._preloaded == len(REGISTRY_ENTRIES)
+
+
+@pytest.mark.asyncio
 async def test_a_preload_older_than_the_server_would_keep_is_dropped(monkeypatch, caplog):
     monkeypatch.setattr(ccc, "MAX_ENTRY_AGE", 0.15)
     writer = FakeWriter()
