@@ -1877,6 +1877,28 @@ async def test_announcements_carry_the_runs_event_so_a_server_can_restore_it(mon
 
 
 @pytest.mark.asyncio
+async def test_a_reply_carries_the_event_known_at_delivery_not_as_queued():
+    """A picked run's start notice can correct its event after a reply was
+    queued, or failed and is retried; the stale event must not reach the
+    server, which takes a refresh's event."""
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    client._ann_run, client._ann_start_key, client._ann_event = PICKED_ID, "k1", "Corrected"
+    reply = {
+        "type": "announcements", "run_id": PICKED_ID.lower(), "name": PICK_NAME,
+        "rows": [], "start_key": "k1", "event": "From the pull",
+    }
+    assert await client._deliver_announcement(reply)
+    assert await client._deliver_announcement(reply | {"start_key": "k0"})
+    client._ann_event = ""
+    assert await client._deliver_announcement(reply)
+    assert [c.get("event") for c in calls] == ["Corrected", "From the pull", None]
+
+
+@pytest.mark.asyncio
 async def test_an_unanswered_subscription_is_sent_again_on_a_new_view(monkeypatch):
     writer = FakeWriter()
 

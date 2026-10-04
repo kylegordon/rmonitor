@@ -1662,7 +1662,22 @@ class ClassCodeClient:
         self._announcements[key] = msg
 
     async def _deliver_announcement(self, msg: dict) -> bool:
-        """Hand the announcements *msg* to *on_batch*; return whether it was delivered."""
+        """Hand the announcements *msg* to *on_batch*; return whether it was delivered.
+
+        A reply for the subscribed start carries its event as known now, not
+        as queued: a picked run's start notice can correct the event after a
+        reply was queued or failed, and the server takes a refresh's event.
+        """
+        if (
+            not msg.get("stopped")
+            and not msg.get("superseded")
+            and self._ann_run is not None
+            and msg["run_id"].lower() == self._ann_run.lower()
+            and msg.get("start_key") == self._ann_start_key
+        ):
+            msg = {k: v for k, v in msg.items() if k != "event"}
+            if self._ann_event:
+                msg["event"] = self._ann_event
         try:
             await self.on_batch(msg)
         except Exception:

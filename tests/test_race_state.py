@@ -2173,6 +2173,15 @@ def test_a_repeat_of_the_held_run_supplies_its_event(state, bound):
     assert _started_with_event(state) is None
 
 
+def test_a_restart_under_the_held_id_does_not_rename_the_held_start(state):
+    """A stopped start stays bound, keeping its race name until ``$B,95``; a
+    second start of the same id meanwhile must not rename it."""
+    _started_with_event(state)
+    _session(state)
+    assert _started_with_event(state, event="Another Event", start_key="k2") is None
+    assert state.snapshot()["race_name"] == EVENT
+
+
 def test_class_code_run_event_survives_init_and_round_trips(state):
     import json
 

@@ -689,8 +689,9 @@ class RaceState:
         An optional ``event`` names the run's Event, the race name
         :meth:`_shown_race_name` shows; an older relay omits it.  The relay
         can pick a run by name before its start notice arrives, then resend
-        it with the notice's event, so a repeat of a held run may supply or
-        correct its event, and changes nothing else.
+        it with the notice's event, so a repeat of the same start — run id
+        and start key — may supply or correct its event, and changes nothing
+        else.
         """
         run_id, name = msg.get("run_id"), msg.get("name")
         age = _entry_age(msg.get("age_seconds"))
@@ -714,7 +715,14 @@ class RaceState:
             event = ""
         for held in (self.class_code_run, self.class_code_run_next):
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
-                if not event or held.get("event") == event:
+                # Only the same start's: a restart under this id must not
+                # rename the start the board still shows.
+                if (
+                    not event
+                    or held.get("event") == event
+                    or _start_id(run_id, held.get("start_key"))
+                    != _start_id(run_id, msg.get("start_key"))
+                ):
                     return None
                 held["event"] = event
                 self.class_codes_revision += 1
