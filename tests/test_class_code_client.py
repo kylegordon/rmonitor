@@ -6,12 +6,16 @@ codes — never from a capture.  The one exception is the Announcements view:
 its records and frames are captured layouts, kept byte for byte because the
 layout is the thing under test, with every identity slot zeroed and only an
 operator's test text in them.  Results view replies are built from the
-layout alone, with invented entrants.
+layout alone, with invented entrants.  The model excerpt in
+``tests/fixtures/`` is the other exception: captured bytes with every string
+overwritten by a placeholder, as its README describes.
 """
 
 import asyncio
 import json
+import re
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -436,6 +440,130 @@ def test_a_named_record_wins_over_a_nameless_one_for_the_same_id():
         {"run_id": "0x40002807", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
         {"run_id": "0x40002808", "group_id": "0x80000985", "name": "Warm Up"},
     ]
+
+
+MODEL_EXCERPT = Path(__file__).resolve().parent / "fixtures" / "model_pull_excerpt.bin"
+
+# The excerpt's slices and run records, as tests/fixtures/README.md lists
+# them.  Each run is (offset of its run id, lead-in, run id, group id, name),
+# written down from the record layout, not from parse_runs.
+EXCERPT_SLICES = {
+    "loop table": (0x0000, 0x0121),
+    "groups": (0x0121, 0x028B),
+    "runs, one nameless": (0x028B, 0x03B6),
+    "runs": (0x03B6, 0x1072),
+    "registry": (0x1072, 0x1222),
+}
+EXCERPT_RUNS = [
+    (0x029B, "u32 1", 0x400032B1, 0x800008F1, "Run 01."),
+    (0x0305, "u32 1", 0x400032B2, 0x800008F2, ""),
+    (0x035C, "zeros", 0x400032B3, 0x800008F3, "Run 02."),
+    (0x03C6, "u32 1", 0x400035D9, 0x800009D3, "Run 03."),
+    (0x0430, "u32 1", 0x400035DA, 0x800009D3, "Run 04......"),
+    (0x049F, "u32 1", 0x400035DB, 0x800009D3, "Run 05..........."),
+    (0x0599, "u32 1", 0x400035DC, 0x800009D3, "Run 06."),
+    (0x0603, "u32 1", 0x400035DD, 0x800009D3, "Run 07............"),
+    (0x06FE, "u32 1", 0x400035DE, 0x800009D4, "Run 08."),
+    (0x0768, "u32 1", 0x400035DF, 0x800009D4, "Run 09......"),
+    (0x07D7, "u32 1", 0x400035E0, 0x800009D4, "Run 10..........."),
+    (0x08D1, "u32 1", 0x400035E1, 0x800009D4, "Run 11."),
+    (0x093B, "u32 1", 0x400035E2, 0x800009D4, "Run 12............"),
+    (0x0A2A, "zeros", 0x400035E3, 0x800009D5, "Run 13."),
+    (0x0A94, "u32 1", 0x400035E4, 0x800009D5, "Run 14......"),
+    (0x0B03, "u32 1", 0x400035E5, 0x800009D5, "Run 15..........."),
+    (0x0BFD, "u32 1", 0x400035E6, 0x800009D5, "Run 16."),
+    (0x0C67, "u32 1", 0x400035E7, 0x800009D5, "Run 17............"),
+    (0x0D56, "zeros", 0x400035E8, 0x800009D6, "Run 18......"),
+    (0x0DC5, "u32 1", 0x400035E9, 0x800009D6, "Run 19."),
+    (0x0E2F, "u32 1", 0x400035EA, 0x800009D6, "Run 20..........."),
+    (0x0F29, "u32 1", 0x400035EB, 0x800009D6, "Run 21."),
+    (0x0F93, "u32 1", 0x400035EC, 0x800009D6, "Run 22............"),
+]
+# The anchor before #108: the run header only behind a u32 1.
+_OLD_RUN_ANCHOR = re.compile(
+    rb"\x01\x00\x00\x00.{12}(..\x00\x40)....(..\x00\x80)", re.DOTALL
+)
+
+
+def _excerpt() -> bytes:
+    return MODEL_EXCERPT.read_bytes()
+
+
+def _excerpt_runs(*, lead_in=None) -> list[dict]:
+    return [
+        {"run_id": f"0x{rid:08X}", "group_id": f"0x{gid:08X}", "name": name}
+        for _, kind, rid, gid, name in EXCERPT_RUNS
+        if lead_in is None or kind == lead_in
+    ]
+
+
+def test_model_excerpt_run_records_sit_where_its_readme_lists_them():
+    """The expected runs are read off the bytes by the record layout, so a
+    parser bug cannot write its own answer into them."""
+    buf = _excerpt()
+    for offset, kind, rid, gid, name in EXCERPT_RUNS:
+        lead_in = buf[offset - 16:offset]
+        if kind == "zeros":
+            assert lead_in == bytes(16), hex(offset)
+        else:
+            assert lead_in[:4] == b"\x01\x00\x00\x00", hex(offset)
+        run_id, _flags, group_id, length = struct.unpack_from("<IIII", buf, offset)
+        assert (run_id, group_id) == (rid, gid), hex(offset)
+        assert buf[offset + 16:offset + 16 + length] == name.encode(), hex(offset)
+
+
+def test_model_excerpt_runs_are_parsed_exactly():
+    assert ccc.parse_runs(_excerpt()) == _excerpt_runs()
+
+
+def test_model_excerpt_runs_behind_zeros_are_found_where_the_old_anchor_missed_them():
+    # The #108 shape in captured bytes: 0x400035E8 is that issue's qualifying run.
+    buf = _excerpt()
+    behind_zeros = _excerpt_runs(lead_in="zeros")
+    assert [r["run_id"] for r in behind_zeros] == ["0x400032B3", "0x400035E3", "0x400035E8"]
+    old = {struct.unpack("<I", m.group(1))[0] for m in _OLD_RUN_ANCHOR.finditer(buf)}
+    assert {f"0x{rid:08X}" for rid in old} == {
+        r["run_id"] for r in _excerpt_runs(lead_in="u32 1")
+    }
+    parsed = ccc.parse_runs(buf)
+    assert all(run in parsed for run in behind_zeros)
+
+
+def test_model_excerpt_non_run_records_yield_no_run():
+    buf = _excerpt()
+    for name in ("loop table", "groups", "registry"):
+        start, end = EXCERPT_SLICES[name]
+        assert ccc.parse_runs(buf[start:end]) == [], name
+    # The loop table's doubles really do take a run header's shape at 0x0061,
+    # so the parser has to reject that match, not merely never see one.
+    assert re.fullmatch(rb"..\x00\x40.{4}..\x00\x80", buf[0x0061:0x006D], re.DOTALL)
+
+
+def test_model_excerpt_groups_and_registry_records_parse_as_themselves():
+    buf = _excerpt()
+    assert ccc.parse_groups(buf) == {
+        "0x800009D3": "Group 01" + "." * 26,
+        "0x800009D4": "Group 02" + "." * 31,
+        "0x800009D5": "Group 03" + "." * 21,
+        "0x800009D6": "Group 04" + "." * 24,
+    }
+    assert [(r["registration_id"], r["transponder"]) for r in ccc.parse_registry(buf)] == [
+        ("aaaa0001", "1000001"), ("aaaa0002", "1000002"),
+    ]
+
+
+# The placeholders a scrub writes, as tests/fixtures/README.md describes, and
+# two runs of binary: the high bytes of the doubles 65.0 and 85.0.
+_PLACEHOLDER = re.compile(
+    rb"(?:Run|Group) \d\d\.*|Text\d{3}\.*|x{3,}|0{3,}|aaaa\d{4}|@[PU]@"
+)
+
+
+def test_model_excerpt_holds_only_placeholder_text():
+    """A re-scrubbed excerpt must not bring captured text back with it."""
+    buf = _excerpt()
+    assert re.findall(rb"[\x20-\x7e]{3,}", _PLACEHOLDER.sub(b"\x00", buf)) == []
+    assert re.findall(rb"(?:[\x20-\x7e]\x00){3,}", buf) == []  # no UTF-16 text either
 
 
 # ---------------------------------------------------------------------------
