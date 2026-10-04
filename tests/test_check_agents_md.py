@@ -57,10 +57,16 @@ def make_repo(root: Path) -> Path:
         'import os\n\nREQUIRE_DISPLAY = os.environ.get("REQUIRE_DISPLAY", "0")\n',
         encoding="utf-8",
     )
+    (root / ".claude" / "skills" / "rmonitor-base").mkdir(parents=True, exist_ok=True)
+    (root / ".claude" / "skills" / "rmonitor-base" / "SKILL.md").write_text(
+        "---\nname: rmonitor-base\ndescription: Use when testing.\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
     (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
     for role in check_agents_md.ROLE_AGENTS:
         (root / ".claude" / "agents" / f"{role}.md").write_text(
-            f"---\nname: {role}\ndescription: Use for testing.\n---\n\nFollow AGENTS.md.\n",
+            f"---\nname: {role}\ndescription: Use for testing.\nskills:\n  - rmonitor-base\n"
+            "---\n\nFollow AGENTS.md.\n",
             encoding="utf-8",
         )
     return root
@@ -501,7 +507,9 @@ def test_long_folded_skill_description_is_reported(tmp_path: Path) -> None:
 
     findings = check_agents_md.run_checks(root)
 
-    assert any(".claude/skills/rmonitor-fixture/SKILL.md" in f and "truncates" in f for f in findings)
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "truncates" in f for f in findings
+    )
 
 
 def test_deleted_role_agent_is_reported(tmp_path: Path) -> None:
@@ -617,3 +625,17 @@ def test_skill_paths_pattern_matching_only_an_empty_directory_is_reported(
     findings = check_agents_md.run_checks(root)
 
     assert any("`empty/**`" in f for f in findings)
+
+
+@pytest.mark.parametrize("skills", ["", "skills: []\n"])
+def test_agent_preloading_no_skills_is_reported(tmp_path: Path, skills: str) -> None:
+    """A thin role with no preload carries none of the knowledge it exists to apply."""
+    root = make_repo(tmp_path)
+    (root / ".claude" / "agents" / "reviewer.md").write_text(
+        f"---\nname: reviewer\ndescription: Use for testing.\n{skills}---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/reviewer.md" in f and "no skills" in f for f in findings)

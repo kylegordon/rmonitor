@@ -671,6 +671,11 @@ def check_role_agents(root: Path) -> list[str]:
         skills = fields.get("skills", [])
         if isinstance(skills, str):
             skills = [s.strip() for s in skills.split(",") if s.strip()]
+        if not skills:
+            findings.append(
+                f"{name}: preloads no skills, so the role carries none of the topic "
+                "knowledge it exists to apply"
+            )
         for skill in skills:
             if not (root / SKILLS_DIR / skill / "SKILL.md").is_file():
                 findings.append(
