@@ -816,6 +816,24 @@ def _parse_model(buf: bytes) -> tuple[list[dict], list[dict], dict[str, str]]:
     return parse_registry(buf), parse_runs(buf), parse_groups(buf)
 
 
+def _keep_dropped(old: dict | None, new: dict) -> dict:
+    """Return *new*, replacing *old* for the same run, still marked dropped if *old* was.
+
+    A stop notice read after a pick was dropped carries no start key, as the
+    relay no longer holds that start; it must not erase the dropped clear's
+    mark and key, or the server keeps that start's race name.  A stop naming
+    another start, or any message that is not a stop, is left as it is.
+    """
+    if (
+        old is not None
+        and old.get("dropped")
+        and new.get("stopped")
+        and not new.get("start_key")
+    ):
+        return new | {"dropped": True, "start_key": old.get("start_key", "")}
+    return new
+
+
 async def _backoff_sleep(delay: float) -> None:
     # A seam of its own so tests can record the delays without patching
     # asyncio.sleep for the whole event loop.
@@ -1549,6 +1567,10 @@ class ClassCodeClient:
                 # Unless a newer message for the run was read meanwhile.
                 if run_id not in self._announcements:
                     kept[run_id] = msg
+                else:
+                    self._announcements[run_id] = _keep_dropped(
+                        msg, self._announcements[run_id]
+                    )
         # Kept ones go back ahead of any read meanwhile, which are newer.
         self._announcements = kept | self._announcements
         for run_id, by_entrant in pending.items():
@@ -1668,8 +1690,8 @@ class ClassCodeClient:
         # Keyed without case: a notice's id may be lower-case hex where a
         # picked run's, from the run table, is upper-case.
         key = msg["run_id"].lower()
-        self._announcements.pop(key, None)
-        self._announcements[key] = msg
+        prev = self._announcements.pop(key, None)
+        self._announcements[key] = _keep_dropped(prev, msg)
 
     async def _deliver_announcement(self, msg: dict) -> bool:
         """Hand the announcements *msg* to *on_batch*; return whether it was delivered.

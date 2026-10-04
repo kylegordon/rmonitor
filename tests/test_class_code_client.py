@@ -2399,6 +2399,57 @@ async def test_a_pick_ended_while_its_failed_delivery_was_in_flight_is_not_retri
     assert client._run is None
 
 
+def _dropped_clear(start_key="k1"):
+    return {
+        "type": "announcements", "run_id": PICKED_ID, "rows": [], "stopped": True,
+        "dropped": True, "start_key": start_key,
+    }
+
+
+def _plain_stop(start_key=""):
+    return {
+        "type": "announcements", "run_id": PICKED_ID.lower(), "rows": [],
+        "stopped": True, "start_key": start_key,
+    }
+
+
+def test_a_keyless_stop_queued_after_a_dropped_clear_keeps_its_mark():
+    """A stop notice for a pick already dropped carries no start key; it
+    replaces the queued clear, but must still name the dropped start."""
+    client = ccc.ClassCodeClient("timing-host", _recording()[1], **FAST)
+    client._queue_announcement(_dropped_clear())
+    client._queue_announcement(_plain_stop())
+    (queued,) = client._announcements.values()
+    assert (queued["dropped"], queued["start_key"]) == (True, "k1")
+
+
+def test_a_stop_of_another_start_replaces_a_dropped_clear_as_it_is():
+    client = ccc.ClassCodeClient("timing-host", _recording()[1], **FAST)
+    client._queue_announcement(_dropped_clear())
+    client._queue_announcement(_plain_stop("k2"))
+    (queued,) = client._announcements.values()
+    assert "dropped" not in queued and queued["start_key"] == "k2"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_dropped_clear_keeps_its_mark_under_a_newer_keyless_stop():
+    sent = []
+    client = None
+
+    async def on_batch(msg):
+        if msg.get("dropped") and not sent:
+            sent.append("failed")
+            client._queue_announcement(_plain_stop())
+            raise ConnectionError("server unreachable")
+        sent.append(msg)
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    client._queue_announcement(_dropped_clear())
+    await client._flush()
+    (queued,) = client._announcements.values()
+    assert (queued["dropped"], queued["start_key"]) == (True, "k1")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lowercase", [False, True])
 async def test_the_picked_run_starting_keeps_the_picks_start(monkeypatch, lowercase):
