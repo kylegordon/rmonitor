@@ -11,6 +11,8 @@ and the two copies would drift apart, which is exactly what happened to the 251 
 this file used to hold.
 
 Rules that apply to one directory live in that directory's own `AGENTS.md` —
-`server/AGENTS.md`, `tests/AGENTS.md` — and add to the root file rather than replacing it.
+`relay/AGENTS.md`, `server/AGENTS.md`, `tests/AGENTS.md` — and add to the root file rather
+than replacing it. Topic knowledge lives in the agent skills under `.claude/skills/`, which
+Copilot cloud agent and code review read natively.
 
-Add and edit rules in `AGENTS.md`. Never here.
+Add and edit rules in `AGENTS.md`, a scoped `AGENTS.md` or a skill. Never here.

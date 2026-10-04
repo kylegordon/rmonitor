@@ -258,3 +258,206 @@ def test_annotate_without_a_drift_region_fails_loudly(tmp_path: Path) -> None:
     (root / "AGENTS.md").write_text("# AGENTS.md\n\nNo region here.\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         check_agents_md.annotate(root, [])
+
+
+def _add_skill(
+    root: Path,
+    name: str,
+    *,
+    description: str = "Use when testing.",
+    body: str = "Body.\n",
+    frontmatter_name: str | None = None,
+) -> Path:
+    """Give *root* a ``.claude/skills/<name>/SKILL.md``; return its path."""
+    directory = root / ".claude" / "skills" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "SKILL.md"
+    path.write_text(
+        f"---\nname: {frontmatter_name or name}\ndescription: {description}\n---\n\n{body}",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _add_agent(
+    root: Path, name: str, *, skills: tuple[str, ...] = ("fixture-skill",), extra_lines: int = 0
+) -> Path:
+    """Give *root* a ``.claude/agents/<name>.md`` preloading *skills*; return its path."""
+    directory = root / ".claude" / "agents"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    preload = "".join(f"  - {skill}\n" for skill in skills)
+    path.write_text(
+        f"---\nname: {name}\ndescription: Use for testing.\nskills:\n{preload}---\n\n"
+        "Follow AGENTS.md.\n" + "filler\n" * extra_lines,
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_clean_fixture_with_a_skill_and_an_agent_is_clean(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill")
+    _add_agent(root, "fixture-agent")
+
+    assert check_agents_md.run_checks(root) == []
+
+
+def test_skill_whose_name_does_not_match_its_directory_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill", frontmatter_name="other-name")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/fixture-skill/SKILL.md" in f and "name" in f for f in findings)
+
+
+def test_skill_without_a_description_is_reported(tmp_path: Path) -> None:
+    """A skill fires on its description alone, so an empty one never loads."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill", description="")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/fixture-skill/SKILL.md" in f and "description" in f for f in findings
+    )
+
+
+def test_skill_description_over_the_truncation_limit_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(
+        root,
+        "fixture-skill",
+        description="x" * (check_agents_md.MAX_SKILL_DESCRIPTION_CHARS + 1),
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/fixture-skill/SKILL.md" in f and "truncates" in f for f in findings
+    )
+
+
+def test_overlong_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill", body="filler\n" * check_agents_md.MAX_SKILL_LINES)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/fixture-skill/SKILL.md" in f and "skill budget" in f for f in findings
+    )
+
+
+def test_skill_directory_without_skill_md_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / ".claude" / "skills" / "fixture-skill").mkdir(parents=True)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/fixture-skill/SKILL.md" in f and "missing" in f for f in findings)
+
+
+def test_agent_preloading_a_missing_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_agent(root, "fixture-agent", skills=("no-such-skill",))
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/agents/fixture-agent.md" in f and "no-such-skill" in f for f in findings
+    )
+
+
+def test_overlong_agent_is_reported(tmp_path: Path) -> None:
+    """Agents stay thin: knowledge in an agent body is a copy Copilot never reads."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill")
+    _add_agent(root, "fixture-agent", extra_lines=check_agents_md.MAX_AGENT_LINES)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/fixture-agent.md" in f and "agent budget" in f for f in findings)
+
+
+def test_agent_whose_name_does_not_match_its_file_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill")
+    path = _add_agent(root, "fixture-agent")
+    path.rename(path.with_name("renamed.md"))
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/renamed.md" in f and "name" in f for f in findings)
+
+
+def test_stale_path_in_a_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill", body="See `server/does_not_exist.py`.\n")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/fixture-skill/SKILL.md" in f and "server/does_not_exist.py" in f
+        for f in findings
+    )
+
+
+def test_unknown_environment_variable_in_a_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill", body="Set `INVENTED_SETTING` first.\n")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/fixture-skill/SKILL.md" in f and "INVENTED_SETTING" in f
+        for f in findings
+    )
+
+
+def test_frontmatter_parser_reads_scalars_and_both_list_forms() -> None:
+    text = (
+        "---\n"
+        'name: "quoted-name"\n'
+        "skills:\n"
+        "  - one\n"
+        "  - two\n"
+        "paths: [a/*.py, b/**]\n"
+        "---\n"
+        "Body line.\n"
+    )
+
+    parsed = check_agents_md.parse_frontmatter(text)
+
+    assert parsed is not None
+    fields, body = parsed
+    assert fields == {
+        "name": "quoted-name",
+        "skills": ["one", "two"],
+        "paths": ["a/*.py", "b/**"],
+    }
+    assert body == "Body line."
+    assert check_agents_md.parse_frontmatter("# No frontmatter\n") is None
+    assert check_agents_md.parse_frontmatter("---\nname: unclosed\n") is None
+
+
+def test_skill_and_agent_files_are_not_mistaken_for_scoped_agents_md(tmp_path: Path) -> None:
+    """Neither a ``SKILL.md`` nor an agent file needs a ``CLAUDE.md`` shim beside it."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "fixture-skill")
+    _add_agent(root, "fixture-agent")
+
+    assert check_agents_md.scoped_agents_files(root) == []
+    findings = check_agents_md.run_checks(root)
+    assert not any("shim" in f or "scoped budget" in f for f in findings)
+
+
+def test_stale_worktree_copies_are_not_checked(tmp_path: Path) -> None:
+    """The harness leaves whole repository copies under ``.claude/worktrees/``."""
+    root = make_repo(tmp_path)
+    worktree = root / ".claude" / "worktrees" / "x"
+    worktree.mkdir(parents=True)
+    (worktree / "AGENTS.md").write_text("filler\n" * 100, encoding="utf-8")
+
+    assert check_agents_md.run_checks(root) == []
