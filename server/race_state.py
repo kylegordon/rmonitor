@@ -1312,8 +1312,12 @@ class RaceState:
 
     def _resolve_class_codes(
         self, entries: list[dict], *, scope: tuple[str, frozenset[str]] | None = None
-    ) -> int:
-        """Write ``class_code`` onto every entry; return how many have none.
+    ) -> tuple[int, bool]:
+        """Write ``class_code`` onto every entry; return how many have none, and
+        whether any code source survived the filters below.
+
+        The second is the page's ``class_codes_available``: with no source a
+        blank cell is no news, so the page shows no count of them.
 
         Three layers, each failing to blank — never to a guess, and each gated
         on the record's class name equalling ``class_description`` exactly and
@@ -1440,7 +1444,10 @@ class RaceState:
             e["class_code"] = code
             if not code:
                 missing += 1
-        return missing
+        # Every stored record carries a code, so one read above is a source;
+        # the registry is one only while layer 3 may run.
+        available = bool(pushed_class) or (list_at is None and pre["has_codes"])
+        return missing, available
 
     def _preload_candidate(self, number: str, tx: str, desc: str) -> set[str]:
         """Return the codes layer 3 of :meth:`_resolve_class_codes` may use.
@@ -1569,7 +1576,9 @@ class RaceState:
         if scope_id != self._logged_scope:
             log.info("Class-code pushes scoped to %s", scope_id or "no run (unscoped)")
             self._logged_scope = scope_id
-        class_code_missing = self._resolve_class_codes(entries, scope=scope)
+        class_code_missing, class_codes_available = self._resolve_class_codes(
+            entries, scope=scope
+        )
         self._apply_intervals(entries, sort_mode=sort_mode)
         return {
             "track_name": self.track_name,
@@ -1583,13 +1592,7 @@ class RaceState:
             "time_of_day": self.time_of_day,
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
-            # Unscoped, only a meeting day's records are read, so older ones
-            # are no code the page could show (see _resolve_class_codes).
-            "class_codes_available": self.class_code_preload["has_codes"] or any(
-                scope is not None
-                or time.time() - rec["received_at"] <= _CLASS_CODE_TTL_SECONDS
-                for rec in self.class_codes.values()
-            ),
+            "class_codes_available": class_codes_available,
             "class_code_missing": class_code_missing,
             "class_code_scope": scope_id,
             "announcements": self._shown_announcements(),

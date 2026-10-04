@@ -1692,6 +1692,34 @@ def test_the_registry_never_fills_a_code_the_running_runs_list_withholds(state):
     assert _entry_for(snap, "8")["class_code"] == "SC"
 
 
+@pytest.mark.parametrize("older_push", [False, True])
+def test_an_empty_list_leaves_no_code_source_so_no_missing_count(state, older_push):
+    """The empty list suppresses the registry and older pushes, so nothing
+    could fill a cell: the page must not count blanks as missing codes."""
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        entries=[_pre("1234567", SLW, "SC")],
+    )
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    _car_in_class(state, "7", "1234567", SLW)
+    if older_push:
+        _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "SX", "1234567"), 600))
+    assert state.snapshot()["class_codes_available"] is True
+    _entry_list(state, DD)
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_code_missing"] == 1
+    assert snap["class_codes_available"] is False
+    # A newer push is a source again.
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SC", "1234567"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert snap["class_codes_available"] is True
+
+
 def test_a_push_newer_than_the_list_still_counts(state):
     _race_15(state)
     _car_in_class(state, "7", "1234567", SLW)
