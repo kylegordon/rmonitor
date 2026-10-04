@@ -3223,3 +3223,21 @@ def test_entry_list_parser_withholds_a_reply_with_a_row_lacking_its_car_reg(capl
     (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
     assert reply == ccc.EntryListReply(None)
     assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_push_kept_from_before_an_entry_list_is_dropped_once_the_list_is_delivered():
+    """A push kept from a failed delivery is older than a list read since,
+    which already holds its edit; sent after the list it would overwrite it
+    on the server, so it is dropped.  A push read after the list still goes."""
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._absorb(_push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TB")))
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    client._absorb(_push("added", RUN_ID, _fields("a0000009", "9", "Test Cup", "TE")))
+    await client._flush()
+    assert [(c.get("entry_list", False), [e["entrant_id"] for e in c["entries"]])
+            for c in calls] == [(True, ["a0000007"]), (False, ["a0000009"])]

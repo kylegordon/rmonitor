@@ -1937,18 +1937,39 @@ class ClassCodeClient:
         # Runs whose list failed: their pushes wait for it, so a retried list
         # never lands after a newer push and overwrites it on the server.
         deferred: set[str] = set()
+        # Runs whose list was delivered, and when it was read: the run's
+        # pushes read before it — kept from a failed delivery — are older than
+        # the list, which already holds their edits, so they are dropped
+        # rather than sent after it to overwrite it.
+        listed: dict[str, float] = {}
         for key, held in entry_lists.items():
             if not await self._deliver_entry_list(held):
                 failed = True
                 deferred.add(key)
                 # Unless a newer one for the run was read meanwhile.
                 self._entry_lists.setdefault(key, held)
+            else:
+                listed[key] = held["_observed"]
         for run_id, by_entrant in pending.items():
             if run_id.lower() in deferred:
                 kept = self._pending.setdefault(run_id, {})
                 for entrant_id, entry in by_entrant.items():
                     kept.setdefault(entrant_id, entry)
                 continue
+            if run_id.lower() in listed:
+                # A push read in the same chunk as the reply is stamped after
+                # it, so a tie is a newer push and is kept.
+                older = [
+                    k for k, e in by_entrant.items()
+                    if e["_observed"] < listed[run_id.lower()]
+                ]
+                for k in older:
+                    del by_entrant[k]
+                if older:
+                    log.debug(
+                        "Dropping %d class codes for run %s read before its entry list",
+                        len(older), run_id,
+                    )
             now = time.monotonic()
             expired = [
                 k for k, e in by_entrant.items() if now - e["_observed"] > MAX_ENTRY_AGE
