@@ -236,7 +236,8 @@ def test_snapshot_qualifying_no_lap_time_sorted_last(state):
 
 
 def test_competitor_keyed_by_reg_number_not_displayed_number(state):
-    """Guards AGENTS.md pitfall 1: the two are different keys and can disagree."""
+    """Guards the ``reg_number`` trap (``rmonitor-feed`` skill): the two are different
+    keys and can disagree."""
     state.process({
         "type": "competitor",
         "reg_number": "21",
@@ -252,7 +253,8 @@ def test_competitor_keyed_by_reg_number_not_displayed_number(state):
 
 
 def test_qual_info_during_a_race_does_not_overwrite_race_positions(state):
-    """Guards AGENTS.md pitfall 2: some Orbits setups send $H during a race.
+    """Guards the session-mode trap (``rmonitor-feed`` skill): some Orbits setups send
+    $H during a race.
 
     Best-lap fields must still update, or the guard would cost the feature the
     out-of-session $H exists to provide.
@@ -1216,7 +1218,7 @@ def test_lap_info_advancing_a_lap_without_a_time_does_not_blank_the_table(state)
     measured on these three cars as *None*, then 117.817 and 192.610.
 
     ``$SP``/``$SR`` appear in none of the eleven sample files, so this route is
-    guarded on principle: root ``AGENTS.md`` pitfall 3 records them as real
+    guarded on principle: the ``rmonitor-feed`` skill records them as real
     output from some Orbits setups that appears in no published spec.
     """
     _feed_three_cars_on_lap_13(state)

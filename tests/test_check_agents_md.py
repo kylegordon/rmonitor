@@ -26,6 +26,7 @@ AGENTS_BODY = """# AGENTS.md — fixture
 
 Run the suite with `REQUIRE_DISPLAY=1`. The relay entry point is `relay/main.py` and
 the dependencies live in `relay/requirements.txt`.
+Role agents: `programmer`, `tester`, `docs-keeper`, `reviewer`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->
@@ -56,6 +57,18 @@ def make_repo(root: Path) -> Path:
         'import os\n\nREQUIRE_DISPLAY = os.environ.get("REQUIRE_DISPLAY", "0")\n',
         encoding="utf-8",
     )
+    (root / ".claude" / "skills" / "rmonitor-base").mkdir(parents=True, exist_ok=True)
+    (root / ".claude" / "skills" / "rmonitor-base" / "SKILL.md").write_text(
+        "---\nname: rmonitor-base\ndescription: Use when testing.\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+    for role in check_agents_md.ROLE_AGENTS:
+        (root / ".claude" / "agents" / f"{role}.md").write_text(
+            f"---\nname: {role}\ndescription: Use for testing.\nskills:\n  - rmonitor-base\n"
+            "---\n\nFollow AGENTS.md.\n",
+            encoding="utf-8",
+        )
     return root
 
 
@@ -258,3 +271,371 @@ def test_annotate_without_a_drift_region_fails_loudly(tmp_path: Path) -> None:
     (root / "AGENTS.md").write_text("# AGENTS.md\n\nNo region here.\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         check_agents_md.annotate(root, [])
+
+
+def _add_skill(
+    root: Path,
+    name: str,
+    *,
+    description: str = "Use when testing.",
+    body: str = "Body.\n",
+    frontmatter_name: str | None = None,
+) -> Path:
+    """Give *root* a ``.claude/skills/<name>/SKILL.md``; return its path."""
+    directory = root / ".claude" / "skills" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "SKILL.md"
+    path.write_text(
+        f"---\nname: {frontmatter_name or name}\ndescription: {description}\n---\n\n{body}",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _add_agent(
+    root: Path, name: str, *, skills: tuple[str, ...] = ("rmonitor-fixture",), extra_lines: int = 0
+) -> Path:
+    """Give *root* a ``.claude/agents/<name>.md`` preloading *skills*; return its path."""
+    directory = root / ".claude" / "agents"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    preload = "".join(f"  - {skill}\n" for skill in skills)
+    path.write_text(
+        f"---\nname: {name}\ndescription: Use for testing.\nskills:\n{preload}---\n\n"
+        "Follow AGENTS.md.\n" + "filler\n" * extra_lines,
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_clean_fixture_with_a_skill_and_an_agent_is_clean(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture")
+    _add_agent(root, "reviewer")
+
+    assert check_agents_md.run_checks(root) == []
+
+
+def test_skill_whose_name_does_not_match_its_directory_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture", frontmatter_name="other-name")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/rmonitor-fixture/SKILL.md" in f and "name" in f for f in findings)
+
+
+def test_skill_without_a_description_is_reported(tmp_path: Path) -> None:
+    """A skill fires on its description alone, so an empty one never loads."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture", description="")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "description" in f for f in findings
+    )
+
+
+def test_skill_description_over_the_truncation_limit_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(
+        root,
+        "rmonitor-fixture",
+        description="x" * (check_agents_md.MAX_SKILL_DESCRIPTION_CHARS + 1),
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "truncates" in f for f in findings
+    )
+
+
+def test_overlong_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture", body="filler\n" * check_agents_md.MAX_SKILL_LINES)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "skill budget" in f for f in findings
+    )
+
+
+def test_skill_directory_without_skill_md_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / ".claude" / "skills" / "rmonitor-fixture").mkdir(parents=True)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/rmonitor-fixture/SKILL.md" in f and "missing" in f for f in findings)
+
+
+def test_agent_preloading_a_missing_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_agent(root, "reviewer", skills=("no-such-skill",))
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/agents/reviewer.md" in f and "no-such-skill" in f for f in findings
+    )
+
+
+def test_overlong_agent_is_reported(tmp_path: Path) -> None:
+    """Agents stay thin: knowledge in an agent body is a copy Copilot never reads."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture")
+    _add_agent(root, "reviewer", extra_lines=check_agents_md.MAX_AGENT_LINES)
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/reviewer.md" in f and "agent budget" in f for f in findings)
+
+
+def test_agent_whose_name_does_not_match_its_file_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture")
+    path = _add_agent(root, "reviewer")
+    path.rename(path.with_name("renamed.md"))
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/renamed.md" in f and "name" in f for f in findings)
+
+
+def test_stale_path_in_a_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture", body="See `server/does_not_exist.py`.\n")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "server/does_not_exist.py" in f
+        for f in findings
+    )
+
+
+def test_unknown_environment_variable_in_a_skill_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture", body="Set `INVENTED_SETTING` first.\n")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "INVENTED_SETTING" in f
+        for f in findings
+    )
+
+
+def test_frontmatter_parser_reads_scalars_and_both_list_forms() -> None:
+    text = (
+        "---\n"
+        'name: "quoted-name"\n'
+        "skills:\n"
+        "  - one\n"
+        "  - two\n"
+        "paths: [a/*.py, b/**]\n"
+        "---\n"
+        "Body line.\n"
+    )
+
+    parsed = check_agents_md.parse_frontmatter(text)
+
+    assert parsed is not None
+    fields, body = parsed
+    assert fields == {
+        "name": "quoted-name",
+        "skills": ["one", "two"],
+        "paths": ["a/*.py", "b/**"],
+    }
+    assert body == "Body line."
+    assert check_agents_md.parse_frontmatter("# No frontmatter\n") is None
+    assert check_agents_md.parse_frontmatter("---\nname: unclosed\n") is None
+
+
+def test_skill_and_agent_files_are_not_mistaken_for_scoped_agents_md(tmp_path: Path) -> None:
+    """Neither a ``SKILL.md`` nor an agent file needs a ``CLAUDE.md`` shim beside it."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture")
+    _add_agent(root, "reviewer")
+
+    assert check_agents_md.scoped_agents_files(root) == []
+    findings = check_agents_md.run_checks(root)
+    assert not any("shim" in f or "scoped budget" in f for f in findings)
+
+
+def test_stale_worktree_copies_are_not_checked(tmp_path: Path) -> None:
+    """The harness leaves whole repository copies under ``.claude/worktrees/``."""
+    root = make_repo(tmp_path)
+    worktree = root / ".claude" / "worktrees" / "x"
+    worktree.mkdir(parents=True)
+    (worktree / "AGENTS.md").write_text("filler\n" * 100, encoding="utf-8")
+
+    assert check_agents_md.run_checks(root) == []
+
+
+@pytest.mark.parametrize("indicator", [">", ">-", "|", "|-", ">2", "|+", ">- # folded"])
+def test_frontmatter_parser_reads_block_scalars(indicator: str) -> None:
+    """A folded description must be read, or the truncation check counts its indicator."""
+    text = f"---\ndescription: {indicator}\n  First line,\n  second line.\nname: x\n---\n"
+
+    parsed = check_agents_md.parse_frontmatter(text)
+
+    assert parsed is not None
+    fields, _ = parsed
+    separator = "\n" if indicator.startswith("|") else " "
+    assert fields == {"description": f"First line,{separator}second line.", "name": "x"}
+
+
+def test_frontmatter_parser_keeps_colons_inside_a_value() -> None:
+    parsed = check_agents_md.parse_frontmatter("---\ndescription: Use when: testing\n---\n")
+
+    assert parsed is not None
+    assert parsed[0] == {"description": "Use when: testing"}
+
+
+def test_long_folded_skill_description_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    path = _add_skill(root, "rmonitor-fixture")
+    long_line = "x" * (check_agents_md.MAX_SKILL_DESCRIPTION_CHARS + 1)
+    path.write_text(
+        f"---\nname: rmonitor-fixture\ndescription: >-\n  {long_line}\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(
+        ".claude/skills/rmonitor-fixture/SKILL.md" in f and "truncates" in f for f in findings
+    )
+
+
+def test_deleted_role_agent_is_reported(tmp_path: Path) -> None:
+    """Discovery alone validates only the files left, so a deletion has to be caught."""
+    root = make_repo(tmp_path)
+    (root / ".claude" / "agents" / "reviewer.md").unlink()
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/reviewer.md" in f and "missing" in f for f in findings)
+
+
+def test_role_agent_dropped_from_agents_md_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY.replace(", `reviewer`", ""), encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("AGENTS.md" in f and "`reviewer`" in f for f in findings)
+
+
+def test_cited_skill_that_does_not_exist_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nLoad `rmonitor-deleted` first.\n", encoding="utf-8"
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("AGENTS.md" in f and "rmonitor-deleted" in f for f in findings)
+
+
+def test_cited_skill_that_exists_is_clean(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-present")
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nLoad `rmonitor-present` first.\n", encoding="utf-8"
+    )
+
+    assert check_agents_md.run_checks(root) == []
+
+
+def test_user_level_rpi_skills_may_be_named(tmp_path: Path) -> None:
+    """Only ``rpi-artifacts`` is this repository's; the other RPI phase skills are not."""
+    root = make_repo(tmp_path)
+    (root / "AGENTS.md").write_text(
+        AGENTS_BODY + "\nRun `rpi-plan` after `rpi-research`.\n", encoding="utf-8"
+    )
+
+    assert check_agents_md.run_checks(root) == []
+
+
+def test_role_agent_missing_from_the_role_list_is_reported(tmp_path: Path) -> None:
+    """A fifth role must be added to the checker's list and to AGENTS.md together."""
+    root = make_repo(tmp_path)
+    _add_skill(root, "rmonitor-fixture")
+    _add_agent(root, "unlisted")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/unlisted.md" in f and "ROLE_AGENTS" in f for f in findings)
+
+
+def test_skill_paths_pattern_matching_nothing_is_reported(tmp_path: Path) -> None:
+    """A renamed file leaves a ``paths`` pattern that never auto-loads the skill."""
+    root = make_repo(tmp_path)
+    path = _add_skill(root, "rmonitor-fixture")
+    path.write_text(
+        "---\nname: rmonitor-fixture\ndescription: Use when testing.\npaths:\n"
+        '  - relay/main.py\n  - "relay/*.txt"\n  - server/gone.py\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert [f for f in findings if "paths" in f] == [
+        ".claude/skills/rmonitor-fixture/SKILL.md: `paths` pattern `server/gone.py` "
+        "matches no file, so the skill never auto-loads for it"
+    ]
+
+
+def test_skill_outside_the_naming_convention_is_reported(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    _add_skill(root, "other-skill")
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/skills/other-skill/SKILL.md" in f and "rmonitor-*" in f for f in findings)
+
+
+def test_a_comment_needs_whitespace_to_start_a_block_scalar() -> None:
+    """``|#x`` is a plain scalar in YAML, not a block header with a comment."""
+    parsed = check_agents_md.parse_frontmatter("---\ndescription: |#x\n---\n")
+
+    assert parsed is not None
+    assert parsed[0] == {"description": "|#x"}
+
+
+def test_skill_paths_pattern_matching_only_an_empty_directory_is_reported(
+    tmp_path: Path,
+) -> None:
+    root = make_repo(tmp_path)
+    (root / "empty").mkdir()
+    path = _add_skill(root, "rmonitor-fixture")
+    path.write_text(
+        "---\nname: rmonitor-fixture\ndescription: Use when testing.\npaths:\n"
+        '  - "empty/**"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("`empty/**`" in f for f in findings)
+
+
+@pytest.mark.parametrize("skills", ["", "skills: []\n"])
+def test_agent_preloading_no_skills_is_reported(tmp_path: Path, skills: str) -> None:
+    """A thin role with no preload carries none of the knowledge it exists to apply."""
+    root = make_repo(tmp_path)
+    (root / ".claude" / "agents" / "reviewer.md").write_text(
+        f"---\nname: reviewer\ndescription: Use for testing.\n{skills}---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any(".claude/agents/reviewer.md" in f and "no skills" in f for f in findings)
