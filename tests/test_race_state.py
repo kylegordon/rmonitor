@@ -2129,6 +2129,96 @@ def test_class_code_run_survives_init_and_round_trips(state):
     assert restored.snapshot()["class_code_scope"] == "0x40002806"
 
 
+EVENT = "Scottish Championship Pre-Injection 600"
+
+
+def _started_with_event(state, event=EVENT, run_id="0x40002806", start_key="k1"):
+    return state.process({
+        "type": "class_code_run", "run_id": run_id, "name": "Race 7 - 2nd Race",
+        "start_key": start_key, "event": event, "age_seconds": 0.0,
+    })
+
+
+def test_class_code_run_keeps_an_optional_event(state):
+    assert _started_with_event(state) == "class_codes"
+    assert state.class_code_run_next["event"] == EVENT
+
+
+def test_class_code_run_without_an_event_is_accepted(state):
+    """An older relay sends no event."""
+    assert _started(state) == "class_codes"
+    assert "event" not in state.class_code_run_next
+
+
+def test_a_non_string_event_is_ignored(state):
+    assert _started_with_event(state, event=["x"]) == "class_codes"
+    assert "event" not in state.class_code_run_next
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_a_repeat_of_the_held_run_supplies_its_event(state, bound):
+    """The relay's pick can precede the run's start notice, which then
+    resends the run with its event; nothing else about the held run moves."""
+    _started_with_event(state, event="")
+    if bound:
+        _session(state)
+    held = state.class_code_run if bound else state.class_code_run_next
+    before = dict(held)
+    revision = state.class_codes_revision
+    assert _started_with_event(state) == "class_codes"
+    assert held["event"] == EVENT
+    assert state.class_codes_revision == revision + 1
+    assert {k: v for k, v in held.items() if k != "event"} == before
+    # The same event again changes nothing.
+    assert _started_with_event(state) is None
+
+
+def test_class_code_run_event_survives_init_and_round_trips(state):
+    import json
+
+    _started_with_event(state)
+    state.process({"type": "init"})
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_run_next["event"] == EVENT
+    _session(restored)
+    assert restored.snapshot()["race_name"] == EVENT
+
+
+def test_race_name_is_shown_for_the_bound_run(state):
+    _started_with_event(state)
+    _session(state)
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_race_name_is_blank_after_the_closing_95(state):
+    _started_with_event(state)
+    _session(state)
+    _closing(state)
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_race_name_is_blank_when_the_run_name_differs_from_the_session(state):
+    _started_with_event(state)
+    _session(state, "Race 8 - Final", number="28")
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_race_name_is_blank_after_init_until_b_repopulates(state):
+    _started_with_event(state)
+    _session(state)
+    state.process({"type": "init"})
+    assert state.snapshot()["race_name"] == ""
+    _session(state)
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_race_name_is_blank_without_an_event(state):
+    _started(state)
+    _session(state)
+    assert state.snapshot()["race_name"] == ""
+
+
 @pytest.mark.parametrize("msg", [
     {"run_id": "0x40002806", "name": ""},
     {"run_id": "Race 7", "name": "Race 7 - 2nd Race"},

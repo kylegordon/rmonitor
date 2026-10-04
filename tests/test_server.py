@@ -458,6 +458,21 @@ async def test_ws_full_message_carries_announcements(client):
 
 
 @pytest.mark.asyncio
+async def test_ws_full_message_carries_the_race_name(client):
+    headers = {"Authorization": "Bearer test-secret"}
+    for msg in (
+        {"type": "class_code_run", "run_id": "0x40002805", "name": "Race 6",
+         "event": "Scottish Championship Sidecars", "age_seconds": 0},
+        {"type": "run", "unique_number": "6", "description": "Race 6"},
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    async with client.ws_connect("/ws") as ws:
+        msg = await ws.receive_json()
+        assert msg["data"]["race_name"] == "Scottish Championship Sidecars"
+
+
+@pytest.mark.asyncio
 async def test_class_codes_during_an_outage_do_not_broadcast_an_update(client, app):
     """The production broadcast path sends no ``update`` while the feed is lost.
 

@@ -685,6 +685,12 @@ class RaceState:
         the relay's read, now minus ``age_seconds``.  A message with no name,
         a run id not of the host's ``0x4000xxxx`` form, or already past
         :data:`_CLASS_CODE_TTL_SECONDS` is ignored.
+
+        An optional ``event`` names the run's Event, the race name
+        :meth:`_shown_race_name` shows; an older relay omits it.  The relay
+        can pick a run by name before its start notice arrives, then resend
+        it with the notice's event, so a repeat of a held run may supply or
+        correct its event, and changes nothing else.
         """
         run_id, name = msg.get("run_id"), msg.get("name")
         age = _entry_age(msg.get("age_seconds"))
@@ -703,9 +709,17 @@ class RaceState:
         # rows would show again for a same-named next session.
         if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
             return None
+        event = msg.get("event")
+        if not isinstance(event, str):
+            event = ""
         for held in (self.class_code_run, self.class_code_run_next):
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
-                return None
+                if not event or held.get("event") == event:
+                    return None
+                held["event"] = event
+                self.class_codes_revision += 1
+                self._dirty = True
+                return "class_codes"
         log.info("Timing host started run %s %r", run_id, name)
         self.class_code_run_next = {
             "run_id": run_id, "name": name, "received_at": time.time() - age,
@@ -713,6 +727,8 @@ class RaceState:
         start_key = msg.get("start_key")
         if isinstance(start_key, str) and start_key:
             self.class_code_run_next["start_key"] = start_key
+        if event:
+            self.class_code_run_next["event"] = event
         self.class_codes_revision += 1
         self._dirty = True
         return "class_codes"
@@ -850,26 +866,25 @@ class RaceState:
                 run["received_at"] = now
                 self.class_codes_revision += 1
 
-    def _shown_announcements(self) -> list[dict]:
-        """Return the announcements to show, as ``{"key", "text"}`` dicts.
+    def _shown_run(self) -> dict | None:
+        """Return the started run whose announcements and race name show, or *None*.
 
-        Rows are shown only while their run is the one the timing host
-        announced as started and :meth:`_run` bound to the running session —
-        or, with none bound, the waiting one, as :meth:`_class_code_scope`
-        lets it stand in — and its name is the session's description.  Never
-        the scope's fallback to the preload's run table by name: names repeat,
-        so a same-named next session would pick the old run up again and show
-        its announcements.  A relay started mid-run does pick a run by name,
-        and sends it as an ordinary start; that accepted same-name risk lives
-        in the relay's pick, which stops at the first real start it reads.
-        The key is a row's creation ticks.
+        Shown only while the run is the one the timing host announced as
+        started and :meth:`_run` bound to the running session — or, with none
+        bound, the waiting one, as :meth:`_class_code_scope` lets it stand in
+        — and its name is the session's description.  Never the scope's
+        fallback to the preload's run table by name: names repeat, so a
+        same-named next session would pick the old run up again and show its
+        announcements.  A relay started mid-run does pick a run by name, and
+        sends it as an ordinary start; that accepted same-name risk lives in
+        the relay's pick, which stops at the first real start it reads.
 
-        Three things clear them, whichever comes first: the session's closing
-        ``$B,95`` (through ``_run_number``); the run stopping (the relay sends
-        empty rows); and a new session (:meth:`_run` discards or replaces the
-        bound run).  :meth:`reset` is not one, because ``$I`` is emitted
-        inconsistently; after it an empty description hides the rows until
-        ``$B`` repopulates.  The priority is not sent: the page never needs it.
+        Two things hide it, whichever comes first: the session's closing
+        ``$B,95`` (through ``_run_number``) and a new session (:meth:`_run`
+        discards or replaces the bound run).  The run stopping also clears
+        its announcements, because the relay sends empty rows.
+        :meth:`reset` is not one, because ``$I`` is emitted inconsistently;
+        after it an empty description hides the run until ``$B`` repopulates.
         """
         run = self.class_code_run
         if run is None:
@@ -880,9 +895,29 @@ class RaceState:
             or self._run_number == "95"
             or run["name"] != self.run_description
         ):
+            return None
+        return run
+
+    def _shown_announcements(self) -> list[dict]:
+        """Return the announcements to show, as ``{"key", "text"}`` dicts.
+
+        Only the :meth:`_shown_run`'s rows show.  The key is a row's creation
+        ticks.  The priority is not sent: the page never needs it.
+        """
+        run = self._shown_run()
+        if run is None:
             return []
         rows = self.announcements.get(run["run_id"].lower(), [])
         return [{"key": str(r["ticks"]), "text": r["text"]} for r in rows]
+
+    def _shown_race_name(self) -> str:
+        """Return the race name to show, ``""`` when none is known.
+
+        The :meth:`_shown_run`'s Event, under the same gate as the
+        announcements, so it never names a run that is not the session's.
+        """
+        run = self._shown_run()
+        return run.get("event", "") if run is not None else ""
 
     def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:
         """Return the running run's id and the push tags in scope, or *None*.
@@ -1207,6 +1242,7 @@ class RaceState:
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
+            "race_name": self._shown_race_name(),
             "session_mode": session_mode,
             "sort_mode": sort_mode,
             "flag": self.flag,
@@ -1573,9 +1609,9 @@ def _restore_retired_runs(value, now: float) -> dict[str, float]:
 def _restore_run(value, now: float) -> dict | None:
     """Return a started run saved by :meth:`RaceState.class_codes_to_dict`, or *None*.
 
-    Its binding to a session and its closed mark come back with it; a
-    malformed, expired or future-dated one reads as none, the date capped
-    at *now*.
+    Its binding to a session, its closed mark, start key and event come
+    back with it; a malformed, expired or future-dated one reads as none,
+    the date capped at *now*.
     """
     if not isinstance(value, dict):
         return None
@@ -1597,6 +1633,8 @@ def _restore_run(value, now: float) -> dict | None:
         run["session_number"] = value["session_number"]
     if isinstance(value.get("start_key"), str) and value["start_key"]:
         run["start_key"] = value["start_key"]
+    if isinstance(value.get("event"), str) and value["event"]:
+        run["event"] = value["event"]
     return run
 
 

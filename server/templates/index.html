@@ -57,6 +57,8 @@
       opacity: 0.6;
       margin-right: 0.3rem;
     }
+    /* An Event name runs to ~60 characters; wrap it rather than widen a phone. */
+    #race-name { overflow-wrap: anywhere; }
     .flag-indicator {
       padding: 0.2rem 0.8rem;
       border-radius: 4px;
@@ -371,6 +373,7 @@
       </div>
       <div class="status-bar">
         <span><span class="label">Track:</span> <span id="track">—</span></span>
+        <span id="race-name-wrap" hidden><span class="label">Race:</span> <span id="race-name"></span></span>
         <span><span class="label">Session:</span> <span id="session">—</span></span>
         <span><span class="label">Race Time:</span> <span id="race-time">—</span></span>
         <span id="time-to-go-wrap"><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
@@ -416,6 +419,10 @@
     const tbody = document.getElementById('entries');
     const trackEl = document.getElementById('track');
     const sessionEl = document.getElementById('session');
+    const raceNameEl = document.getElementById('race-name');
+    const raceNameWrapEl = document.getElementById('race-name-wrap');
+    // The template's <title> stays the one source of the base title.
+    const BASE_TITLE = document.title;
     const modeBadgeEl = document.getElementById('mode-badge');
     const raceTimeEl = document.getElementById('race-time');
     const timeToGoEl = document.getElementById('time-to-go');
@@ -597,6 +604,9 @@
       flagEl.className = 'flag-indicator flag-unknown';
       trackEl.textContent = '—';
       sessionEl.textContent = '—';
+      raceNameEl.textContent = '';
+      raceNameWrapEl.hidden = true;
+      document.title = BASE_TITLE;
       raceTimeEl.textContent = '—';
       timeToGoEl.textContent = '—';
       lapsToGoEl.textContent = '—';
@@ -617,6 +627,11 @@
       modeBadgeEl.className = 'mode-badge ' + modeClass(mode);
       trackEl.textContent = data.track_name || '—';
       sessionEl.textContent = data.run_description || '—';
+      // The server decides when a race name shows; blank hides it.
+      const raceName = data.race_name || '';
+      raceNameEl.textContent = raceName;
+      raceNameWrapEl.hidden = !raceName;
+      document.title = raceName ? raceName + ' – ' + BASE_TITLE : BASE_TITLE;
       raceTimeEl.textContent = data.race_time || '—';
 
       const ttg = data.time_to_go || '';
