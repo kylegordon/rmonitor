@@ -230,6 +230,68 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
     )
 
 
+def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
+    """Guards server/AGENTS.md: the time columns follow ``sort_mode`` too.
+
+    Under a position sort -- a race, from its first ``$G`` through Finish -- the page
+    shows each car's Total Time in place of Last Lap and Best Lap; under a best-lap
+    sort it shows the lap times. The in-place row update matches cells by index, so
+    the column set never changes: every row always carries all ten cells, and a class
+    on the table decides which time cells CSS hides. A colspan that disagrees with the
+    header count would leave the placeholder rows short.
+
+    A total that is not a time -- empty, the ``00:00:00.000`` a reset leaves, or the
+    feed's ``00:59:59.999`` no-time sentinel -- is withheld as a dash, never shown.
+
+    Like its sibling above, this guard is textual: it asserts the page keys the toggle
+    on the server's sort answer, and that no race condition is re-derived from the mode
+    label or the flag. What the page then *draws* stays unguarded.
+    """
+    page = ROOT / "server" / "templates" / "index.html"
+    source = page.read_text(encoding="utf-8")
+
+    for header in (
+        '<th class="lap-col">Last Lap</th>',
+        '<th class="lap-col">Best Lap</th>',
+        '<th class="total-col">Total Time</th>',
+    ):
+        assert header in source, f"index.html is missing the header {header}"
+
+    assert "{ text: totalText(e.total_time), cls: 'total-col' }" in source, (
+        "index.html's row cells no longer show total_time through totalText()"
+    )
+    assert "classList.toggle('race', !bestLapSort)" in source, (
+        "index.html no longer picks the time columns from the server's sort answer"
+    )
+    for sentinel in ("'00:00:00.000'", "'00:59:59.999'"):
+        assert sentinel in source, (
+            f"index.html no longer withholds the total time {sentinel} as a dash"
+        )
+
+    # A race decision keyed on the mode label or the flag rather than the server's answer.
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(source.splitlines(), 1)
+        if re.search(
+            r"(session_mode|\bmode\b|flag)\s*===?\s*['\"](Race|Green|Yellow|Red|Finish)",
+            line,
+        )
+    ]
+    assert not offenders, (
+        "index.html derives a race condition from the session mode or flag instead of "
+        f"reading data.sort_mode: {offenders}"
+    )
+
+    thead = re.search(r"<thead>(.*?)</thead>", source, re.DOTALL)
+    assert thead, "index.html has no <thead>"
+    columns = thead.group(1).count("<th")
+    assert columns == 10, f"index.html's table has {columns} columns, expected 10"
+    colspans = [int(n) for n in re.findall(r'colspan="(\d+)"', source)]
+    assert colspans and all(n == columns for n in colspans), (
+        f"index.html's colspans {colspans} do not all span its {columns} columns"
+    )
+
+
 def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
     """Line numbers, 1-based and inclusive, of the block opened by *opener*.
 

@@ -72,6 +72,9 @@ a lap. Blank it; `_apply_intervals`' docstring carries the arithmetic. Guarded b
 `snapshot()` states which order it sorted in; `templates/index.html` reads that field
 instead of re-deriving it from `session_mode` and `flag`. Guarded by
 `test_snapshot_reports_the_sort_mode_it_used` (race_state) and
-`test_the_page_reads_sort_mode_and_does_not_re_derive_it` (repo_invariants). What the
+`test_the_page_reads_sort_mode_and_does_not_re_derive_it` (repo_invariants). The time
+columns follow it too — Total Time under a position sort, Last/Best Lap under a best-lap
+sort — guarded textually by `test_the_time_columns_follow_sort_mode_not_session_mode`
+(repo_invariants). What the
 page *draws* under that sort — row index, tooltip, suppressed arrows — is **unguarded**;
 nothing here renders the template, so check it by eye.

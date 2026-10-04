@@ -241,6 +241,10 @@
       border-collapse: collapse;
       margin-top: 0.5rem;
     }
+    /* Rows update their cells by index, so every row carries all the time
+       cells and the table's class picks which set shows. */
+    #timing-table.race .lap-col,
+    #timing-table:not(.race) .total-col { display: none; }
     thead th {
       background: var(--accent);
       padding: 0.6rem 0.8rem;
@@ -382,7 +386,7 @@
   </header>
   <main>
     <div class="table-wrapper">
-    <table>
+    <table id="timing-table">
       <thead>
         <tr>
           <th>Pos</th>
@@ -392,12 +396,13 @@
           <th>Diff</th>
           <th>Class</th>
           <th>Laps</th>
-          <th>Last Lap</th>
-          <th>Best Lap</th>
+          <th class="lap-col">Last Lap</th>
+          <th class="lap-col">Best Lap</th>
+          <th class="total-col">Total Time</th>
         </tr>
       </thead>
       <tbody id="entries">
-        <tr><td colspan="9" class="empty-state">Waiting for data from timing feed…</td></tr>
+        <tr><td colspan="10" class="empty-state">Waiting for data from timing feed…</td></tr>
       </tbody>
     </table>
     </div>
@@ -414,6 +419,7 @@
 
   <script>
     const tbody = document.getElementById('entries');
+    const timingTableEl = document.getElementById('timing-table');
     const trackEl = document.getElementById('track');
     const sessionEl = document.getElementById('session');
     const modeBadgeEl = document.getElementById('mode-badge');
@@ -492,6 +498,14 @@
       const mins = Math.floor(abs / 60);
       const secs = abs - mins * 60;
       return sign + mins + ':' + secs.toFixed(3).padStart(6, '0');
+    }
+
+    // Format a car's total race time. A reset's zero and the feed's no-time
+    // sentinel are not times, so they are withheld as the em-dash rather than
+    // shown as one.
+    function totalText(t) {
+      if (!t || t === '00:00:00.000' || t === '00:59:59.999') return '—';
+      return t;
     }
 
     // Pixels per second a too-wide announcement scrolls at.
@@ -587,7 +601,7 @@
     function showNoFeedModal() {
       noFeedEl.classList.remove('hidden');
       // Clear the results display
-      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No timing feed</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No timing feed</td></tr>';
       rowMap = {};
       previousRegs = new Set();
       // Reset header fields
@@ -613,6 +627,9 @@
       // The server states which order it sorted in; the page never re-derives
       // that condition from session_mode and flag.
       const bestLapSort = data.sort_mode === 'best_lap';
+      // A position sort is a race, so the time shown matches the row order:
+      // Total Time from the first $G through Finish, lap times otherwise.
+      timingTableEl.classList.toggle('race', !bestLapSort);
       modeBadgeEl.textContent = mode || '—';
       modeBadgeEl.className = 'mode-badge ' + modeClass(mode);
       trackEl.textContent = data.track_name || '—';
@@ -655,7 +672,7 @@
       if (entries.length === 0) {
         const hasClockFeed = !!(data.race_time && data.race_time !== '—');
         const waitMsg = hasClockFeed ? 'Waiting for entrant data…' : 'Waiting for timing data…';
-        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">${waitMsg}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-state">${waitMsg}</td></tr>`;
         rowMap = {};
         return;
       }
@@ -705,8 +722,9 @@
           { text: intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
           { text: cls, title: clsTitle, aria: clsAria },
           { text: e.laps || '—' },
-          { text: e.last_lap_time || '—' },
-          { text: e.best_lap_time || '—' },
+          { text: e.last_lap_time || '—', cls: 'lap-col' },
+          { text: e.best_lap_time || '—', cls: 'lap-col' },
+          { text: totalText(e.total_time), cls: 'total-col' },
         ];
 
         let tr = rowMap[e.reg_number];
