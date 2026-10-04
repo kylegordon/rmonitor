@@ -2330,6 +2330,40 @@ async def test_a_picked_run_is_resubscribed_after_a_reconnect_without_a_new_star
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_group, second_group, events", [
+    ("", "Test Championship", [None, "Test Championship"]),
+    ("Old Name", "New Name", ["Old Name", "New Name"]),
+    # A later pull missing the group never blanks the event already sent.
+    ("Test Championship", "", ["Test Championship"]),
+])
+async def test_a_reconnects_pull_corrects_the_picks_event_under_its_start(
+    monkeypatch, first_group, second_group, events,
+):
+    def registry(group):
+        return PICK_REGISTRY + (_group_record(0x80000985, name=group) if group else b"")
+
+    first, second = FakeWriter(), FakeWriter()
+    host1 = PullingViewHost(first, registry(first_group))
+    host2 = PullingViewHost(second, registry(second_group))
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host1.queue.append(b"")
+        await _until(lambda: _view_opens(second))
+        await _until(lambda: len(_runs_sent(calls)) >= len(events))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    runs = _runs_sent(calls)
+    assert [r.get("event") for r in runs] == events
+    assert {r["start_key"] for r in runs} == {runs[0]["start_key"]}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["lowercase stop", "session change"])
 async def test_a_pick_ended_while_its_failed_delivery_was_in_flight_is_not_retried(
     monkeypatch, ending

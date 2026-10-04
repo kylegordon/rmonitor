@@ -1344,16 +1344,7 @@ class ClassCodeClient:
             if picked:
                 # The run picked by name has started: the pick's start key and
                 # subscription stand, and refreshes keep naming its start.
-                # The server ignores a repeat of the run it holds except for
-                # its event, so a notice whose Event the pick lacked resends
-                # the pick with it.
-                if run.event and run.event != self._ann_event:
-                    self._run = {
-                        "run_id": self._ann_run, "name": self._ann_name,
-                        "start_key": self._ann_start_key, "event": run.event,
-                        "_observed": time.monotonic(),
-                    }
-                    self._ann_event = run.event
+                self._correct_event(run.event)
                 self._ann_name = run.name
                 continue
             self._take_run(run.run_id, run.name, run.event)
@@ -1454,17 +1445,34 @@ class ClassCodeClient:
             if self._run_in_flight is not None:
                 self._run_in_flight["_stopped"] = True
             return
+        event = self._groups.get(record["group_id"], "")
         if self._ann_run is not None and self._ann_run.lower() == run_id.lower():
             # The server ignores a repeat of the run it holds, so a new
-            # start key would no longer match its own.
+            # start key would no longer match its own; a newer pull may
+            # still name its event.
+            self._correct_event(event)
             return
         log.info(
             "No run start seen – picked run %s %r by name", run_id, self._session_desc
         )
         # A group missing from the pull leaves the event unknown, never guessed.
-        self._take_run(
-            run_id, self._session_desc, self._groups.get(record["group_id"], "")
-        )
+        self._take_run(run_id, self._session_desc, event)
+
+    def _correct_event(self, event: str) -> None:
+        """Resend the subscribed run with *event* if that names a new one.
+
+        The server ignores a repeat of the start it holds except for its
+        event, so the pick's start key stands.  An empty *event* never
+        blanks one already sent.
+        """
+        if not event or event == self._ann_event:
+            return
+        self._run = {
+            "run_id": self._ann_run, "name": self._ann_name,
+            "start_key": self._ann_start_key, "event": event,
+            "_observed": time.monotonic(),
+        }
+        self._ann_event = event
 
     def _absorb_announcement(self, frame: AnnouncementFrame) -> None:
         if self._ann_run is None:
