@@ -2720,7 +2720,8 @@ def _results_frame(opcode, view_id, rows, *, count=None, title="Not classified")
 def _entrant(number="7", code="TC", *, reg=None, transponder="1234567", **extra):
     return {
         "number": number, "first": "Ann", "last": "EXAMPLE", "class_name": "Test Cup",
-        "code": code, "reg": reg or f"a{int(number):07d}", "transponder": transponder,
+        "code": code, "reg": f"a{int(number):07d}" if reg is None else reg,
+        "transponder": transponder,
         **extra,
     }
 
@@ -2728,7 +2729,7 @@ def _entrant(number="7", code="TC", *, reg=None, transponder="1234567", **extra)
 def _row(number="7", code="TC", *, reg=None, transponder="1234567"):
     """The row ``EntryListParser`` reads from ``_entrant`` with the same arguments."""
     return {
-        "entrant_id": reg or f"a{int(number):07d}", "number": number,
+        "entrant_id": f"a{int(number):07d}" if reg is None else reg, "number": number,
         "class_name": "Test Cup", "transponder": transponder, "class_code": code,
     }
 
@@ -3213,3 +3214,12 @@ async def test_a_runs_pushes_wait_for_its_failed_entry_list():
         (RUN_ID, True), (RUN_ID, False),
     ]
     assert calls[-1]["entries"][0]["class_code"] == "TD"
+
+
+def test_entry_list_parser_withholds_a_reply_with_a_row_lacking_its_car_reg(caplog):
+    """A row dropped for having no car reg would leave the list short, and the
+    server would withdraw that entrant's code; the reply is withheld instead."""
+    rows = [_entrant("7", reg=""), _entrant("8")]
+    (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
+    assert reply == ccc.EntryListReply(None)
+    assert "withheld" in caplog.text

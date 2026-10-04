@@ -651,8 +651,8 @@ class EntryListParser:
     a tail early.  Rows are found by walking these typed fields — a head,
     then the first tail at or after its end, then the next head after that
     tail — never by string scans keyed on name casing.  Number and class
-    must be non-empty, and a tail must read whole, its transponders
-    included.  A reply whose rows found disagree with its row count
+    must be non-empty, as must the car reg, and a tail must read whole, its
+    transponders included.  A reply whose rows found disagree with its row count
     is withheld (*rows* None) rather than forwarded in part.  A transponder
     field holding two, comma-joined, is kept raw.
     """
@@ -740,6 +740,10 @@ def _entry_list_tail(block: bytes, pos: int) -> tuple[list[str], str, str, int] 
             regs.append(cur.printable())
             if cur.byte() != 0:
                 return None
+        if not regs[0]:
+            # No row on record lacks one, and a row dropped for it would make
+            # the list withdraw that entrant's code.
+            return None
         n = cur.u32()
         cur.skip(1 + 4 * n)
         transponder = cur.printable()
@@ -1167,7 +1171,7 @@ class ClassCodeClient:
     run and before the pushes of the same burst, and retried like them — the
     latest per run replacing any not yet delivered.  The server takes it as
     the run's whole entry list, replacing the codes of the run's earlier
-    ones (:meth:`_deliver_entry_list`).  The run is
+    ones (``RaceState._class_codes`` in ``server/race_state.py``).  The run is
     subscribed again every *entry_list_refresh_interval* seconds, to catch an
     entry edited mid-run that no push carried, and a subscription not
     answered within *announce_reply_timeout* seconds is closed and sent again
