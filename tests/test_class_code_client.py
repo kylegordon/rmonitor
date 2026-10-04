@@ -3157,6 +3157,24 @@ async def test_a_failed_entry_list_delivery_is_retried_and_a_newer_one_replaces_
     assert client._entry_lists == {}
 
 
+@pytest.mark.asyncio
+async def test_an_entry_list_is_not_counted_as_pushed():
+    """Every refresh resends the whole list, so counting it would grow the
+    status's pushed count by the whole grid each minute."""
+    statuses = []
+    client = ccc.ClassCodeClient(
+        "timing-host", _collect([]), on_status=statuses.append,
+        **{**FAST, "entry_list": True},
+    )
+    client._connected = True
+    client._entry_lists[RUN_ID.lower()] = _held("7", "8")
+    await client._flush()
+    client._absorb(_push("added", RUN_ID, _fields("e1")))
+    await client._flush()
+    assert [s.pushed for s in statuses] == [0, 1]
+    assert statuses[0].last_delivery is not None
+
+
 def test_entry_list_parser_withholds_a_reply_with_a_cut_short_transponder(caplog):
     """A row whose transponders do not read whole is no row, so the reply is
     withheld rather than forwarded without it — a list missing a row would

@@ -2079,7 +2079,7 @@ class ClassCodeClient:
         except Exception:
             log.exception("Could not forward the entry list for run %s", held["run_id"])
             return False
-        self._pushed += len(entries)
+        # Not counted as pushed: every refresh resends the whole list.
         self._delivered()
         return True
 
