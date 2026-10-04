@@ -1431,10 +1431,12 @@ class ClassCodeClient:
             if self._ann_run is not None:
                 # Cleared as a stop clears, so a start for it accepted after
                 # all — a delivery in flight — has no rows to show should a
-                # later session of its name bind it on the server.
+                # later session of its name bind it on the server; marked
+                # dropped, so that start shows no race name either.
                 self._queue_announcement({
                     "type": "announcements", "run_id": self._ann_run, "rows": [],
-                    "stopped": True, "start_key": self._ann_start_key,
+                    "stopped": True, "dropped": True,
+                    "start_key": self._ann_start_key,
                 })
                 self._drop_announcement_views()
                 self._ann_run = None

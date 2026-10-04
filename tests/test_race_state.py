@@ -2494,6 +2494,7 @@ def test_a_dropped_pick_accepted_late_resurfaces_no_rows_in_a_later_same_named_s
     })
     state.process({
         "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "dropped": True,
     })
     _session(state, number="7")
     assert _shown(state) == []
@@ -2748,12 +2749,41 @@ def test_a_restart_after_the_95_under_a_new_start_key_is_taken(state):
     assert state.class_code_run_next["start_key"] == "k2"
 
 
-def test_a_stop_of_another_start_leaves_the_waiting_runs_event(state):
+def _dropped(state, start_key="k1"):
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "dropped": True, "start_key": start_key,
+    })
+
+
+def test_a_genuine_stop_while_another_session_runs_keeps_the_race_name(state):
+    """The next run can start and stop before its own ``$B``; only a dropped
+    pick's clear drops a race name, never the description disagreeing."""
+    _session(state, "Race 6", number="26")
     _started_with_event(state)
     state.process({
         "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
-        "start_key": "retired",
+        "start_key": "k1",
     })
+    _session(state)
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_a_dropped_picks_clear_after_init_drops_its_race_name(state):
+    """``$I`` blanks the description; the dropped mark alone decides."""
+    _session(state, number="5")
+    _session(state, "Race 8", number="6")
+    _started_with_event(state)  # the pick's delivery, accepted after the drop
+    state.process({"type": "init"})
+    _dropped(state)
+    _session(state, "Race 8", number="6")
+    _session(state, number="7")
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_a_stop_of_another_start_leaves_the_waiting_runs_event(state):
+    _started_with_event(state)
+    _dropped(state, start_key="retired")
     assert state.class_code_run_next["event"] == EVENT
 
 

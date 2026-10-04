@@ -783,14 +783,13 @@ class RaceState:
         from a start a session boundary retired is ignored outright, so a
         late one never touches a restart of the same run.
 
-        A ``stopped`` message for the start waiting in
-        ``class_code_run_next`` drops its event when the running session's
-        description names another run: the relay sends one when it drops a
-        pick, whose start can still land afterwards, and a same-named later
-        session would otherwise bind it and show the old race name.  A
-        stopped run bound, or waiting under the session's name — or under an
-        empty one, after ``$I`` — keeps its race name until the session's
-        ``$B,95``, as the board still shows it.
+        A ``stopped`` message also marked ``dropped`` drops the event of the
+        start it names: the relay sends one when it drops a mid-run pick,
+        whose start can still land afterwards, and a same-named later
+        session would otherwise bind it and show the old race name.  A plain
+        stop keeps the race name until the session's ``$B,95``, as the
+        board still shows that session; the session description cannot
+        tell the two apart, since ``$B`` and ``$I`` arrive independently.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
@@ -807,22 +806,17 @@ class RaceState:
             )
             self._renew_started_run(run_id)
             changed = self._refresh_event(run_id, msg.get("start_key"), event)
-        elif msg.get("stopped"):
-            nxt = self.class_code_run_next
-            if (
-                nxt is not None
-                and "event" in nxt
-                # Only a run another session's $B shows not to be its own is
-                # a dropped pick: $B can come before a mid-run pick, and $I
-                # blanks the description without the run being dropped.
-                and self.run_description
-                and nxt["name"] != self.run_description
-                and _start_id(nxt["run_id"], nxt.get("start_key"))
-                == _start_id(run_id, msg.get("start_key"))
-            ):
-                del nxt["event"]
-                self.class_codes_revision += 1
-                self._dirty = changed = True
+        elif msg.get("stopped") and msg.get("dropped"):
+            for held in (self.class_code_run, self.class_code_run_next):
+                if (
+                    held is not None
+                    and "event" in held
+                    and _start_id(held["run_id"], held.get("start_key"))
+                    == _start_id(run_id, msg.get("start_key"))
+                ):
+                    del held["event"]
+                    self.class_codes_revision += 1
+                    self._dirty = changed = True
         rows = []
         for row in raw:
             if not isinstance(row, dict):
