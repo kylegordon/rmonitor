@@ -2832,6 +2832,7 @@ def test_a_waiting_run_shown_for_its_session_carries_into_a_restart(state):
     _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
     assert _shown(state) == ["Red flag", "Restart over 5 laps"]
 
+
 def test_a_restart_runs_carry_survives_its_b_repeats_and_an_init(state):
     _restart(state, b_first=True)
     state.process({"type": "init"})
