@@ -181,8 +181,14 @@ class RaceState:
         # The timing host's announcements, lowercased run id to its rows,
         # the latest few runs; see _announcements.  Not in reset(): $I is not
         # a session signal (it is emitted inconsistently), and
-        # _shown_announcements shows only the running session's run's rows.
+        # _shown_announcements shows only the shown session's run's rows,
+        # plus a carried previous run's.
         self.announcements: dict[str, list[dict]] = {}
+        # The run the last session boundary discarded — the board's previous
+        # session — used only to carry its announcements into a restart run;
+        # see _carried_run.  Not in reset(), for the reason above, and not
+        # saved, as the announcements are not.
+        self._previous_run: dict | None = None
         self.reset()
 
     def reset(self):
@@ -344,6 +350,7 @@ class RaceState:
         ) != number:
             if cur is not None:
                 self._retire_run(cur)
+                self._previous_run = cur
             if nxt is not None and nxt["name"] == desc:
                 self.class_code_run = nxt | {"session_number": number}
                 self.class_code_run_next = None
@@ -800,8 +807,9 @@ class RaceState:
         are kept per run: the next run's start, and so its rows, can arrive
         before the current session ends, and must not hide the current run's
         rows early.  ``rows: []`` is also how the relay clears a run's rows
-        when it stops — on every stop, so empty rows for a run with none held
-        change nothing.  A message whose
+        when it drops a mid-run pick, marked ``stopped``; an older relay also
+        sent one on every stop, which is still applied, and empty rows for a
+        run with none held change nothing.  A message whose
         run id is not of the host's ``0x4000xxxx`` form, or whose rows are not
         a list, is ignored.  Each row keeps its text, its creation ``ticks``
         (0 when unusable) and its priority, forwarded raw; a row with no text
@@ -825,9 +833,9 @@ class RaceState:
         start it names: the relay sends one when it drops a mid-run pick,
         whose start can still land afterwards, and a same-named later
         session would otherwise bind it and show the old race name.  A plain
-        stop keeps the race name until the session's ``$B,95``, as the
-        board still shows that session; the session description cannot
-        tell the two apart, since ``$B`` and ``$I`` arrive independently.
+        stop keeps the race name, which still hides at the session's
+        ``$B,95`` (:meth:`_shown_run`); the session description cannot tell
+        the two apart, since ``$B`` and ``$I`` arrive independently.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
@@ -977,7 +985,7 @@ class RaceState:
                 run["received_at"] = now
                 self.class_codes_revision += 1
 
-    def _shown_run(self) -> dict | None:
+    def _shown_run(self, *, through_close: bool = False) -> dict | None:
         """Return the started run whose announcements and race name show, or *None*.
 
         Shown only while the run is the one the timing host announced as
@@ -990,42 +998,74 @@ class RaceState:
         sends it as an ordinary start; that accepted same-name risk lives in
         the relay's pick, which stops at the first real start it reads.
 
-        Two things hide it, whichever comes first: the session's closing
-        ``$B,95`` (through ``_run_number``) and a new session (:meth:`_run`
-        discards or replaces the bound run).  The run stopping also clears
-        its announcements, because the relay sends empty rows.
-        :meth:`reset` is not one, because ``$I`` is emitted inconsistently;
-        after it an empty description hides the run until ``$B`` repopulates.
+        A new session hides it (:meth:`_run` discards or replaces the bound
+        run, or the description no longer names it).  Unless *through_close*
+        — as for the announcements, which race control posts after a stop —
+        the session's closing ``$B,95`` (through ``_run_number``) hides it
+        too, whichever comes first; the race name hides there.  The relay no
+        longer clears a run's rows on its stop.  :meth:`reset` is not a
+        boundary, because ``$I`` is emitted inconsistently; after it an empty
+        description hides the run until ``$B`` repopulates.
         """
         run = self.class_code_run
         if run is None:
             run = self.class_code_run_next
-        if (
-            run is None
-            or run.get("closed")
-            or self._run_number == "95"
-            or run["name"] != self.run_description
-        ):
+        if run is None or run["name"] != self.run_description:
+            return None
+        if not through_close and (run.get("closed") or self._run_number == "95"):
             return None
         return run
+
+    def _carried_run(self, run: dict) -> dict | None:
+        """Return the previous session's run when *run* restarts it, or *None*.
+
+        Race control restarts a race stopped after laps were run as a new
+        run, named the old one's name followed by ``" - "`` — "Re-Start" and
+        "Restart" both occur, so no keyword is matched.  When both runs'
+        groups are known from the preload they must also match; a group is
+        a whole class, so a group match alone would carry a race's rows into
+        the class's next Warm Up.  A restart run created after the relay's
+        pull has no known group, so only the name decides.  A rename such as
+        "- AMENDED RESULT" keeps the run id, so it never arrives as a next
+        run; a restart under the same id shows its own rows instead.
+        """
+        prev = self._previous_run
+        if prev is None or prev["run_id"].lower() == run["run_id"].lower():
+            return None
+        if not run["name"].startswith(prev["name"] + " - "):
+            return None
+        groups = self.class_code_preload["run_group"]
+        prev_group = groups.get(prev["run_id"].lower())
+        group = groups.get(run["run_id"].lower())
+        if prev_group and group and prev_group != group:
+            return None
+        return prev
 
     def _shown_announcements(self) -> list[dict]:
         """Return the announcements to show, as ``{"key", "text"}`` dicts.
 
-        Only the :meth:`_shown_run`'s rows show.  The key is a row's creation
-        ticks.  The priority is not sent: the page never needs it.
+        Only the :meth:`_shown_run`'s rows show, through the session's
+        ``$B,95`` until the next session, since race control posts the reason
+        for a stop after it.  A restart run (:meth:`_carried_run`) shows the
+        run it restarts' rows first, then its own, each oldest first.  The
+        key is a row's creation ticks.  The priority is not sent: the page
+        never needs it.
         """
-        run = self._shown_run()
+        run = self._shown_run(through_close=True)
         if run is None:
             return []
         rows = self.announcements.get(run["run_id"].lower(), [])
+        carried = self._carried_run(run)
+        if carried is not None:
+            rows = self.announcements.get(carried["run_id"].lower(), []) + rows
         return [{"key": str(r["ticks"]), "text": r["text"]} for r in rows]
 
     def _shown_race_name(self) -> str:
         """Return the race name to show, ``""`` when none is known.
 
         The :meth:`_shown_run`'s Event, under the same gate as the
-        announcements, so it never names a run that is not the session's.
+        announcements, so it never names a run that is not the session's —
+        except that it hides at the session's ``$B,95``.
         """
         run = self._shown_run()
         return run.get("event", "") if run is not None else ""
