@@ -320,6 +320,48 @@ def _run_record(run_id=0x40002806, group_id=0x80000985, name="Race 7 - 2nd Race"
     )
 
 
+def _group_record(group_id=0x800009D4, parent=0x800009D2,
+                  name="Scottish Championship Pre-Injection 600", *, pad=bytes(8)) -> bytes:
+    """One group record laid out as captured, with invented timestamps."""
+    return (
+        struct.pack("<I", group_id) + b"\x00" + struct.pack("<I", 0x98)
+        + struct.pack("<I", parent) + _s(name) + pad
+        + struct.pack("<II", 0x6523A1B0, 0x6523A1B1) + b"\x05"
+    )
+
+
+def test_parse_groups_reads_a_group_record():
+    buf = bytes(16) + _group_record() + bytes(16)
+    assert ccc.parse_groups(buf) == {
+        "0x800009D4": "Scottish Championship Pre-Injection 600",
+    }
+
+
+def test_parse_groups_reads_a_root_group():
+    buf = _group_record(0x800009D2, 0xFFFFFFFF, "KMSC National motorcycle racing")
+    assert ccc.parse_groups(buf) == {"0x800009D2": "KMSC National motorcycle racing"}
+
+
+def test_parse_groups_skips_a_record_without_the_zero_padding():
+    assert ccc.parse_groups(_group_record(pad=b"\x00" * 7 + b"\x01")) == {}
+
+
+def test_parse_groups_skips_empty_unprintable_and_repeated_names():
+    buf = (
+        bytes(range(256))
+        + _group_record(0x800009D4, name="Sidecars")
+        + _group_record(0x800009D5, name="")
+        + _group_record(0x800009D6, name="\x07\x01")
+        + _group_record(0x800009D4, name="Sidecars again")
+        + _group_record(0x800009D7)[:-20]
+    )
+    assert ccc.parse_groups(buf) == {"0x800009D4": "Sidecars"}
+
+
+def test_parse_groups_ignores_run_records():
+    assert ccc.parse_groups(bytes(16) + _run_record() + bytes(16)) == {}
+
+
 def test_run_table_record_is_parsed():
     buf = bytes(16) + _run_record() + bytes(16)
     assert ccc.parse_runs(buf) == [
@@ -1153,8 +1195,41 @@ def _run_state(name="Race 6 - AMENDED GRID", run_id=0x40002805, state="started")
 
 def test_run_state_parser_reads_a_started_run():
     assert ccc.RunStateParser().feed(bytes(8) + _run_state() + bytes(8)) == [
-        ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "started"),
+        ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "started", "Test Meeting"),
     ]
+
+
+def _notice(text: str) -> bytes:
+    """A run-state notice carrying *text* verbatim."""
+    raw = text.encode()
+    return struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(raw)) + raw
+
+
+def test_run_state_parser_reads_the_event_name():
+    (run,) = ccc.RunStateParser().feed(_notice(
+        "Run 'Race 2 - 1st Race' [0x400035E0] is started"
+        " - Event 'Scottish Championship Pre-Injection 600'"
+    ))
+    assert run == ccc.RunState(
+        "0x400035E0", "Race 2 - 1st Race", "started",
+        "Scottish Championship Pre-Injection 600",
+    )
+
+
+def test_run_state_parser_keeps_apostrophes_in_the_event_name():
+    """Captured: the Event ends the notice, so commas and apostrophes in it
+    survive whole."""
+    (run,) = ccc.RunStateParser().feed(_notice(
+        "Run 'Race 5' [0x40002805] is stopped"
+        " - Event 'Future Classics, Modern Classics, Open, New Millennium, 7's'"
+    ))
+    assert run.name == "Race 5"
+    assert run.event == "Future Classics, Modern Classics, Open, New Millennium, 7's"
+
+
+def test_run_state_parser_tolerates_a_notice_without_an_event():
+    (run,) = ccc.RunStateParser().feed(_notice("Run 'Race 5' [0x40002805] is started"))
+    assert run == ccc.RunState("0x40002805", "Race 5", "started", "")
 
 
 def test_run_state_parser_reads_a_name_containing_an_apostrophe():
@@ -1168,7 +1243,9 @@ def test_run_state_parser_joins_a_frame_split_across_reads():
     data = _run_state(state="stopped")
     parser = ccc.RunStateParser()
     out = parser.feed(data[:7]) + parser.feed(data[7:30]) + parser.feed(data[30:])
-    assert out == [ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "stopped")]
+    assert out == [
+        ccc.RunState("0x40002805", "Race 6 - AMENDED GRID", "stopped", "Test Meeting"),
+    ]
 
 
 def test_run_state_parser_ignores_other_text():
@@ -1206,6 +1283,31 @@ async def test_a_started_run_is_forwarded_before_the_pushes_of_its_burst(monkeyp
     run = calls[0]
     assert (run["run_id"], run["name"]) == ("0x40002805", "Race 6 - AMENDED GRID")
     assert isinstance(run["age_seconds"], float) and run["age_seconds"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_start_notice_forwards_its_event_name(monkeypatch):
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _runs_sent(calls))
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert (run["run_id"], run["event"]) == ("0x40002805", "Test Meeting")
+
+
+@pytest.mark.asyncio
+async def test_a_start_notice_without_an_event_sends_no_event_field(monkeypatch):
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_notice("Run 'Race 5' [0x40002805] is started"))
+        await _until(lambda: _runs_sent(calls))
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert run["name"] == "Race 5"
+    assert "event" not in run
 
 
 @pytest.mark.asyncio
@@ -2239,10 +2341,92 @@ async def test_the_picked_run_starting_keeps_the_picks_start(monkeypatch, lowerc
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
-    (run,) = _runs_sent(calls)
-    assert client._ann_start_key == run["start_key"]
+    # The start notice may resend the pick to supply its event, but never
+    # under a new key.
+    runs = _runs_sent(calls)
+    assert {r["start_key"] for r in runs} == {client._ann_start_key}
+    assert {r["run_id"] for r in runs} == {PICKED_ID}
     assert client._ann_run == PICKED_ID
     assert len(_view_opens(writer)) == 1
+
+
+def _picking_with_groups(registry):
+    writer = FakeWriter()
+    return [(PullingViewHost(writer, registry), writer)]
+
+
+@pytest.mark.asyncio
+async def test_a_picked_run_carries_its_group_name_as_the_event(monkeypatch):
+    registry = PICK_REGISTRY + _group_record(0x80000985, name="Test Championship")
+    task, host, writer, calls, client = await _picking(
+        monkeypatch, connections=_picking_with_groups(registry),
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert (run["run_id"], run["event"]) == (PICKED_ID, "Test Championship")
+
+
+@pytest.mark.asyncio
+async def test_a_picked_run_whose_group_is_unknown_sends_no_event(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert run["run_id"] == PICKED_ID
+    assert "event" not in run
+
+
+@pytest.mark.asyncio
+async def test_a_picked_runs_start_notice_supplies_a_missing_event(monkeypatch):
+    """A pick that found no group name is resent with the notice's event,
+    under the pick's own start key."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_run_state(PICK_NAME, 0x4000280A, "started"))
+        await _until(lambda: len(_runs_sent(calls)) == 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    first, second = _runs_sent(calls)
+    assert "event" not in first
+    assert second["event"] == "Test Meeting"
+    assert (second["run_id"], second["name"], second["start_key"]) == (
+        first["run_id"], first["name"], first["start_key"],
+    )
+    assert len(_view_opens(writer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_picked_runs_start_notice_with_the_same_event_sends_nothing_more(
+    monkeypatch,
+):
+    registry = PICK_REGISTRY + _group_record(0x80000985, name="Test Meeting")
+    task, host, writer, calls, client = await _picking(
+        monkeypatch, connections=_picking_with_groups(registry),
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_run_state(PICK_NAME, 0x4000280A, "started"))
+        await _until(lambda: client._seen_start)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert run["event"] == "Test Meeting"
 
 
 @pytest.mark.asyncio

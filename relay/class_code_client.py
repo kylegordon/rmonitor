@@ -154,6 +154,12 @@ _REGISTRY_ANCHOR = re.compile(
 )
 _MAX_REGISTRY_STR = 255
 
+# A group record in the model: the group id (0x8000xxxx), u8, u32, then the
+# parent group's id, or 0xFFFFFFFF for a root; see parse_groups.
+_GROUP_ANCHOR = re.compile(
+    rb"(..\x00\x80).(....)(..\x00\x80|\xff\xff\xff\xff)", re.DOTALL
+)
+
 # A run-table record in the model: u32 1, 12 bytes, the run id (0x4000xxxx),
 # u32 flags, the group id (0x8000xxxx), then the run name as a ``str``.
 _RUN_ANCHOR = re.compile(
@@ -185,7 +191,11 @@ _ANN_ROW = re.compile(
 
 # The run-state notice the host announces on the live stream; see RunStateParser.
 _RUN_STATE_MARKER = b"\x0e\x00\x00\x00runstatechange"
-_RUN_STATE_TEXT = re.compile(r"^Run '(.*)' \[(0x[0-9A-Fa-f]+)\] is (started|stopped)")
+# The Event always ends the text, so its greedy match runs to the end and keeps
+# apostrophes such as ``7's``; a notice without one still matches.
+_RUN_STATE_TEXT = re.compile(
+    r"^Run '(.*)' \[(0x[0-9A-Fa-f]+)\] is (started|stopped)(?: - Event '(.*)'$)?"
+)
 
 
 class HandshakeError(Exception):
@@ -381,6 +391,7 @@ class RunState(NamedTuple):
     run_id: str
     name: str
     state: str
+    event: str = ""
 
 
 class RunStateParser:
@@ -389,7 +400,9 @@ class RunStateParser:
     Each notice is the length-prefixed literal ``runstatechange``, a u32
     little-endian length, then that many bytes of text such as ``Run 'Race 6
     - AMENDED GRID' [0x40002805] is started - Event '…'``; the id is uppercase
-    hex, as in the pushes' run tags.  Notices travel outside the
+    hex, as in the pushes' run tags.  The Event is the name of the
+    group the run belongs to — the race name the page shows — and is ``""``
+    when a notice carries none.  Notices travel outside the
     ``datamanager`` framing, so :class:`PushParser` never sees them, and the
     model a pull returns holds none.  The started run's name equals the
     rMonitor feed's ``$B`` description, whereas the model's run table can
@@ -427,7 +440,7 @@ class RunStateParser:
             if m is None:
                 log.debug("Skipping an unrecognised run-state notice: %.60r", text)
                 continue
-            out.append(RunState(m.group(2), m.group(1), m.group(3)))
+            out.append(RunState(m.group(2), m.group(1), m.group(3), m.group(4) or ""))
         return out
 
 
@@ -757,9 +770,50 @@ def parse_runs(buf: bytes) -> list[dict]:
     return list(runs.values())
 
 
-def _parse_model(buf: bytes) -> tuple[list[dict], list[dict]]:
-    # Both parses in one worker-thread hop.
-    return parse_registry(buf), parse_runs(buf)
+def parse_groups(buf: bytes) -> dict[str, str]:
+    """Return ``{group id: name}`` for the group records found in *buf*.
+
+    *buf* is the same model :func:`parse_registry` reads.  A group is an
+    Event — the race name a run-state notice ends with — and each run
+    record names its group.  Each group record is laid out as below,
+    integers u32 little-endian::
+
+        u32   group id        0x8000xxxx
+        u8    flag            not read
+        u32   unknown         not read
+        u32   parent id       0x8000xxxx, or 0xFFFFFFFF for a root group
+        str   group name
+        8 bytes               zero
+        u32   unknown, twice  not read
+        u8    unknown         not read
+
+    Only the id and the name are read; the eight zero bytes after the name
+    are required, which rejects most false anchors.  The groups arrive only
+    in the on-connect pull, spanning many past meetings, so a name repeats
+    across meetings but an id is unique.  Ids are returned as ``0x`` plus
+    eight uppercase hex digits, as :func:`parse_runs` returns them.  A name
+    that is empty, longer than 255 bytes or not printable is skipped, as is
+    a record running past the buffer; the first record per id is kept.
+    """
+    groups: dict[str, str] = {}
+    for m in _GROUP_ANCHOR.finditer(buf):
+        (gid,) = struct.unpack("<I", m.group(1))
+        cur = _Cursor(buf, m.end())
+        try:
+            name = cur.string()
+            if cur.u32() or cur.u32():
+                continue
+        except _ShortRecord:
+            continue
+        if not name or not name.isprintable():
+            continue
+        groups.setdefault(f"0x{gid:08X}", name)
+    return groups
+
+
+def _parse_model(buf: bytes) -> tuple[list[dict], list[dict], dict[str, str]]:
+    # All three parses in one worker-thread hop.
+    return parse_registry(buf), parse_runs(buf), parse_groups(buf)
 
 
 async def _backoff_sleep(delay: float) -> None:
@@ -920,17 +974,21 @@ class ClassCodeClient:
         # both outlive a reconnect.
         self._ann_run: str | None = None
         self._ann_name = ""
+        # The Event last sent for the subscribed run, so its start notice can
+        # supply one a pick could not find.
+        self._ann_event = ""
         # Names the start the relay read, so the server can tell a restart
         # under the same run id from the start it retired.
         self._ann_start_key = ""
         self._announcements: dict[str, dict] = {}
         self._reset_announcement_views()
         # What picks a run by name while no start has been read — the last
-        # complete pull's run table, the last $B number and non-95
-        # description, whether a real start has been read, and the
+        # complete pull's run table and group names, the last $B number and
+        # non-95 description, whether a real start has been read, and the
         # lower-cased ids of the runs seen ending meanwhile; all outlive a
         # reconnect.
         self._runs: list[dict] | None = None
+        self._groups: dict[str, str] = {}
         self._session_number = ""
         self._session_desc = ""
         self._seen_start = False
@@ -1090,9 +1148,10 @@ class ClassCodeClient:
             log.warning("Class-code registry pull incomplete – not forwarding a preload")
             return
         pulled_at = time.monotonic()
-        entries, runs = await asyncio.to_thread(_parse_model, bytes(model))
+        entries, runs, groups = await asyncio.to_thread(_parse_model, bytes(model))
         # The run table holds even when the preload is withheld below.
         self._runs = runs
+        self._groups = groups
         self._pick_run()
         if not entries:
             log.warning(
@@ -1283,26 +1342,39 @@ class ClassCodeClient:
             )
             self._seen_start = True
             if picked:
-                # The run picked by name has started: the server ignores a
-                # repeat of the run it holds, so the pick's start key and
+                # The run picked by name has started: the pick's start key and
                 # subscription stand, and refreshes keep naming its start.
+                # The server ignores a repeat of the run it holds except for
+                # its event, so a notice whose Event the pick lacked resends
+                # the pick with it.
+                if run.event and run.event != self._ann_event:
+                    self._run = {
+                        "run_id": self._ann_run, "name": self._ann_name,
+                        "start_key": self._ann_start_key, "event": run.event,
+                        "_observed": time.monotonic(),
+                    }
+                    self._ann_event = run.event
                 self._ann_name = run.name
                 continue
-            self._take_run(run.run_id, run.name)
+            self._take_run(run.run_id, run.name, run.event)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
 
-    def _take_run(self, run_id: str, name: str) -> None:
-        """Treat *run_id* as the started run: forward it and subscribe."""
+    def _take_run(self, run_id: str, name: str, event: str = "") -> None:
+        """Treat *run_id* as the started run: forward it and subscribe.
+
+        *event* is the run's Event name, ``""`` when unknown.
+        """
         start_key = uuid.uuid4().hex
         self._run = {
             "run_id": run_id, "name": name, "start_key": start_key,
-            "_observed": time.monotonic(),
+            "event": event, "_observed": time.monotonic(),
         }
         if run_id != self._ann_run:
             self._drop_announcement_views()
             self._ann_run = run_id
         self._ann_name = name
+        self._ann_event = event
         self._ann_start_key = start_key
         # The reply holds the rows that already exist.
         self._ann_due = asyncio.get_running_loop().time()
@@ -1361,8 +1433,9 @@ class ClassCodeClient:
             or self._runs is None
         ):
             return
-        ids = [r["run_id"] for r in self._runs if r["name"] == self._session_desc]
-        run_id = max(ids, key=lambda r: int(r, 16)) if ids else None
+        named = [r for r in self._runs if r["name"] == self._session_desc]
+        record = max(named, key=lambda r: int(r["run_id"], 16)) if named else None
+        run_id = record["run_id"] if record is not None else None
         if run_id is None or run_id.lower() in self._ended_runs:
             if self._ann_run is not None:
                 # Cleared as a stop clears, so a start for it accepted after
@@ -1388,7 +1461,10 @@ class ClassCodeClient:
         log.info(
             "No run start seen – picked run %s %r by name", run_id, self._session_desc
         )
-        self._take_run(run_id, self._session_desc)
+        # A group missing from the pull leaves the event unknown, never guessed.
+        self._take_run(
+            run_id, self._session_desc, self._groups.get(record["group_id"], "")
+        )
 
     def _absorb_announcement(self, frame: AnnouncementFrame) -> None:
         if self._ann_run is None:
@@ -1546,14 +1622,18 @@ class ClassCodeClient:
             )
             return True
         self._run_in_flight = run
+        msg = {
+            "type": "class_code_run",
+            "run_id": run["run_id"],
+            "name": run["name"],
+            "start_key": run["start_key"],
+            "age_seconds": round(age, 3),
+        }
+        # Absent means unknown, as an older relay sends it.
+        if run.get("event"):
+            msg["event"] = run["event"]
         try:
-            await self.on_batch({
-                "type": "class_code_run",
-                "run_id": run["run_id"],
-                "name": run["name"],
-                "start_key": run["start_key"],
-                "age_seconds": round(age, 3),
-            })
+            await self.on_batch(msg)
         except Exception:
             log.exception("Could not forward the started run %s", run["run_id"])
             if self._run is None and not run.get("_stopped"):
