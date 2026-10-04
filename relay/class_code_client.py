@@ -651,7 +651,8 @@ class EntryListParser:
     a tail early.  Rows are found by walking these typed fields — a head,
     then the first tail at or after its end, then the next head after that
     tail — never by string scans keyed on name casing.  Number and class
-    must be non-empty.  A reply whose rows found disagree with its row count
+    must be non-empty, and a tail must read whole, its transponders
+    included.  A reply whose rows found disagree with its row count
     is withheld (*rows* None) rather than forwarded in part.  A transponder
     field holding two, comma-joined, is kept raw.
     """
@@ -739,17 +740,14 @@ def _entry_list_tail(block: bytes, pos: int) -> tuple[list[str], str, str, int] 
             regs.append(cur.printable())
             if cur.byte() != 0:
                 return None
-    except _ShortRecord:
-        return None
-    end = cur.pos
-    try:
         n = cur.u32()
         cur.skip(1 + 4 * n)
         transponder = cur.printable()
-        end = cur.pos
     except _ShortRecord:
-        transponder = ""
-    return extra, regs[0], transponder, end
+        # A row cut short is no row, so the count check withholds the reply:
+        # a list missing a row would withdraw that entrant's code.
+        return None
+    return extra, regs[0], transponder, cur.pos
 
 
 def _entry_list_rows(block: bytes, view_id: int, pos: int) -> list[dict] | None:
@@ -1932,12 +1930,21 @@ class ClassCodeClient:
         # Before the pushes, so a push of the same flush is the newer on the
         # server.
         entry_lists, self._entry_lists = self._entry_lists, {}
+        # Runs whose list failed: their pushes wait for it, so a retried list
+        # never lands after a newer push and overwrites it on the server.
+        deferred: set[str] = set()
         for key, held in entry_lists.items():
             if not await self._deliver_entry_list(held):
                 failed = True
+                deferred.add(key)
                 # Unless a newer one for the run was read meanwhile.
                 self._entry_lists.setdefault(key, held)
         for run_id, by_entrant in pending.items():
+            if run_id.lower() in deferred:
+                kept = self._pending.setdefault(run_id, {})
+                for entrant_id, entry in by_entrant.items():
+                    kept.setdefault(entrant_id, entry)
+                continue
             now = time.monotonic()
             expired = [
                 k for k, e in by_entrant.items() if now - e["_observed"] > MAX_ENTRY_AGE

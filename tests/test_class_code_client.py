@@ -3155,3 +3155,43 @@ async def test_a_failed_entry_list_delivery_is_retried_and_a_newer_one_replaces_
     assert [[e["number"] for e in c["entries"]] for c in calls] == [["8" if newer else "7"]]
     assert calls[0]["entry_list"] is True
     assert client._entry_lists == {}
+
+
+def test_entry_list_parser_withholds_a_reply_with_a_cut_short_transponder(caplog):
+    """A row whose transponders do not read whole is no row, so the reply is
+    withheld rather than forwarded without it — a list missing a row would
+    withdraw that entrant's code on the server."""
+    frame = bytearray(_results_frame(b"\x24\x80", 6, [_entrant("7"), _entrant("8")]))
+    # Row 7's numeric transponder count: one claimed, far more than follow.
+    at = frame.index(_s("d0000007") + b"\x00") + len(_s("d0000007") + b"\x00")
+    frame[at:at + 4] = struct.pack("<I", 100_000)
+    assert ccc.EntryListParser(6).feed(bytes(frame)) == [ccc.EntryListReply(None)]
+    assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_runs_pushes_wait_for_its_failed_entry_list():
+    """A list retried after a newer push was delivered would overwrite that
+    push on the server, so the run's pushes are held back with it."""
+    calls = []
+    failures = [True]
+
+    async def on_batch(msg):
+        if msg.get("entry_list") and failures:
+            failures.pop()
+            raise RuntimeError("server down")
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    client._absorb(
+        _push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TD"))
+        + _push("added", "0x40002806", _fields("e9", "9", "Test Cup", "TE"))
+    )
+    await client._flush()
+    # Another run's pushes still go.
+    assert [c["run_id"] for c in calls] == ["0x40002806"]
+    await client._flush()
+    assert [(c["run_id"], c.get("entry_list", False)) for c in calls[1:]] == [
+        (RUN_ID, True), (RUN_ID, False),
+    ]
+    assert calls[-1]["entries"][0]["class_code"] == "TD"
