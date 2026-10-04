@@ -333,6 +333,10 @@ class RaceState:
             and nxt["name"] != desc
         ):
             # A session it does not name has begun, so it is not the next one.
+            if cur is None and nxt["name"] == self.run_description:
+                # It stood in for the session shown, so it is the previous.
+                self._previous_run = nxt
+                self._previous_boundary = (number, desc)
             self._retire_run(nxt)
             self.class_code_run_next = nxt = None
         if number == "95":

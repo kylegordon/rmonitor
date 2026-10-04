@@ -2820,6 +2820,18 @@ def test_a_run_of_a_different_group_does_not_carry(state, restart_group, carried
     )
 
 
+def test_a_waiting_run_shown_for_its_session_carries_into_a_restart(state):
+    """Its $B came before its start, and the restart's $B follows with no
+    repeat and no 95 between, so it never became the bound run."""
+    _session(state)
+    _started(state)
+    _announce(state, ("Red flag", 100))
+    assert _shown(state) == ["Red flag"]
+    _session(state, RESTART_NAME, number="28")
+    _started(state, RESTART_ID, RESTART_NAME)
+    _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
 def test_a_restart_runs_carry_survives_its_b_repeats_and_an_init(state):
     _restart(state, b_first=True)
     state.process({"type": "init"})
