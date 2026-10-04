@@ -1495,12 +1495,16 @@ def test_a_store_holding_a_record_under_two_spellings_keeps_the_newer(state):
     {"run_id": "0x4000AAAA", "entries": [{"entrant_id": "a0000008", "class_code": ""}]},
     {"run_id": "0x4000AAAA", "entries": [], "entry_list": False},
     {"run_id": "0x4000AAAA", "entries": [], "entry_list": "yes"},
+    {"run_id": "0x4000AAAA", "entries": [{"entrant_id": "a0000008", "class_code": "SC"}]},
+    {"run_id": "0x4000AAAA", "entries": [
+        {"entrant_id": "a0000008", "class_code": "SC", "number": "8"}]},
 ])
 def test_a_malformed_entry_list_withdraws_nothing(state, bad):
     _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
     before = dict(state.class_codes)
     state.process({"type": "class_codes", "entry_list": True} | bad)
-    assert state.class_codes == before
+    # A usable row may still be stored additively; nothing is withdrawn.
+    assert state.class_codes.items() >= before.items()
 
 
 def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):

@@ -618,7 +618,7 @@ class RaceState:
             }
             if entry["entrant_id"] and entry["class_code"]:
                 rows.append((entry, item))
-        # Only an explicit marker on a list whose every row is usable stands as
+        # Only an explicit marker on a list whose every row is whole stands as
         # the run's whole entry list — the relay sends no other kind — so a
         # malformed batch never withdraws the codes already stored.  The
         # marker arrives coerced to a string, so JSON true reads "True".
@@ -627,6 +627,9 @@ class RaceState:
             and bool(run_id)
             and isinstance(entries, list)
             and len(rows) == len(entries)
+            # The relay reads a number and class for every row; one without
+            # either could never be joined.
+            and all(e["number"] and e["class_name"] for e, _ in rows)
         )
         if entry_list:
             stale = [
