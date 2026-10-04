@@ -1211,14 +1211,14 @@ class RaceState:
         return run_id, frozenset(tags)
 
     def prune_expired_class_codes(self) -> bool:
-        """Drop expired pushed codes, preload and started run; return whether any went.
+        """Drop expired pushed codes, preload and started run; return whether the page changed.
 
         A snapshot calls this too, but snapshots run only once something else
         dirtied the state: an idle page would otherwise show a code past its
         TTL.  So the broadcast loop calls it every interval as well, and an
-        expiry from either caller marks the state dirty.  So does a record
-        passing the unscoped read's cutoff since the last call, though it is
-        kept.
+        expiry from either caller marks the state dirty and returns True.  So
+        does a record passing the unscoped read's cutoff since the last call,
+        though it is kept.
         """
         now = time.time()
         expired = self._prune_class_codes(now)
@@ -1550,8 +1550,12 @@ class RaceState:
             "time_of_day": self.time_of_day,
             "time_to_go": self.time_to_go,
             "laps_to_go": self.laps_to_go,
-            "class_codes_available": bool(
-                self.class_codes or self.class_code_preload["has_codes"]
+            # Unscoped, only a meeting day's records are read, so older ones
+            # are no code the page could show (see _resolve_class_codes).
+            "class_codes_available": self.class_code_preload["has_codes"] or any(
+                scope is not None
+                or time.time() - rec["received_at"] <= _CLASS_CODE_TTL_SECONDS
+                for rec in self.class_codes.values()
             ),
             "class_code_missing": class_code_missing,
             "class_code_scope": scope_id,

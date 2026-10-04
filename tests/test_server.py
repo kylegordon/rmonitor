@@ -568,6 +568,8 @@ async def test_a_code_past_the_unscoped_cutoff_is_broadcast_on_an_idle_page(
     assert msg["event"] == "update"
     car = next(e for e in msg["data"]["entries"] if e["reg_number"] == "7")
     assert car["class_code"] == ""
+    # No code the page could show, so no "without a class code" count either.
+    assert msg["data"]["class_codes_available"] is False
     assert state.class_codes
 
 
