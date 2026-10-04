@@ -2820,6 +2820,28 @@ def test_a_run_of_a_different_group_does_not_carry(state, restart_group, carried
     )
 
 
+def test_a_restart_runs_carry_survives_its_b_repeats_and_an_init(state):
+    _restart(state, b_first=True)
+    state.process({"type": "init"})
+    _session(state, RESTART_NAME, number="28")
+    _session(state, RESTART_NAME, number="28")
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
+
+def test_a_restart_does_not_carry_past_a_session_with_no_run(state):
+    """The carry is of the board's previous session only, so a session
+    between with no run bound ends it."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Red flag", 100))
+    _closing(state)
+    _session(state, "Race 8 - Final", number="28")
+    _closing(state, "Race 8 - Final")
+    _session(state, RESTART_NAME, number="29")
+    _started(state, RESTART_ID, RESTART_NAME)
+    _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
+    assert _shown(state) == ["Restart over 5 laps"]
+
 def test_a_run_whose_name_only_shares_a_prefix_does_not_carry(state):
     _started(state)
     _session(state)
@@ -2846,6 +2868,23 @@ def test_a_refreshed_session_keeps_its_announcements_past_the_run_ttl(state, mon
         _announce(state, ("Track clear", 100))
     assert _shown(state) == ["Track clear"]
 
+
+def test_a_closed_run_refreshed_overnight_keeps_its_announcements(state, monkeypatch):
+    """The announcements show until the next session, however long the gap,
+    while the relay keeps refreshing the stopped run."""
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _closing(state)
+    for hours in (2, 4, 6, 8, 10, 12, 14):
+        monkeypatch.setattr(rs.time, "time", lambda h=hours: t0 + h * 3600)
+        _announce(state, ("Track clear", 100))
+        state.prune_expired_class_codes()
+    assert _shown(state) == ["Track clear"]
 
 def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
     import server.race_state as rs

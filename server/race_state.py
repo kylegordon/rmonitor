@@ -66,8 +66,9 @@ _CLASS_CODE_TTL_SECONDS = 12 * 3600
 # How often an announcements refresh renews its started run's date, at most;
 # each renewal makes the periodic save rewrite the class-code store.
 _RUN_RENEW_SECONDS = 3600
-# Runs whose announcements are kept: the current and the waiting one, with
-# room for a stop's clear arriving late.
+# Runs whose announcements are kept: the previous one, carried into a restart
+# run (see RaceState._carried_run), the current and the waiting one, and one
+# spare.
 _MAX_ANNOUNCED_RUNS = 4
 
 # The registry fields a ``class_codes`` entry carries, all strings.
@@ -186,9 +187,12 @@ class RaceState:
         self.announcements: dict[str, list[dict]] = {}
         # The run the last session boundary discarded — the board's previous
         # session — used only to carry its announcements into a restart run;
-        # see _carried_run.  Not in reset(), for the reason above, and not
+        # see _carried_run.  With the $B number and description of that
+        # boundary, so a later session with no run bound ends it, but its own
+        # $B repeats do not.  Not in reset(), for the reason above, and not
         # saved, as the announcements are not.
         self._previous_run: dict | None = None
+        self._previous_boundary: tuple[str, str] | None = None
         self.reset()
 
     def reset(self):
@@ -351,6 +355,10 @@ class RaceState:
             if cur is not None:
                 self._retire_run(cur)
                 self._previous_run = cur
+                self._previous_boundary = (number, desc)
+            elif (number, desc) != self._previous_boundary:
+                # A session with no run bound is the board's previous one now.
+                self._previous_run = None
             if nxt is not None and nxt["name"] == desc:
                 self.class_code_run = nxt | {"session_number": number}
                 self.class_code_run_next = None
@@ -973,12 +981,15 @@ class RaceState:
         return False
 
     def _renew_started_run(self, run_id: str) -> None:
-        """Re-date the held started run *run_id* as read now, at most hourly."""
+        """Re-date the held started run *run_id* as read now, at most hourly.
+
+        A closed run too: its announcements show until the next session, and
+        the relay keeps refreshing it until then, overnight included.
+        """
         now = time.time()
         for run in (self.class_code_run, self.class_code_run_next):
             if (
                 run is not None
-                and not run.get("closed")
                 and run["run_id"].lower() == run_id.lower()
                 and now - run["received_at"] > _RUN_RENEW_SECONDS
             ):
@@ -1002,10 +1013,10 @@ class RaceState:
         run, or the description no longer names it).  Unless *through_close*
         — as for the announcements, which race control posts after a stop —
         the session's closing ``$B,95`` (through ``_run_number``) hides it
-        too, whichever comes first; the race name hides there.  The relay no
-        longer clears a run's rows on its stop.  :meth:`reset` is not a
-        boundary, because ``$I`` is emitted inconsistently; after it an empty
-        description hides the run until ``$B`` repopulates.
+        too, whichever comes first; the race name hides there.
+        :meth:`reset` is not a boundary, because ``$I`` is emitted
+        inconsistently; after it an empty description hides the run until
+        ``$B`` repopulates.
         """
         run = self.class_code_run
         if run is None:
@@ -1018,6 +1029,9 @@ class RaceState:
 
     def _carried_run(self, run: dict) -> dict | None:
         """Return the previous session's run when *run* restarts it, or *None*.
+
+        Only the board's immediately previous session's: a session between
+        them, with or without a run bound, ends the carry.
 
         Race control restarts a race stopped after laps were run as a new
         run, named the old one's name followed by ``" - "`` — "Re-Start" and
