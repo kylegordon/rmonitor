@@ -12,10 +12,10 @@ overwritten by a placeholder, as its README describes.
 """
 
 import asyncio
-import time
 import json
 import re
 import struct
+import time
 from pathlib import Path
 
 import pytest
@@ -1274,6 +1274,23 @@ async def test_stale_held_records_never_take_a_fresh_run_table_with_them(monkeyp
     assert msg["entries"] == []
     assert msg["runs"] == runs
     assert msg["age_seconds"] == msg["runs_age_seconds"] < 5
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preload_delivery_keeps_both_read_times_for_its_retry():
+    async def on_batch(msg):
+        raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    now = time.monotonic()
+    runs = [{"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"}]
+    held = {
+        "entries": REGISTRY_ENTRIES, "runs": runs,
+        "_observed": now - 3600, "_runs_observed": now - 60,
+    }
+    assert await client._deliver_preload(held) is False
+    assert client._preload["_observed"] == held["_observed"]
+    assert client._preload["_runs_observed"] == held["_runs_observed"]
 
 
 @pytest.mark.asyncio

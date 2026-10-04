@@ -2026,19 +2026,18 @@ class ClassCodeClient:
         age = now - preload["_observed"]
         runs_age = now - preload.get("_runs_observed", preload["_observed"])
         entries, runs = preload["entries"], preload.get("runs", [])
-        if entries and age > MAX_ENTRY_AGE:
-            log.warning(
-                "Dropping an undelivered class-code registry – older than %.0fh",
-                MAX_ENTRY_AGE / 3600,
-            )
+        stale = entries and age > MAX_ENTRY_AGE
+        if stale:
             entries = []
         if runs and runs_age > MAX_ENTRY_AGE:
             runs = []
-        if not entries and not runs:
+        if stale or not (entries or runs):
             log.warning(
-                "Dropping an undelivered class-code preload – older than %.0fh",
+                "Dropping an undelivered class-code %s – older than %.0fh",
+                "preload" if not (entries or runs) else "registry",
                 MAX_ENTRY_AGE / 3600,
             )
+        if not (entries or runs):
             return True
         preload = preload | {"entries": entries, "runs": runs}
         log.info("Forwarding a class-code preload of %d records", len(entries))
