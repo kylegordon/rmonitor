@@ -56,3 +56,17 @@ delete push still carries the deleted row, so no push is read as the table. A pu
 the client subscribe again on a new view, and that reply is forwarded. Guarded by
 `test_a_delete_push_triggers_a_resubscribe_whose_reply_is_the_truth` and
 `test_the_reply_to_a_resubscribe_does_not_trigger_another` in `tests/test_class_code_client.py`.
+
+## The entry list rides the held connection, as a snapshot
+
+The running run's results view lists every entrant with the code the timing host holds, so it
+fills codes no push carried. It is subscribed only on the held `:51738` connection, never on one
+of its own, and an unanswered subscription is retried on that same socket: every connect raises an
+operator notice, so a per-run or per-retry connection would be a stream of them. Its reply is
+taken once and the view closed, because an open results view streams the whole table about once a
+second; a slow refresh catches mid-run edits. The code comes only from the host's own code field,
+and a reply whose rows disagree with its count is withheld. Guarded by
+`test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection`,
+`test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows` and
+`test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees` in
+`tests/test_class_code_client.py`.
