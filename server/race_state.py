@@ -67,11 +67,10 @@ _CLASS_CODE_TTL_SECONDS = 12 * 3600
 # How long every ``class_codes`` record, pushed or listed, stays joinable
 # after its push.  Thirty-six hours spans a two-day meeting, whose grids are
 # often built on day 1 and raced on day 2.  Transponders are reused across
-# meetings; group scope keeps another meeting's records out, but an
-# unscoped read (no run known) admits a day-old one.  That is an accepted
-# risk, and not a guarded one: the distinct-code rule guards only layer 2, so
-# a transponder reused in a same-named class at another meeting within the
-# TTL can give layer 1 that meeting's code (see _resolve_class_codes).
+# meetings; group scope keeps another meeting's records out, and an
+# unscoped read (no run known) reads only those within
+# _CLASS_CODE_TTL_SECONDS, as nothing else would keep a day-old meeting's
+# code off a reused transponder (see _resolve_class_codes).
 _PUSHED_CODE_TTL_SECONDS = 36 * 3600
 # How often an announcements refresh renews its started run's date, at most;
 # each renewal makes the periodic save rewrite the class-code store.
@@ -1319,7 +1318,9 @@ class RaceState:
         arriving before its scope is known is filtered once it is.  Pushes
         from other runs are other meetings' or finished runs' edits, not
         this session's entries.  ``0x80000000`` tags every push, so it is
-        never a scope.  *None* keeps every push.
+        never a scope.  *None* keeps every push within
+        :data:`_CLASS_CODE_TTL_SECONDS`: unscoped, a record of another
+        meeting on a reused transponder could otherwise win layer 1.
 
         Within the scope, the running run's latest entry list is the host's
         view of the run as of its date in ``class_code_lists``, so every
@@ -1343,9 +1344,14 @@ class RaceState:
         pushed_class: dict[str, set[str]] = {}
         running = scope[0].lower() if scope is not None else None
         list_at = self.class_code_lists.get(running) if running is not None else None
+        now = time.time()
         for key, rec in self.class_codes.items():
             run = key.split("\t", 1)[0].lower()
             if scope is not None and run not in scope[1]:
+                continue
+            # Unscoped, nothing keeps another meeting's records out, so only
+            # a meeting day's are read; the longer life is for group scope.
+            if scope is None and now - rec["received_at"] > _CLASS_CODE_TTL_SECONDS:
                 continue
             if (
                 list_at is not None
@@ -1762,7 +1768,7 @@ class RaceState:
         self.class_code_lists = _restore_list_dates(saved_lists, now)
         if saved_lists is None:
             # A store saved before list dates were kept: date each run's list
-            # by its newest row, as the server did then.
+            # by its newest row, the best date its rows can give.
             for key, rec in self.class_codes.items():
                 if rec.get("origin") == _ENTRY_LIST_ORIGIN:
                     run = key.split("\t", 1)[0]

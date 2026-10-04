@@ -2512,7 +2512,9 @@ def test_a_nameless_run_gives_its_group_but_is_never_picked_by_name(state):
 
 
 def test_class_code_records_survive_past_twelve_hours_but_not_past_thirty_six(state, monkeypatch):
-    """A two-day meeting's grids are often built on day 1 and raced on day 2."""
+    """A two-day meeting's grids are often built on day 1 and raced on day 2,
+    so records are kept 36 h; but an unscoped read, which nothing keeps from
+    another meeting's records, reads only a meeting day's."""
     import server.race_state as rs
 
     now = [1_000_000.0]
@@ -2522,10 +2524,14 @@ def test_class_code_records_survive_past_twelve_hours_but_not_past_thirty_six(st
     _preload(state, _pre("9999999", "Unused Class", "UC"))
     _codes(state, "0x4000AAAA", _code_entry("e7", "7", "Saloon Cup", "SC", "1234567"))
     _entry_list(state, "0x4000BBBB", _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321"))
-    now[0] += 13 * 3600
     snap = state.snapshot()
     assert _entry_for(snap, "7")["class_code"] == "SC"
     assert _entry_for(snap, "8")["class_code"] == "SC"
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    snap = state.snapshot()
+    assert len(state.class_codes) == 2
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == ""
     # The preload keeps its own, shorter life.
     assert state.class_code_preload["received_at"] is None
     now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
