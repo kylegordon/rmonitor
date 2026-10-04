@@ -58,5 +58,5 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check AGENTS.md, CLAUDE.md and the Copilot pointer
+      - name: Check the agent instruction files, skills and role agents
         run: python .github/scripts/check_agents_md.py

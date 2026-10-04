@@ -8,11 +8,14 @@ were mechanically detectable, and this script detects them: it asserts that ever
 repo-relative path and every environment variable named in the instruction files is
 real, that the ``@AGENTS.md`` import the no-duplication design rests on is intact,
 that the Copilot pointer has not regrown into a second full copy, that every scoped
-``AGENTS.md`` has the ``CLAUDE.md`` shim that makes Claude Code see it, and that the
-instruction set an agent carries on every task stays inside its length budget.
+``AGENTS.md`` has the ``CLAUDE.md`` shim that makes Claude Code see it, that the
+instruction set an agent carries on every task stays inside its length budget, and
+that the on-demand skills in ``.claude/skills/`` and the thin role agents in
+``.claude/agents/`` are well-formed and inside theirs.
 
 Stdlib only, deliberately.  Adding a dependency for a documentation check would break
-the very rule this file exists to protect (``AGENTS.md`` pitfall 11).
+the very rule this file exists to protect (the dependency rule in ``AGENTS.md``'s
+Never list).
 
 Run with no arguments to check and exit non-zero on drift.  Run with ``--annotate``
 to write the findings into the drift-report region of ``AGENTS.md`` instead, which is
@@ -34,17 +37,53 @@ ROOT_INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", ".github/copilot-instruction
 #: Budget for the *eagerly loaded* set — ``CLAUDE.md`` plus everything it reaches
 #: through ``@`` imports, which Claude Code resolves up front.  Budgeting the root
 #: ``AGENTS.md`` alone was gameable: moving a section behind an ``@`` import satisfies a
-#: per-file limit while costing an agent exactly as much context as before.
-#: https://code.claude.com/docs/en/memory targets "under 200 lines"; that number is a
-#: proxy for an attention budget, so it has to be measured over everything actually in
-#: front of the agent on every task, not over one file.
-MAX_EAGER_LINES = 200
+#: per-file limit while costing an agent exactly as much context as before.  Cut from
+#: 200 to 60 when the domain and process knowledge moved into skills, which load only
+#: when a task needs them: every eager line is paid again by every spawned subagent,
+#: whatever its task, so the eager set holds only what applies to all of them.
+MAX_EAGER_LINES = 60
 
 #: Budget for one scoped ``AGENTS.md``, loaded only when an agent works in that
 #: directory.  Smaller than the eager budget on purpose: a scoped file needing more
 #: than this is describing a subsystem, and the subsystem's own docstrings are where
 #: that belongs.
 MAX_SCOPED_LINES = 80
+
+#: Budget for one skill's ``SKILL.md``.  The body loads whole when the skill fires, so
+#: a longer one belongs in a supporting file beside it, read only when needed, or in
+#: the docstring of the code it describes.
+MAX_SKILL_LINES = 150
+
+#: Budget for one role agent.  Agents are deliberately thin — a role, a finish line
+#: and a ``skills:`` preload — because knowledge in an agent body is a Claude-only copy
+#: that Copilot never reads.
+MAX_AGENT_LINES = 40
+
+#: Claude Code truncates a skill's ``description`` plus ``when_to_use`` in the skill
+#: listing at this many characters, so anything past it never reaches the model that
+#: decides whether to load the skill.
+MAX_SKILL_DESCRIPTION_CHARS = 1536
+
+#: Where project skills and role agents live.
+SKILLS_DIR = ".claude/skills"
+AGENTS_DIR = ".claude/agents"
+
+#: The role agents root ``AGENTS.md`` promises.  Discovery alone cannot notice one
+#: being deleted — there is no file left to check — so they are listed here, and
+#: ``check_named_skills_and_agents`` asserts both that each exists and that
+#: ``AGENTS.md`` still names it, so neither list can drift from the other silently.
+ROLE_AGENTS = ("programmer", "tester", "docs-keeper", "reviewer")
+
+#: A backtick span of this form in an instruction file names a project skill, and
+#: must therefore have a ``SKILL.md``: every project skill is ``rmonitor-*`` or the one
+#: ``rpi-artifacts``, which is what lets a deleted or renamed skill be caught by its
+#: citations.  Not ``rpi-*`` as a whole: the other RPI phase skills are user-level, not
+#: this repository's, and naming one in an instruction file is legitimate.
+_SKILL_NAME_RE = re.compile(r"^(?:rmonitor-[a-z0-9]+(?:-[a-z0-9]+)*|rpi-artifacts)$")
+
+#: A YAML block-scalar header: ``|`` or ``>``, an optional indent digit and chomping
+#: indicator in either order, and an optional trailing comment.
+_BLOCK_SCALAR_RE = re.compile(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:\s+#.*)?\s*")
 
 #: Maximum depth Claude Code follows ``@`` imports.
 MAX_IMPORT_DEPTH = 5
@@ -57,10 +96,10 @@ MAX_COPILOT_LINES = 20
 ALLOWED_MISSING_PATHS = frozenset(
     {
         # The RPI phase artifacts are deliberately local and git-ignored, so a CI
-        # checkout never has them.  CLAUDE.md names the directory precisely to say
-        # that committed docs must not cite paths inside it.
+        # checkout never has them.  AGENTS.md and the rpi-artifacts skill name the
+        # directory precisely to say that committed docs must not cite paths inside it.
         ".rpi-tracking/",
-        # AGENTS.md names conftest.py in order to say there isn't one, which is why
+        # tests/AGENTS.md names conftest.py in order to say there isn't one, which is why
         # every async test has to carry its own pytest.mark.asyncio.  Its absence is
         # the documented fact; asserting its presence would invert the check.
         "conftest.py",
@@ -106,6 +145,12 @@ DRIFT_START = "<!-- drift-report:start -->"
 DRIFT_END = "<!-- drift-report:end -->"
 
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "build", "dist"}
+
+#: Repo-relative prefixes never scanned for instruction files.  The harness leaves
+#: whole copies of the repository under ``.claude/worktrees/``; they are other
+#: checkouts' files, not this one's.  ``.claude`` itself is not skipped, because the
+#: skills and role agents live under it.
+_SKIP_PREFIXES = (".claude/worktrees/",)
 
 
 def repo_root() -> Path:
@@ -180,17 +225,104 @@ def looks_like_path(token: str, root: Path) -> str | None:
 def instruction_files(root: Path) -> list[str]:
     """Return every instruction file in the repo, root and scoped alike.
 
-    Scoped files are discovered rather than listed, so a new ``server/AGENTS.md`` is
-    checked for stale paths from the moment it is committed and nobody has to remember
-    to register it here.
+    Scoped files, skills and role agents are discovered rather than listed, so a new
+    ``server/AGENTS.md`` or skill is checked for stale paths from the moment it is
+    committed and nobody has to remember to register it here.
     """
     names = list(ROOT_INSTRUCTION_FILES)
     for path in sorted(root.rglob("AGENTS.md")) + sorted(root.rglob("CLAUDE.md")):
         rel = path.relative_to(root)
         if len(rel.parts) == 1 or set(rel.parts) & _SKIP_DIRS:
             continue
+        if rel.as_posix().startswith(_SKIP_PREFIXES):
+            continue
         names.append(rel.as_posix())
+    names.extend(skill_files(root))
+    names.extend(role_agent_files(root))
     return names
+
+
+def skill_files(root: Path) -> list[str]:
+    """Return every ``.claude/skills/*/SKILL.md``, repo-relative and sorted."""
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted((root / SKILLS_DIR).glob("*/SKILL.md"))
+    ]
+
+
+def role_agent_files(root: Path) -> list[str]:
+    """Return every ``.claude/agents/*.md``, repo-relative and sorted."""
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted((root / AGENTS_DIR).glob("*.md"))
+    ]
+
+
+def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str] | None:
+    """Return the frontmatter mapping of *text* and the body after it.
+
+    Returns ``None`` when *text* does not open with a ``---`` line closed by another.
+    This is a deliberate subset of YAML — ``key: value`` scalars with matching
+    surrounding quotes stripped, a ``key:`` line followed by ``  - item`` lines, an
+    inline ``key: [a, b]`` list, and ``|`` / ``>`` block scalars, folded to one string;
+    anything else stays a raw string — because the check is stdlib only and the files
+    it reads are written to this subset.  Block scalars are read rather than left raw
+    because a long folded ``description`` is exactly what the truncation check is for.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration:
+        return None
+    fields: dict[str, str | list[str]] = {}
+    current: str | None = None
+    block: tuple[str, str, list[str]] | None = None  # (key, style, lines)
+
+    def close_block() -> None:
+        if block is not None:
+            key, style, parts = block
+            fields[key] = ("\n" if style == "|" else " ").join(parts).strip()
+
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if block is not None and (not stripped or line[:1].isspace()):
+            if stripped:
+                block[2].append(stripped)
+            continue
+        close_block()
+        block = None
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- ") and current is not None:
+            items = fields[current]
+            if isinstance(items, list):
+                items.append(_unquote(stripped[2:].strip()))
+            continue
+        key, sep, value = line.partition(":")
+        if not sep or line[:1].isspace():
+            continue
+        key, value = key.strip(), value.strip()
+        current = None
+        if not value:
+            fields[key] = []
+            current = key
+        elif _BLOCK_SCALAR_RE.fullmatch(value):
+            block = (key, value[0], [])
+        elif value.startswith("[") and value.endswith("]"):
+            fields[key] = [_unquote(v.strip()) for v in value[1:-1].split(",") if v.strip()]
+        else:
+            fields[key] = _unquote(value)
+    close_block()
+    return fields, "\n".join(lines[end + 1 :])
+
+
+def _unquote(value: str) -> str:
+    """Strip one pair of matching surrounding quotes from *value*."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
 
 
 def strip_drift_region(text: str) -> str:
@@ -416,6 +548,186 @@ def check_nested_shims(root: Path) -> list[str]:
     return findings
 
 
+def _as_text(value: str | list[str] | None) -> str:
+    """Return a frontmatter value as one string; a list is joined, ``None`` is empty."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(value)
+    return value
+
+
+def _pattern_matches(root: Path, pattern: str) -> bool:
+    """Return whether the glob *pattern* matches any file of this checkout.
+
+    Files only: Claude Code loads a skill for a file being worked on, so a pattern
+    matching nothing but an empty directory never fires.
+    """
+    # A trailing ``**`` means every file beneath to Claude Code, but before Python 3.13
+    # ``Path.glob`` matches only directories with it, so spell the files out.
+    if pattern.endswith("**"):
+        pattern += "/*"
+    try:
+        matches = root.glob(pattern)
+        return any(
+            m.is_file()
+            and not set(m.relative_to(root).parts) & _SKIP_DIRS
+            and not m.relative_to(root).as_posix().startswith(_SKIP_PREFIXES)
+            for m in matches
+        )
+    except (ValueError, NotImplementedError):  # absolute or otherwise unusable
+        return False
+
+
+def check_skills(root: Path) -> list[str]:
+    """Assert every project skill is well-formed and inside its budgets.
+
+    A skill fires on its ``description`` alone, so a missing or truncated one is a
+    skill that never loads, and a ``name`` that differs from its directory is a skill
+    invoked by a name nobody can find.
+    """
+    findings: list[str] = []
+    skills = root / SKILLS_DIR
+    if not skills.is_dir():
+        return findings
+    for directory in sorted(p for p in skills.iterdir() if p.is_dir()):
+        name = (directory / "SKILL.md").relative_to(root).as_posix()
+        if not (directory / "SKILL.md").is_file():
+            findings.append(f"{name}: missing — the skill directory has no SKILL.md")
+            continue
+        text = (directory / "SKILL.md").read_text(encoding="utf-8")
+        parsed = parse_frontmatter(text)
+        if parsed is None:
+            findings.append(f"{name}: no `---` frontmatter, so the skill cannot load")
+            continue
+        fields, _ = parsed
+        if _as_text(fields.get("name")) != directory.name:
+            findings.append(
+                f"{name}: frontmatter name `{_as_text(fields.get('name'))}` does not "
+                f"match its directory `{directory.name}`"
+            )
+        description = _as_text(fields.get("description"))
+        if not description.strip():
+            findings.append(f"{name}: empty description, so the skill never fires")
+        chars = len(description) + len(_as_text(fields.get("when_to_use")))
+        if chars > MAX_SKILL_DESCRIPTION_CHARS:
+            findings.append(
+                f"{name}: description is {chars} characters, over the "
+                f"{MAX_SKILL_DESCRIPTION_CHARS} the skill listing truncates at"
+            )
+        if not _SKILL_NAME_RE.match(directory.name):
+            findings.append(
+                f"{name}: skill directory `{directory.name}` is not named `rmonitor-*`, "
+                "so citations of it cannot be checked"
+            )
+        patterns = fields.get("paths", [])
+        if isinstance(patterns, str):
+            patterns = [p.strip() for p in patterns.split(",") if p.strip()]
+        for pattern in patterns:
+            if not _pattern_matches(root, pattern):
+                findings.append(
+                    f"{name}: `paths` pattern `{pattern}` matches no file, so the skill "
+                    "never auto-loads for it"
+                )
+        count = len(text.splitlines())
+        if count >= MAX_SKILL_LINES:
+            findings.append(
+                f"{name}: {count} lines, at or over the {MAX_SKILL_LINES}-line skill "
+                "budget — move detail into a supporting file beside SKILL.md or into the "
+                "docstring of the code it describes"
+            )
+    return findings
+
+
+def check_role_agents(root: Path) -> list[str]:
+    """Assert every role agent is thin and preloads only skills that exist.
+
+    Agents are deliberately thin: knowledge in an agent body is a Claude-only copy that
+    Copilot never reads, so an agent carries a role and a ``skills:`` preload and the
+    knowledge itself lives in the skills.
+    """
+    findings: list[str] = []
+    for name in role_agent_files(root):
+        path = root / name
+        text = path.read_text(encoding="utf-8")
+        parsed = parse_frontmatter(text)
+        if parsed is None:
+            findings.append(f"{name}: no `---` frontmatter, so the agent cannot load")
+            continue
+        fields, _ = parsed
+        if _as_text(fields.get("name")) != path.stem:
+            findings.append(
+                f"{name}: frontmatter name `{_as_text(fields.get('name'))}` does not "
+                f"match its file `{path.stem}`"
+            )
+        if not _as_text(fields.get("description")).strip():
+            findings.append(f"{name}: empty description, so nothing delegates to it")
+        count = len(text.splitlines())
+        if count >= MAX_AGENT_LINES:
+            findings.append(
+                f"{name}: {count} lines, at or over the {MAX_AGENT_LINES}-line agent "
+                "budget — agents stay thin; put the knowledge in a skill it preloads"
+            )
+        skills = fields.get("skills", [])
+        if isinstance(skills, str):
+            skills = [s.strip() for s in skills.split(",") if s.strip()]
+        if not skills:
+            findings.append(
+                f"{name}: preloads no skills, so the role carries none of the topic "
+                "knowledge it exists to apply"
+            )
+        for skill in skills:
+            if not (root / SKILLS_DIR / skill / "SKILL.md").is_file():
+                findings.append(
+                    f"{name}: preloads skill `{skill}`, which has no "
+                    f"{SKILLS_DIR}/{skill}/SKILL.md"
+                )
+    return findings
+
+
+def check_named_skills_and_agents(root: Path) -> list[str]:
+    """Assert every skill an instruction file cites, and every promised role agent, exists.
+
+    The skill and agent checks are discovery-only: they validate the files that are
+    there, so on their own they pass when a file ``AGENTS.md`` points an agent at has
+    been deleted, leaving the instructions naming nothing.
+    """
+    findings: list[str] = []
+    for name in instruction_files(root):
+        path = root / name
+        if not path.is_file():
+            continue  # already reported by check_paths
+        prose, _ = split_fences(path.read_text(encoding="utf-8"))
+        for span in sorted(set(backtick_spans(prose))):
+            if not _SKILL_NAME_RE.match(span):
+                continue
+            if not (root / SKILLS_DIR / span / "SKILL.md").is_file():
+                findings.append(
+                    f"{name}: names skill `{span}`, which has no {SKILLS_DIR}/{span}/SKILL.md"
+                )
+    agents = root / "AGENTS.md"
+    if not agents.is_file():
+        return findings  # already reported by check_claude_import
+    spans = set(backtick_spans(agents.read_text(encoding="utf-8")))
+    for name in role_agent_files(root):
+        if Path(name).stem not in ROLE_AGENTS:
+            findings.append(
+                f"{name}: not in ROLE_AGENTS in check_agents_md.py — a new role is "
+                "added to both, and named in AGENTS.md"
+            )
+    for role in ROLE_AGENTS:
+        if not (root / AGENTS_DIR / f"{role}.md").is_file():
+            findings.append(
+                f"{AGENTS_DIR}/{role}.md: missing — AGENTS.md promises this role agent"
+            )
+        if role not in spans:
+            findings.append(
+                f"AGENTS.md: no longer names role agent `{role}`; drop it from "
+                "ROLE_AGENTS in check_agents_md.py or name it again"
+            )
+    return findings
+
+
 def run_checks(root: Path) -> list[str]:
     """Run every check and return all findings, not merely the first."""
     findings: list[str] = []
@@ -425,6 +737,9 @@ def run_checks(root: Path) -> list[str]:
         check_nested_shims,
         check_eager_budget,
         check_scoped_budgets,
+        check_skills,
+        check_role_agents,
+        check_named_skills_and_agents,
         check_paths,
         check_env_names,
     ):

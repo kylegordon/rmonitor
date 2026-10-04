@@ -1,177 +1,56 @@
 # AGENTS.md — rmonitor
 
-Canonical instructions for every coding agent here. Claude Code reads them through the `@AGENTS.md`
-import in `CLAUDE.md`; `.github/copilot-instructions.md` points here. **Edit this file, never a
-copy** — two divergent copies is the one genuinely undefined configuration.
+Canonical instructions for every coding agent (Claude Code via `CLAUDE.md`, Copilot directly).
+**Edit this file, never a copy.** Every line of code here is agent-authored, so the test suite and
+the traps below are the only safety net: turn anything learned the hard way into a guard test.
 
-## Every line of code here is agent-authored
+## Always
 
-Humans task and review; they do not write the code. No human will catch a subtle bug by having
-written the surrounding code, so **the test suite and the pitfalls list below are the only safety
-net.** Hence the strictness: run the tests, obey the boundaries, and add what you learn the hard
-way to the pitfalls list in the same PR.
+- `git fetch origin`, branch from `origin/master` and land every change through a PR, with
+  Conventional Commits scoped relay/server/release/ci/deploy/agents. Load `rmonitor-pr` to commit.
+- Run the full suite with `./test.sh` (extra arguments go to pytest) before opening any PR.
+  Load `rmonitor-testing` before writing tests or touching tests, workflows or dependencies.
+- Code style (no linter exists): match the head of `server/race_state.py` — PEP 8, 4-space indent,
+  type hints on public functions, reST docstrings, keyword-only parameters after `*`, double quotes
+  in tests, `logging.getLogger(__name__)` (the named loggers elsewhere aren't the model). Settings
+  use `os.environ.get("NAME", "default")`, as in `relay/main.py` and `server/main.py`.
+- Non-trivial work goes through the RPI phases; load `rpi-artifacts` when running one.
+- Changing a command, environment variable, workflow, layout, skill or instruction file: load
+  `rmonitor-agent-docs` and update the instructions in the same PR.
 
-## Git workflow — MANDATORY
+## Ask first
 
-**All changes must go through a pull request. Never commit directly to `master`.**
+- New linter, formatter, tooling or runtime; any change to `.github/workflows/release.yml`,
+  `.github/workflows/publish.yml` or rMonitor parser public behaviour.
 
-1. **Fetch first:** `git fetch origin` — always, before branching or pushing.
-2. **Branch:** `git checkout -b <type>/<slug> origin/master`. Types in use: feat, fix, docs, ci,
-   chore; an issue-linked slug is fine (`issue-69-centre-empty-state`).
-3. Commit on the branch, using **Conventional Commits with a scope** —
-   `fix(server): centre empty-state message`. Scopes: relay, server, release, ci, deploy, agents.
-4. **Check PR status before pushing:** `gh pr list --head <branch>` — if a PR for this branch
-   already exists and is merged or closed, branch again rather than reusing it.
-5. **Push, then open the PR:** `git push -u origin <branch>` and
-   `gh pr create --base master --fill`.
-6. Do **not** merge or push to `master` directly under any circumstances.
+## Never
 
-This applies to every change, no matter how small. Never hand-write a commit whose subject begins
-`chore(master): release ` — `.github/workflows/release.yml` gates on that literal string.
+- Commit or push to `master`, or hand-write a commit subject beginning `chore(master): release `.
+- pip-install, run tests or start the app on the host. Everything runs in Docker.
+- Put a dependency anywhere but the scope-matching `requirements*.txt` (never a workflow's inline
+  `pip install`); use `xvfb-run`; commit secrets (`.env` is gitignored; `.env.example` holds
+  placeholders only).
+- Cite a `.rpi-tracking/` path in anything committed. It is local and git-ignored.
 
-## Commands — the full test suite, required before opening any PR
+## Where knowledge lives
 
-Everything runs in a container built from `tests/Dockerfile` — never pip-install or run
-tests on the host.
+Layout and configuration: `README.md`. Directory rules: `relay/AGENTS.md`, `server/AGENTS.md`,
+`tests/AGENTS.md`. Topic knowledge: skills in `.claude/skills/`. Role subagents in
+`.claude/agents/` (`programmer`, `tester`, `docs-keeper`, `reviewer`) only preload those skills.
 
-```sh
-./test.sh                                    # whole suite
-./test.sh tests/test_gui.py -v               # one file
-./test.sh tests/test_gui.py::<test name> -v  # one test
-PYTHON_VERSION=3.13 ./test.sh                # the other interpreter CI gates
-```
+## Traps: know these before you open a file — each names its skill and one guard test
 
-`test.sh` rebuilds the image (warm rebuild ~0.25s), maps your uid/gid on Linux so nothing
-comes back root-owned, and runs pytest via `tests/entrypoint.sh`. Three details:
-
-- **Xvfb is started by the entrypoint, never via the `xvfb-run` wrapper**, whose
-  wait-for-display poll this repo has twice seen hang indefinitely.
-- **`REQUIRE_DISPLAY=1` is baked into the image**, so `tests/test_gui.py` fails rather
-  than skips when a display is missing. A local run is the same 678 tests CI runs.
-- **Both interpreters are reachable locally** — the fence's last line switches to the
-  3.13 matrix leg, so it is reproducible here rather than CI-only.
-
-`.github/workflows/tests.yml` builds and runs this same image across both matrix legs —
-one definition of the test environment. To run the app, see `README.md` §Quick start.
-
-## Project structure and configuration
-
-See `README.md` §Architecture for the layout and §Configuration for the environment-variable
-reference. Neither is restated here: both are derivable from the code, and every instance of
-documentation drift this repo has had was in restated derivable content. Environment values use a
-uniform `os.environ.get("NAME", "default")` idiom in `relay/main.py`, `server/main.py` and
-`server/server.py`; `relay/gui.py` merges a `.env` file into the environment *before* importing
-`relay.main`, so that import order is load-bearing.
-
-## Code style
-
-No linter or formatter config exists, so style is convention-enforced: read the head of
-`server/race_state.py` and match it. PEP 8, 4-space indent, double-quoted strings in tests, type
-hints on public functions, reST markup in docstrings, keyword-only parameters after `*`
-(`relay/rmonitor_client.py`). `relay/main.py`'s *named* logger is an inconsistency, not the model
-to copy.
-
-## Dependencies
-
-Add a new import's package to the scope-matching `requirements*.txt` — `relay/requirements.txt`
-(headless runtime), `relay/requirements-build.txt` (GUI/PyInstaller), `requirements-dev.txt` (test
-tooling), `server/requirements.txt` — **never** a workflow's inline `pip install`; see pitfall 11.
-
-## Boundaries
-
-- **Always** — run the full suite in Docker before opening a PR; update this file in the same PR
-  as the change that dates it.
-- **Ask first** — adding a linter, formatter, or any new tooling or runtime; changing
-  `.github/workflows/release.yml` or `.github/workflows/publish.yml`; changing rMonitor parser
-  public behaviour.
-- **Never** — commit to `master`; commit secrets (`.env` is gitignored, `.env.example` holds
-  placeholders only); add a dependency to a workflow's inline `pip install`; use `xvfb-run` here.
-
-## Keeping this file current
-
-A PR that changes a command, an environment variable, a workflow or the project layout **updates
-this file in the same PR**, and an agent that hits a non-obvious failure **adds it to the pitfalls
-list in the same PR** — the only way this memory grows. `./test.sh` and CI check the mechanical half
-(referenced paths and environment variables are real, budgets hold); the prose half is on you.
-
-Growth needs a matching drain, or any budget is only a deferred failure. So **every pitfall entry
-names the test that guards it**. Prose cannot fail; a rule with no test is a rule an agent breaks
-silently while CI stays green, which in a repository nobody hand-writes is the same as no rule at
-all. Write that test in the same PR — `tests/test_repo_invariants.py` is where the ones about the
-repository's shape live. What an entry then keeps is only what a test cannot tell you: that the
-rule exists, and why. The history of how it was discovered belongs in the test's docstring, and is
-deleted from here once it lives there.
-
-This file has a hard length budget, because it is loaded in full on every task whatever the task
-is. So it holds only what applies to every task. A rule that applies to one directory goes in that
-directory's `AGENTS.md` — `server/AGENTS.md`, `tests/AGENTS.md` — beside a one-line `CLAUDE.md`
-shim that imports it, which is the only way Claude Code sees a file by that name; CI fails if a
-scoped `AGENTS.md` is missing its shim. A detail that belongs to one function goes in that
-function's docstring and is not repeated anywhere. **Nothing is ever copied.** Two divergent
-copies is the one genuinely undefined configuration, and `.github/instructions/*.instructions.md`
-is deliberately unused for the same reason: a second mechanism Copilot reads alongside this one,
-with no defined precedence between them, is that trap wearing a different hat.
-
-Moving a section behind an `@` import is not a way to meet the budget. Claude Code resolves those
-imports up front, so the check measures the whole eagerly loaded set and an import buys nothing.
-
-## Common pitfalls and workarounds
-
-Every entry here is a fact you need *before* you know which file to open. Where a detail belongs
-to one function it lives in that function's docstring and is deliberately not repeated here.
-
-1. **`reg_number` vs `number`**: `reg_number` is the internal registration key (e.g. `"21"`);
-   `number` is the displayed car number, possibly with letters (`"12X"`). Always key competitor
-   dicts by `reg_number`. `RaceState._competitor` also skips empty incoming values rather than
-   blanking a field an earlier `$A`/`$COMP` filled. Guarded by
-   `test_competitor_keyed_by_reg_number_not_displayed_number` and
-   `test_competitor_name_not_blanked_by_empty_update` in `tests/test_race_state.py`.
-2. **Session mode runs on two signals and only one of them is live.** The `session_mode` label,
-   derived by substring match on `run_description`, is the one that matters; `_is_qualifying` is
-   set by message type and cleared permanently by any `$G`, so it measures `False` in every
-   capture here — but `_derive_session_mode` tests it first and unconditionally, so until a
-   session's first `$G` it overrides the description outright. Read `_derive_session_mode` and
-   `_qual_info` together before touching either —
-   `server/AGENTS.md` carries what the label then drives. Guarded by
-   `test_qual_info_during_a_race_does_not_overwrite_race_positions` and the `session_mode` and
-   sort-order tests in `tests/test_race_state.py`.
-3. **The rMonitor protocol is not fully documented.** `$SP`/`$SR` appear in no spec but are real
-   output from some Orbits setups, and the `$F` flag is a **fixed-width six-character field** —
-   `_tokenize` strips the padding, but a longer name would truncate, so never compare against one
-   over six characters. Blank is ambiguous, covering pre-session, formation lap, between sessions
-   and post-finish alike. Trust `relay/rmonitor_client.py` over the spec. Guarded by
-   `test_heartbeat_flag_trim`, `test_heartbeat_flag_padding_is_stripped`,
-   `test_captured_flag_fields_are_all_six_characters` (which measures the width over the
-   committed fixtures rather than a hard-coded list), `test_lap_info_sp` and `test_lap_info_sr`
-   in `tests/test_parser.py`.
-4. **Dependencies belong in a `requirements*.txt`, never in a workflow's `pip install` line.**
-   `tests/Dockerfile` installs from all four and is the only place that list exists; why each file
-   is copied with its path preserved is commented there. Adding a package to one workflow's inline
-   list only ever fixes that workflow, and the next one silently drifts out of sync. Guarded by
-   `tests/test_repo_invariants.py`, which also asserts the `xvfb-run` and `conftest.py` rules.
-5. **Session boundaries come from `$B`, and are edges — never `$I`.** `$I` is emitted
-   inconsistently — none on a scoreboard reset, one after a finished race, three at a session
-   start — and each is a live `RaceState.reset()` plus a broadcast, made safe only by the
-   repopulating records that follow in the same batch. `$B,95` closes the running session,
-   carrying its description; any other number names the session that is current. Both recur, an
-   active record up to 264 times, so a boundary is `unique_number` *changing*, and a capture cut
-   mid-session simply has no closing 95. Guarded by
-   `test_every_opened_session_is_closed_by_a_95_carrying_its_description` and
-   `test_captured_run_records_repeat_so_a_boundary_is_an_edge` in `tests/test_parser.py`,
-   `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`, and
-   `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for the
-   broadcast-per-init over the real ingest path.
-6. **The page and the server are two halves of one behaviour, and a long-open tab can run an
-   old half against a new one with its data still live** — nothing looks broken, so nothing
-   reports it. Hence `handle_index` serves `Cache-Control: no-cache` plus an `ETag` derived from
-   the template's content, and every WebSocket payload carries `page_version`; a mismatch
-   **prompts** and never self-reloads, because these displays are on users' own devices. The
-   older `server_instance_id` guard tracks the process, not the page, and *does* self-reload, so
-   it is checked second and yields — a deploy changes both. Guarded by the `test_index_*` tests
-   and `test_ws_full_message_carries_the_page_version` in `tests/test_server.py`, and
-   `test_the_page_version_token_is_substituted_by_the_server` and
-   `test_an_outdated_page_prompts_rather_than_reloading_itself` in
-   `tests/test_repo_invariants.py`.
+1. `reg_number` is the key; `number` is display text. `rmonitor-feed`;
+   `test_competitor_keyed_by_reg_number_not_displayed_number`.
+2. `_is_qualifying` overrides the session description until the first `$G`. `rmonitor-feed`;
+   `test_qual_info_during_a_race_does_not_overwrite_race_positions`.
+3. The protocol is partly undocumented, and `$F` is a fixed six-character field. `rmonitor-feed`;
+   `test_captured_flag_fields_are_all_six_characters`.
+4. Dependencies live only in `requirements*.txt`. `rmonitor-testing`; `tests/test_repo_invariants.py`.
+5. Session boundaries are `$B` edges, never `$I`. `rmonitor-feed`;
+   `test_every_opened_session_is_closed_by_a_95_carrying_its_description`.
+6. A long-open tab can run an old page against a new server, so prompt and never self-reload.
+   `rmonitor-display`; `test_an_outdated_page_prompts_rather_than_reloading_itself`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->

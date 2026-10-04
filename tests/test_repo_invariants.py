@@ -1,4 +1,4 @@
-"""Executable versions of the rules in ``AGENTS.md``.
+"""Executable versions of the rules in ``AGENTS.md`` and its skills.
 
 Every line of code here is agent-authored, so a rule that exists only as prose has
 nothing enforcing it — an agent that misses the line breaks the rule silently and CI
@@ -92,7 +92,8 @@ def workflow_files() -> list[Path]:
 
 
 def test_every_third_party_import_is_declared_in_an_installed_requirements_file() -> None:
-    """Guards AGENTS.md: dependencies belong in a ``requirements*.txt``.
+    """Guards the dependency rule (``AGENTS.md`` Never list; ``rmonitor-testing``
+    skill): dependencies belong in a ``requirements*.txt``.
 
     This is the check that was missing when ``relay/gui.py`` began importing
     ``platformdirs``: the package was declared in a build-only requirements file the
@@ -113,7 +114,8 @@ def test_every_third_party_import_is_declared_in_an_installed_requirements_file(
 
 @pytest.mark.parametrize("workflow", workflow_files(), ids=lambda p: p.name)
 def test_no_workflow_installs_packages_inline(workflow: Path) -> None:
-    """Guards AGENTS.md: never add a dependency to a workflow's ``pip install``.
+    """Guards the dependency rule (``AGENTS.md`` Never list; ``rmonitor-testing``
+    skill): never add a dependency to a workflow's ``pip install``.
 
     Fixing one workflow's inline list leaves every other one to drift out of sync on
     its own schedule, which is precisely how the failure above went unnoticed.
@@ -130,7 +132,8 @@ def test_no_workflow_installs_packages_inline(workflow: Path) -> None:
 
 
 def test_requirements_files_land_at_distinct_paths_in_the_test_image() -> None:
-    """Guards AGENTS.md: the requirements files must keep their paths in the image.
+    """Guards the dependency rule (``AGENTS.md`` Never list; ``rmonitor-testing``
+    skill): the requirements files must keep their paths in the image.
 
     ``relay/requirements.txt`` and ``server/requirements.txt`` share a basename, so a
     COPY naming all four into one flat destination lands three files, not four —
@@ -158,7 +161,7 @@ def test_requirements_files_land_at_distinct_paths_in_the_test_image() -> None:
 
 
 def test_xvfb_run_is_never_invoked() -> None:
-    """Guards AGENTS.md: use ``xvfb-run`` here — never.
+    """Guards ``AGENTS.md``'s Never list: use ``xvfb-run`` here — never.
 
     Its wait-for-display poll has hung indefinitely in this repository twice.
     ``tests/entrypoint.sh`` starts Xvfb directly instead. Prose is allowed to name the
@@ -197,14 +200,14 @@ def test_there_is_no_conftest_py() -> None:
 
 
 def test_the_instruction_files_pass_their_own_check() -> None:
-    """Guards AGENTS.md §Keeping this file current: the real instruction files pass.
+    """Guards the ``rmonitor-agent-docs`` skill: the real instruction files pass.
 
     ``.github/scripts/check_agents_md.py`` is a CI job of its own, and
     ``tests/test_check_agents_md.py`` only exercises it against fixtures. So a change
     that broke a real file -- a scoped ``AGENTS.md`` grown to its 80-line budget, a
     path that no longer exists -- passed ``./test.sh`` and first failed on the PR,
     which is how this test came to exist. Running the same checks here makes the
-    local suite the whole gate, as ``AGENTS.md`` §Commands says it is.
+    local suite the whole gate, as ``AGENTS.md`` says it is.
     """
     script = ROOT / ".github" / "scripts" / "check_agents_md.py"
     spec = importlib.util.spec_from_file_location("check_agents_md", script)
@@ -217,7 +220,8 @@ def test_the_instruction_files_pass_their_own_check() -> None:
 
 
 def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
-    """Guards server/AGENTS.md: ``index.html`` reads ``sort_mode``, never re-derives it.
+    """Guards the ``rmonitor-display`` skill: ``index.html`` reads ``sort_mode``, never
+    re-derives it.
 
     Which order the rows are in decides what the ``POS`` column means, and the server
     already answers that in the payload. If the template recomputed the condition from
@@ -252,7 +256,7 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
 
 
 def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
-    """Guards server/AGENTS.md: the time columns follow ``sort_mode`` too.
+    """Guards the ``rmonitor-display`` skill: the time columns follow ``sort_mode`` too.
 
     Under a position sort -- a race, from its first ``$G`` through Finish -- the page
     shows each car's Total Time in place of Last Lap and Best Lap; under a best-lap
@@ -338,7 +342,8 @@ def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
 
 
 def test_the_page_version_token_is_substituted_by_the_server() -> None:
-    """Guards AGENTS.md pitfall 6: the two halves of the handshake share one spelling.
+    """Guards the page-version trap (``rmonitor-display`` skill): the two halves of the
+    handshake share one spelling.
 
     The 2026-09-12 deploy shipped a matched server/page pair with nothing to make them
     run together, and a phone kept a tab open across it: the old page drew the feed's
@@ -369,7 +374,8 @@ def test_the_page_version_token_is_substituted_by_the_server() -> None:
 
 
 def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
-    """Guards AGENTS.md pitfall 6: a stale page offers a reload, it never takes one.
+    """Guards the page-version trap (``rmonitor-display`` skill): a stale page offers a
+    reload, it never takes one.
 
     These displays run on users' own phones and laptops, not on unattended trackside
     screens, so someone is present to tap and an unrequested reload is worse than an
