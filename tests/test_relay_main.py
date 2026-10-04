@@ -105,10 +105,10 @@ async def test_a_retry_sends_the_ages_grown_by_the_time_it_waited(monkeypatch):
     and supersede a push the host made while it waited."""
     # The first attempt reads the clock twice, the retry once, 30 s later.
     clock = [100.0, 100.0, 130.0]
-    monkeypatch.setattr(
-        relay_main.time, "monotonic",
-        lambda: clock.pop(0) if len(clock) > 1 else clock[0],
-    )
+    # Only the relay's own clock: asyncio reads the real one.
+    monkeypatch.setattr(relay_main, "time", types.SimpleNamespace(
+        monotonic=lambda: clock.pop(0) if len(clock) > 1 else clock[0],
+    ))
     msg = {
         "type": "class_codes", "run_id": "0x400035DD", "entry_list": True,
         "age_seconds": 1.0,
