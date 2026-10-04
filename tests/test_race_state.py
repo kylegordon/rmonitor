@@ -2843,7 +2843,6 @@ def test_a_restart_does_not_carry_past_a_session_with_no_run(state):
     assert _shown(state) == ["Restart over 5 laps"]
 
 
-
 def test_late_rows_of_the_carried_run_still_show(state):
     """Race control posts after a stop, and a reply can arrive after the
     restart's $B has retired the old start."""
@@ -2855,6 +2854,17 @@ def test_late_rows_of_the_carried_run_still_show(state):
     # Rows only: the retired start is not taken back.
     held = (state.class_code_run, state.class_code_run_next)
     assert [r["run_id"] for r in held if r is not None] == [RESTART_ID]
+
+
+def test_a_dropped_clear_of_the_carried_run_keeps_its_rows(state):
+    """A relay picking by name drops the old run when the restart's $B
+    names no run it has pulled — after the server retired that start."""
+    _restart(state, b_first=True)
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [],
+        "stopped": True, "dropped": True,
+    })
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
 
 
 def test_a_late_reply_of_a_same_run_restarts_old_start_changes_nothing(state):

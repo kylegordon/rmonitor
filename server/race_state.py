@@ -839,6 +839,8 @@ class RaceState:
         previous session's start (:meth:`_carried_run`) still takes rows,
         and only rows, while no held run shares its id: race control posts
         after a stop, and a reply can arrive after the restart's ``$B``.
+        Never a ``stopped`` clear: a relay picking by name drops the old run
+        as the restart's session opens, and the carry would lose its rows.
 
         A ``stopped`` message also marked ``dropped`` drops the event of the
         start it names: the relay sends one when it drops a mid-run pick,
@@ -852,14 +854,16 @@ class RaceState:
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
         rows_only = _start_id(run_id, msg.get("start_key")) in self._retired_runs
-        if rows_only and not self._is_carry_candidate(run_id, msg.get("start_key")):
+        if rows_only and (
+            msg.get("stopped")
+            or not self._is_carry_candidate(run_id, msg.get("start_key"))
+        ):
             return None
         event = msg.get("event")
         if not isinstance(event, str):
             event = ""
         changed = False
-        # A retired start is never restored or renewed; no held run shares
-        # its id, so a dropped one's event below is not touched either.
+        # A retired start is never restored or renewed.
         if not rows_only and not msg.get("stopped") and not msg.get("superseded"):
             self._restore_started_run(
                 run_id, msg.get("name"), msg.get("start_key"), event
