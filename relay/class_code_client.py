@@ -1640,9 +1640,13 @@ class ClassCodeClient:
                     flying["_stopped"] = True
                 # Its views stay open until another run starts or is picked:
                 # race control posts the reason for a stop after it.
-                if not self._seen_start:
+                if not self._seen_start and (
+                    self._ann_run is None or self._ann_run.lower() != stopped_id
+                ):
                     # A run seen stopping is never picked, under any later
-                    # description: it has ended.
+                    # description: it has ended.  The held pick is recorded
+                    # at its session's end instead (_end_session), so a
+                    # reconnect's pull before then keeps it subscribed.
                     self._ended_runs.add(stopped_id)
                 continue
             log.info("Timing host started run %s %r", run.run_id, run.name)
@@ -1701,7 +1705,8 @@ class ClassCodeClient:
         description changing, as the server's ``_run`` reads it — or a newly
         pulled run table picks, and only while a session is open, never
         after its ``$B,95``.  A session boundary ends the run picked for the
-        session it closes, as a stop notice does.  Nothing is picked when
+        session it closes; a stop notice ends any other run at once, but
+        leaves the pick subscribed until that boundary.  Nothing is picked when
         the newest run of the name has ended, under whatever description —
         an older one of the name is older still; a newer run of the name, in
         a later pull, is picked.

@@ -2151,6 +2151,17 @@ def _lowercase_stop(name, run_id, state="stopped") -> bytes:
     )
 
 
+# A stop of a run nobody picked, read after another notice to show that one
+# was read: a stopped pick itself leaves no mark until its session ends.
+ELSEWHERE_ID = 0x400028FF
+
+
+async def _stop_read(client, host, stop):
+    host.queue.append(stop)
+    host.queue.append(_lowercase_stop("Elsewhere", ELSEWHERE_ID))
+    await _until(lambda: f"0x{ELSEWHERE_ID:08x}" in client._ended_runs)
+
+
 @pytest.mark.asyncio
 async def test_a_relay_that_saw_no_start_picks_the_newest_run_named_as_the_session(
     monkeypatch,
@@ -2216,11 +2227,11 @@ async def test_a_stopped_pick_is_not_picked_again_for_the_same_description(monke
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _announcements(calls) and _runs_sent(calls))
-        host1.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
-        # Matched despite the case.
-        await _until(lambda: "0x4000280a" in client._ended_runs)
-        # The timing software closes the session as the run stops.
+        await _stop_read(client, host1, _lowercase_stop(PICK_NAME, 0x4000280A))
+        # The timing software closes the session as the run stops, which
+        # ends the pick — matched despite the case.
         client.note_session("95", PICK_NAME)
+        assert "0x4000280a" in client._ended_runs
         host1.queue.append(b"")
         # The reconnect pulls the same run table again.
         await _until(lambda: not host2._pull)
@@ -2241,6 +2252,31 @@ async def test_a_stopped_pick_is_not_picked_again_for_the_same_description(monke
     (clear,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
     assert clear["dropped"] and clear["start_key"] == run["start_key"]
 
+
+@pytest.mark.asyncio
+async def test_a_stopped_pick_stays_subscribed_through_a_reconnect_before_the_95(monkeypatch):
+    """Race control posts the reason for a stop after it, and a reconnect's
+    pull picks again; while the session is open, the stopped pick is kept."""
+    first, second = FakeWriter(), FakeWriter()
+    host1, host2 = PullingViewHost(first), PullingViewHost(second)
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        await _stop_read(client, host1, _lowercase_stop(PICK_NAME, 0x4000280A))
+        host1.queue.append(b"")
+        await _until(lambda: not host2._pull)
+        await _until(lambda: _view_opens(second))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert client._ann_run == PICKED_ID
+    assert _view_opens(second) == [(1, PICKED_DECIMAL)]
+    assert not [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert len(_runs_sent(calls)) == 1
 
 @pytest.mark.asyncio
 async def test_a_new_description_with_no_matching_run_drops_the_pick(monkeypatch):
@@ -2531,8 +2567,7 @@ async def test_a_stopped_pick_is_not_picked_again_after_another_description(monk
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _runs_sent(calls))
-        host.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
-        await _until(lambda: "0x4000280a" in client._ended_runs)
+        await _stop_read(client, host, _lowercase_stop(PICK_NAME, 0x4000280A))
         client.note_session("6", "Race 1 - Qualifying")
         await _until(lambda: len(_runs_sent(calls)) >= 2)
         client.note_session("7", PICK_NAME)
@@ -2557,8 +2592,7 @@ async def test_a_newer_run_of_a_stopped_picks_name_is_picked_from_a_later_pull(m
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _runs_sent(calls))
-        host1.queue.append(_run_state(PICK_NAME, 0x4000280A, "stopped"))
-        await _until(lambda: "0x4000280a" in client._ended_runs)
+        await _stop_read(client, host1, _run_state(PICK_NAME, 0x4000280A, "stopped"))
         host1.queue.append(b"")
         await _until(lambda: _view_opens(second) and len(_runs_sent(calls)) >= 2)
     finally:
