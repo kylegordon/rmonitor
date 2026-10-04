@@ -545,6 +545,35 @@ async def test_an_expired_preload_is_broadcast_on_an_idle_page(client, app, monk
 
 
 @pytest.mark.asyncio
+async def test_a_code_past_the_unscoped_cutoff_is_broadcast_on_an_idle_page(
+    client, app, monkeypatch
+):
+    """The record is kept for a scoped day-2 read, so nothing is pruned, but
+    an unscoped page must stop showing it without waiting for other news."""
+    import server.race_state as rs
+    from server.server import broadcast_if_dirty, race_state_key
+
+    state = app[race_state_key]
+    await _post_car_7_and(client, _CLASS_CODES_MSG)
+    async with client.ws_connect("/ws") as ws:
+        assert (await ws.receive_json())["event"] == "full"
+        await broadcast_if_dirty(app)
+        await ws.receive_json(timeout=1.0)
+        assert await broadcast_if_dirty(app) is False  # idle
+        later = time.time() + rs._CLASS_CODE_TTL_SECONDS + 1
+        monkeypatch.setattr(rs.time, "time", lambda: later)
+        assert await broadcast_if_dirty(app) is True
+        msg = await ws.receive_json(timeout=1.0)
+        assert await broadcast_if_dirty(app) is False  # told once
+    assert msg["event"] == "update"
+    car = next(e for e in msg["data"]["entries"] if e["reg_number"] == "7")
+    assert car["class_code"] == ""
+    # No code the page could show, so no "without a class code" count either.
+    assert msg["data"]["class_codes_available"] is False
+    assert state.class_codes
+
+
+@pytest.mark.asyncio
 async def test_feed_restored_reset_keeps_class_codes(client, app):
     from server.server import race_state_key
 

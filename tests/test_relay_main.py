@@ -49,9 +49,11 @@ class FakeSession:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = 0
+        self.sent = []
 
     def post(self, url, json=None, headers=None, timeout=None):
         self.calls += 1
+        self.sent.append(json)
         resp = self._responses.pop(0)
         if isinstance(resp, Exception):
             return _ExceptionCM(resp)
@@ -94,6 +96,33 @@ async def test_post_message_retries_on_429_then_succeeds():
     session = FakeSession([429, 429, 200])
     await relay_main.post_message(session, {"type": "heartbeat"})
     assert session.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_a_retry_sends_the_ages_grown_by_the_time_it_waited(monkeypatch):
+    """The server dates every record by its age, so a retry sent with its
+    first attempt's ages would date a delayed entry list newer than it is,
+    and supersede a push the host made while it waited."""
+    # The first attempt reads the clock twice, the retry once, 30 s later.
+    clock = [100.0, 100.0, 130.0]
+    # Only the relay's own clock: asyncio reads the real one.
+    monkeypatch.setattr(relay_main, "time", types.SimpleNamespace(
+        monotonic=lambda: clock.pop(0) if len(clock) > 1 else clock[0],
+    ))
+    msg = {
+        "type": "class_codes", "run_id": "0x400035DD", "entry_list": True,
+        "age_seconds": 1.0, "runs_age_seconds": 2.0,
+        "entries": [{"entrant_id": "a0000008", "age_seconds": 1.0}],
+    }
+    session = FakeSession([503, 200])
+    assert await relay_main.post_message(session, msg) is True
+    first, retry = session.sent
+    assert first == msg
+    assert retry["age_seconds"] == 31.0
+    assert retry["runs_age_seconds"] == 32.0
+    assert [e["age_seconds"] for e in retry["entries"]] == [31.0]
+    assert msg["age_seconds"] == 1.0
+    assert msg["entries"][0]["age_seconds"] == 1.0
 
 
 @pytest.mark.asyncio

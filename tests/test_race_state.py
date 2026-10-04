@@ -1520,6 +1520,235 @@ def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):
     assert restored.class_codes == {}
 
 
+def _aged(entry, seconds):
+    return {**entry, "age_seconds": seconds}
+
+
+def test_a_list_omitting_an_entrant_hides_its_older_sibling_push(state):
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SL"
+
+
+def test_a_list_omitting_an_entrant_hides_the_running_runs_older_push_too(state):
+    # A push's entrant id need not equal the list's car reg, so the list's
+    # time, not a key match, supersedes it.
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DD, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+
+
+def test_an_empty_list_still_supersedes_an_older_sibling_push(state):
+    """The relay drops codeless rows, so a list whose every code was cleared
+    arrives with no rows; it is still the run's whole list, and dated."""
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+    assert _entry_list(state, DD) == "class_codes"
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == ""
+
+
+def test_a_retried_empty_list_is_dated_by_its_own_age_not_its_arrival(state):
+    """A push made after the list was read but before a retry delivered it
+    is a later edit, so the list must not supersede it."""
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 300))
+    state.process({
+        "type": "class_codes", "run_id": DD, "entry_list": True,
+        "age_seconds": 600, "entries": [],
+    })
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "F3"
+
+
+def test_a_store_saved_before_list_dates_rebuilds_them_from_its_list_rows(state):
+    """A store from before list dates were saved still supersedes on restart."""
+    import json
+
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    data = json.loads(json.dumps(state.class_codes_to_dict()))
+    del data["class_code_lists"]
+    restored = RaceState()
+    restored.load_class_codes(data)
+    assert restored.class_code_lists == state.class_code_lists
+    _session(restored, RACE_15, "15")
+    _car_in_class(restored, "7", "1234567", SLW)
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == ""
+
+
+def test_an_empty_lists_date_survives_a_save_and_restore(state):
+    import json
+
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 600))
+    _entry_list(state, DD)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_lists == state.class_code_lists
+    assert list(restored.class_code_lists) == [DD.lower()]
+    _session(restored, RACE_15, "15")
+    _car_in_class(restored, "7", "1234567", SLW)
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == ""
+
+
+@pytest.mark.parametrize("lists", [
+    "nonsense",
+    {"0x400035dd": "yesterday"},
+    {"0x400035dd": None},
+    {"0x400035dd": float("nan")},
+    {7: 1.0},
+])
+def test_a_malformed_list_date_is_dropped_without_losing_codes(state, lists):
+    _codes(state, DC, _code_entry("e7", "7", SLW, "F3", "1234567"))
+    data = state.class_codes_to_dict() | {"class_code_lists": lists}
+    restored = RaceState()
+    restored.load_class_codes(data)
+    assert restored.class_code_lists == {}
+    assert restored.class_codes == state.class_codes
+
+
+def test_a_list_date_from_the_future_is_capped_at_now(state, monkeypatch):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    state.load_class_codes({"class_code_lists": {"0x400035dd": 9_000_000_000.0}})
+    assert state.class_code_lists == {"0x400035dd": 1_000_000.0}
+
+
+def test_an_expired_list_date_is_pruned_and_dirties_the_state(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _entry_list(state, DD)
+    assert list(state.class_code_lists) == [DD.lower()]
+    revision = state.class_codes_revision
+    state._dirty = False
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_lists == {}
+    assert state.class_codes_revision > revision
+    assert state._dirty
+
+
+def test_a_list_still_supersedes_once_a_push_replaces_its_last_row(state):
+    """A same-key push overwrites the list's only row; the list's date must
+    outlive the row, here and across a restart."""
+    import json
+
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 600))
+    _entry_list(state, DD, _aged(_code_entry("a0000008", "8", SLW, "SL", "7654321"), 300))
+    _codes(state, DD, _code_entry("a0000008", "8", SLW, "SL C", "7654321"))
+    assert not any(v.get("origin") for v in state.class_codes.values())
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SL C"
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored, RACE_15, "15")
+    _car_in_class(restored, "7", "1234567", SLW)
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == ""
+
+
+def test_the_registry_never_fills_a_code_the_running_runs_list_withholds(state):
+    """The host's current list is the truth; a uniform registry class is not
+    proof the car the list leaves uncoded has that code."""
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        entries=[_pre("1234567", SLW, "SC"), _pre("7654321", SLW, "SC")],
+    )
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "SX", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SC", "7654321"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+
+
+@pytest.mark.parametrize("older_push", [False, True])
+def test_an_empty_list_leaves_no_code_source_so_no_missing_count(state, older_push):
+    """The empty list suppresses the registry and older pushes, so nothing
+    could fill a cell: the page must not count blanks as missing codes."""
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        entries=[_pre("1234567", SLW, "SC")],
+    )
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    _car_in_class(state, "7", "1234567", SLW)
+    if older_push:
+        _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "SX", "1234567"), 600))
+    assert state.snapshot()["class_codes_available"] is True
+    _entry_list(state, DD)
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert snap["class_code_missing"] == 1
+    assert snap["class_codes_available"] is False
+    # A newer push is a source again.
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SC", "1234567"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert snap["class_codes_available"] is True
+
+
+def test_a_push_newer_than_the_list_still_counts(state):
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _entry_list(state, DD, _aged(_code_entry("a0000007", "7", SLW, "SL", "1234567"), 600))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL C", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL C"
+
+
+def test_without_a_list_for_the_running_run_every_in_scope_push_counts(state):
+    # Only the running run's own list stands for this session's entries.
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DD, _aged(_code_entry("e7", "7", SLW, "SL", "1234567"), 600))
+    _entry_list(state, DC, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+
+
+def test_a_rental_car_takes_the_list_code_over_a_conflicting_older_push(state):
+    _race_15(state)
+    # The feed carries the rental's own transponder, the host's records the
+    # owner's, so layer 1 finds nothing and layer 2 sees both codes unless
+    # the list supersedes the older push.
+    _car_in_class(state, "26", "NE5", SLW)
+    _codes(state, DC, _aged(_code_entry("e26", "26", SLW, "F3", "3776411"), 600))
+    _entry_list(state, DD, _code_entry("a0000026", "26", SLW, "SL C", "3776411"))
+    assert _entry_for(state.snapshot(), "26")["class_code"] == "SL C"
+
+
 def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
     _add_car(state, "7")
@@ -1595,7 +1824,7 @@ def test_expired_class_codes_are_not_joined(state, monkeypatch):
     _add_car(state, "7", transponder="1234567")
     _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
-    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS + 1
     snap = state.snapshot()
     assert _entry_for(snap, "7")["class_code"] == ""
     assert snap["class_codes_available"] is False
@@ -1607,7 +1836,7 @@ def test_a_class_code_is_dated_from_its_push_not_its_arrival(state, monkeypatch)
 
     now = [1_000_000.0]
     monkeypatch.setattr(rs.time, "time", lambda: now[0])
-    ttl = rs._CLASS_CODE_TTL_SECONDS
+    ttl = rs._PUSHED_CODE_TTL_SECONDS
     late = {**_code_entry("e1", "7", "Saloon Cup", "SC"), "age_seconds": ttl - 60}
     _codes(state, "r", late)
     (rec,) = state.class_codes.values()
@@ -1724,7 +1953,7 @@ def test_class_codes_outlive_a_race_state_store_past_its_max_age(state, tmp_path
     restored.load_class_codes(codes_store.load())
     assert len(restored.class_codes) == 1
 
-    now[0] += rs._CLASS_CODE_TTL_SECONDS  # the entry's own expiry still applies
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS  # the entry's own expiry still applies
     later = RaceState()
     later.load_class_codes(codes_store.load())
     assert later.class_codes == {}
@@ -1905,6 +2134,9 @@ def test_load_class_codes_accepts_an_old_format_preload(state):
     state.load_class_codes({"preload": {"received_at": _time.time(), "entries": [old]}})
     assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
     assert state.class_code_preload["runs"] == []
+    # Saved before the run table had its own date: it shares the records'.
+    pre = state.class_code_preload
+    assert pre["runs_received_at"] == pre["received_at"]
     _car_in_class(state, "7", "1234567", "Saloon Cup")
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
 
@@ -1920,6 +2152,207 @@ def test_an_expired_preload_is_not_joined(state, monkeypatch):
     snap = state.snapshot()
     assert _entry_for(snap, "7")["class_code"] == ""
     assert snap["class_codes_available"] is False
+
+
+def test_a_preloads_run_table_outlives_its_registry_for_day_two(state, monkeypatch):
+    """The relay pulls the preload only on connect; one held overnight must
+    still scope a day-2 run to its group, as the pushes it admits live 36 h."""
+    import json
+
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        entries=[_pre("7654321", SLW, "SL")],
+    )
+    _codes(state, DC, _code_entry("e7", "7", SLW, "F3", "1234567"))
+    # Between the two lifetimes: the records have expired, the run table not.
+    now[0] += (rs._CLASS_CODE_TTL_SECONDS + rs._PUSHED_CODE_TTL_SECONDS) / 2
+    revision = state.class_codes_revision
+    state._dirty = False
+    assert state.prune_expired_class_codes() is True
+    assert state.class_codes_revision > revision and state._dirty
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    for s in (state, restored):
+        _session(s, RACE_15, "15")
+        _started(s, DD, RACE_15)
+        assert s._class_code_scope() == (DD, frozenset({DC.lower(), DD.lower(), GROUP_D3.lower()}))
+        _car_in_class(s, "7", "1234567", SLW)
+        _car_in_class(s, "8", "7654321", SLW)
+        snap = s.snapshot()
+        assert _entry_for(snap, "7")["class_code"] == "F3"
+        # The registry itself is past its 12 h.
+        assert _entry_for(snap, "8")["class_code"] == ""
+    # Past the pushes' own TTL the run table goes too.
+    now[0] += rs._PUSHED_CODE_TTL_SECONDS
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_preload["runs"] == []
+
+
+def _runs_only_preload(state, *runs, age_seconds=0.0):
+    return state.process({
+        "type": "class_code_preload", "entries": [], "runs": list(runs),
+        "age_seconds": age_seconds,
+    })
+
+
+def test_a_runs_only_preload_gives_the_running_run_its_group_scope(state):
+    """A pull whose registry held no usable record still carries the run
+    table, without which a known running run scopes to itself alone."""
+    assert _runs_only_preload(
+        state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15),
+    ) == "class_codes"
+    assert state.class_code_preload["entries"] == []
+    assert state.class_code_preload["received_at"] is None
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({DC.lower(), DD.lower(), GROUP_D3.lower()})
+    _car_in_class(state, "7", "1234567", SLW)
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL", "1234567"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
+
+
+def test_a_preloads_records_and_run_table_are_dated_by_their_own_ages(state, monkeypatch):
+    """The relay can send an undelivered pull's records with a newer pull's
+    run table; stale records must neither shorten nor discard fresh runs."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    runs = [_run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15)]
+    msg = {
+        "type": "class_code_preload", "entries": [_pre("1234567", "Saloon Cup", "SC")],
+        "runs": runs, "age_seconds": 3600.0, "runs_age_seconds": 60.0,
+    }
+    assert state.process(dict(msg)) == "class_codes"
+    pre = state.class_code_preload
+    assert pre["received_at"] == now[0] - 3600.0
+    assert pre["runs_received_at"] == now[0] - 60.0
+    # Records past the TTL are dropped alone; the fresh run table is kept.
+    stale = dict(msg, age_seconds=rs._CLASS_CODE_TTL_SECONDS + 1)
+    state = RaceState()
+    assert state.process(stale) == "class_codes"
+    assert state.class_code_preload["entries"] == []
+    assert len(state.class_code_preload["runs"]) == 2
+    assert state.class_code_preload["runs_received_at"] == now[0] - 60.0
+
+
+def test_a_runs_only_preload_keeps_the_prior_records_without_renewing_them(
+    state, monkeypatch
+):
+    import server.race_state as rs
+
+    start = 1_000_000.0
+    now = [start]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    now[0] += 6 * 3600
+    revision = state.class_codes_revision
+    state.mark_clean()
+    assert _runs_only_preload(
+        state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15),
+        age_seconds=60.0,
+    ) == "class_codes"
+    assert state.class_codes_revision > revision and state.dirty
+    pre = state.class_code_preload
+    assert pre["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+    assert pre["received_at"] == start
+    runs_at = now[0] - 60.0
+    assert pre["runs_received_at"] == runs_at
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # The records still go 12 h after their own pull, the run table stays.
+    now[0] = start + rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.prune_expired_class_codes() is False
+    assert state.class_code_preload["entries"] == []
+    assert len(state.class_code_preload["runs"]) == 2
+    assert _entry_for(state.snapshot(), "7")["class_code"] == ""
+    # The run table lives 36 h from its own pull.
+    now[0] = runs_at + rs._PUSHED_CODE_TTL_SECONDS
+    assert state.prune_expired_class_codes() is False
+    assert len(state.class_code_preload["runs"]) == 2
+    now[0] += 1
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_preload == rs._preload_store([], None)
+    assert state.prune_expired_class_codes() is False
+
+
+def test_a_runs_only_preload_with_no_records_expires_with_its_run_table(state, monkeypatch):
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is False
+    assert state.class_code_preload["runs"] == [_run_row(DC, GROUP_D3, "Warm Up")]
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.class_code_preload == rs._preload_store([], None)
+
+
+def test_a_preload_with_neither_records_nor_runs_is_ignored(state):
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    before = state.class_code_preload
+    assert _runs_only_preload(state) is None
+    assert state.class_code_preload is before
+
+
+def test_a_runs_only_preload_round_trips_through_the_class_code_store(state):
+    import json
+
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"), age_seconds=60.0)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_code_preload == state.class_code_preload
+    assert restored.class_code_preload["runs"] == [_run_row(DC, GROUP_D3, "Warm Up")]
+
+
+def test_the_run_tables_own_date_round_trips(state, monkeypatch):
+    import json
+
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _preload(state, _pre("1234567", "Saloon Cup", "SC"))
+    now[0] += 3600
+    _runs_only_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    saved = json.loads(json.dumps(state.class_codes_to_dict()))
+    assert saved["preload"]["runs_received_at"] == now[0]
+    restored = RaceState()
+    restored.load_class_codes(saved)
+    assert restored.class_code_preload == state.class_code_preload
+    assert restored.class_code_preload["received_at"] == 1_000_000.0
+    assert restored.class_code_preload["runs_received_at"] == now[0]
+
+
+@pytest.mark.parametrize("runs_received_at, kept", [
+    ("nonsense", False),
+    (float("inf"), False),
+    (2_000_000.0, True),
+])
+def test_load_class_codes_checks_the_run_tables_date(
+    state, monkeypatch, runs_received_at, kept
+):
+    import server.race_state as rs
+
+    monkeypatch.setattr(rs.time, "time", lambda: 1_000_000.0)
+    state.load_class_codes({"preload": {
+        "received_at": 1_000_000.0, "entries": [_pre("1234567", "Saloon Cup", "SC")],
+        "runs": [_run_row()], "runs_received_at": runs_received_at,
+    }})
+    assert state.class_code_preload["entries"] == [_pre("1234567", "Saloon Cup", "SC")]
+    assert state.class_code_preload["runs"] == ([_run_row()] if kept else [])
+    if kept:
+        # A future date is capped at now.
+        assert state.class_code_preload["runs_received_at"] == 1_000_000.0
 
 
 def test_a_preload_is_dated_from_its_pull_not_its_arrival(state, monkeypatch):
@@ -2076,8 +2509,13 @@ def test_expiry_of_either_store_dirties_the_state(state, monkeypatch):
     now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
     assert state.prune_expired_class_codes() is True
     assert state.dirty
-    assert state.class_codes == {}
     assert state.class_code_preload["entries"] == []
+    assert state.class_codes != {}
+    state.mark_clean()
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    assert state.prune_expired_class_codes() is True
+    assert state.dirty
+    assert state.class_codes == {}
 
 
 def test_an_expiry_found_by_a_snapshot_dirties_the_state(state, monkeypatch):
@@ -2198,6 +2636,99 @@ def test_scope_from_the_run_table_picks_the_newest_run_with_that_name(state):
     _session(state)
     assert state.snapshot()["class_code_scope"] == "0x40002806"
     assert state._class_code_scope()[1] == frozenset({"0x40002806", "0x80000985"})
+
+
+# One class's meeting as the timing host groups it: the warm-up whose grid
+# edits were pushed, the race they feed, and another class's warm-up.
+DC, DD, E1 = "0x400035DC", "0x400035DD", "0x400035E1"
+GROUP_D3 = "0x800009D3"
+RACE_15 = "Race 15 - 2nd Race"
+SLW = "Scottish Lightweights"
+
+
+def _race_15(state):
+    _runs_preload(
+        state,
+        _run_row(DC, GROUP_D3, "Warm Up"),
+        _run_row(DD, GROUP_D3, RACE_15),
+        _run_row(E1, "0x800009D4", "Warm Up"),
+    )
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+
+
+def test_scope_takes_in_every_run_of_the_running_runs_group(state):
+    _race_15(state)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dc", "0x400035dd", "0x800009d3"})
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _code_entry("e7", "7", SLW, "SL", "1234567"))
+    _codes(state, E1, _code_entry("e8", "8", SLW, "SL", "7654321"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == DD
+    assert _entry_for(snap, "7")["class_code"] == "SL"
+    assert _entry_for(snap, "8")["class_code"] == ""
+
+
+def test_a_sibling_push_conflict_resolves_by_transponder_to_the_latest(state):
+    _race_15(state)
+    _car_in_class(state, "461", "3456789", SLW)
+    _codes(state, DC, {**_code_entry("e461", "461", SLW, "F3", "3456789"), "age_seconds": 960})
+    _codes(state, DD, _code_entry("e461", "461", SLW, "SL C", "3456789"))
+    assert _entry_for(state.snapshot(), "461")["class_code"] == "SL C"
+
+
+def test_a_sibling_push_conflict_without_a_usable_transponder_stays_blank(state):
+    # A rental: the feed carries the transponder's name, the pushes its number.
+    _race_15(state)
+    _car_in_class(state, "26", "NE5", SLW)
+    _codes(state, DC, {**_code_entry("e26", "26", SLW, "F3", "3776411"), "age_seconds": 960})
+    _codes(state, DD, _code_entry("e26", "26", SLW, "SL C", "3776411"))
+    assert _entry_for(state.snapshot(), "26")["class_code"] == ""
+
+
+def test_a_run_missing_from_the_table_scopes_to_itself_alone(state):
+    _runs_preload(state, _run_row(DC, GROUP_D3, "Warm Up"))
+    _session(state, RACE_15, "15")
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dd"})
+
+
+def test_a_nameless_run_gives_its_group_but_is_never_picked_by_name(state):
+    _runs_preload(state, _run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, ""))
+    assert "" not in state.class_code_preload["runs_by_name"]
+    _session(state, RACE_15, "15")
+    assert state._class_code_scope() is None
+    _started(state, DD, RACE_15)
+    assert state._class_code_scope()[1] == frozenset({"0x400035dc", "0x400035dd", "0x800009d3"})
+
+
+def test_class_code_records_survive_past_twelve_hours_but_not_past_thirty_six(state, monkeypatch):
+    """A two-day meeting's grids are often built on day 1 and raced on day 2,
+    so records are kept 36 h; but an unscoped read, which nothing keeps from
+    another meeting's records, reads only a meeting day's."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _car_in_class(state, "8", "7654321", "Saloon Cup")
+    _preload(state, _pre("9999999", "Unused Class", "UC"))
+    _codes(state, "0x4000AAAA", _code_entry("e7", "7", "Saloon Cup", "SC", "1234567"))
+    _entry_list(state, "0x4000BBBB", _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+    now[0] += rs._CLASS_CODE_TTL_SECONDS + 1
+    snap = state.snapshot()
+    assert len(state.class_codes) == 2
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == ""
+    # The preload keeps its own, shorter life.
+    assert state.class_code_preload["received_at"] is None
+    now[0] = 1_000_000.0 + rs._PUSHED_CODE_TTL_SECONDS + 1
+    state.prune_expired_class_codes()
+    assert state.class_codes == {}
 
 
 def test_an_unknown_run_falls_back_to_unscoped_and_reports_it(state, caplog):
@@ -2368,6 +2899,22 @@ def test_the_tag_on_every_push_is_never_a_scope(state):
     assert state._class_code_scope() == ("0x40002806", frozenset({"0x40002806"}))
     _car_in_class(state, "72", "5588219", "Classic K")
     _codes(state, "0x80000000", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
+    assert _entry_for(state.snapshot(), "72")["class_code"] == ""
+
+
+def test_runs_without_a_group_are_not_scoped_together(state):
+    """``0x80000000`` is no group: another ungrouped run, perhaps another
+    meeting's, is not this run's sibling."""
+    _runs_preload(
+        state,
+        _run_row(group_id="0x80000000"),
+        _run_row("0x40002807", "0x80000000", "Race 9"),
+    )
+    _session(state)
+    _started(state)
+    assert state._class_code_scope() == ("0x40002806", frozenset({"0x40002806"}))
+    _car_in_class(state, "72", "5588219", "Classic K")
+    _codes(state, "0x40002807", _code_entry("e72", "72", "Classic K", "CM", "5588219"))
     assert _entry_for(state.snapshot(), "72")["class_code"] == ""
 
 

@@ -8,6 +8,9 @@ and are loaded only when an agent is working in this directory.
 - There is **no `conftest.py`** anywhere and no global `asyncio_mode`, so every async test carries
   an explicit `pytest.mark.asyncio` (`tests/test_server.py`).
 - Mocking is `unittest.mock.AsyncMock` applied via `monkeypatch.setattr` (`tests/test_relay_main.py`).
+- A capture-derived fixture lives in `tests/fixtures/`, scrubbed of every real string in place
+  and documented in its README; keep a test that fails on leftover text
+  (`test_model_excerpt_holds_only_placeholder_text`).
 - `tests/test_gui.py` stubs the relay runner and the update poll; `REQUIRE_DISPLAY` turns its
   missing-display case from a skip into a failure.
 

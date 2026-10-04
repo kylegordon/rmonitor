@@ -6,12 +6,17 @@ codes — never from a capture.  The one exception is the Announcements view:
 its records and frames are captured layouts, kept byte for byte because the
 layout is the thing under test, with every identity slot zeroed and only an
 operator's test text in them.  Results view replies are built from the
-layout alone, with invented entrants.
+layout alone, with invented entrants.  The model excerpt in
+``tests/fixtures/`` is the other exception: captured bytes with every string
+overwritten by a placeholder, as its README describes.
 """
 
 import asyncio
 import json
+import re
 import struct
+import time
+from pathlib import Path
 
 import pytest
 
@@ -388,7 +393,178 @@ def test_run_table_skips_noise_and_truncated_records():
     )
     assert ccc.parse_runs(buf) == [
         {"run_id": "0x40002805", "group_id": "0x80000985", "name": "Race 6 - AMENDED GRID"},
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": ""},
     ]
+
+
+def _with_lead_in(record: bytes, lead_in: bytes) -> bytes:
+    """*record* with its ``u32 1`` + 12 bytes replaced by *lead_in*."""
+    assert len(lead_in) == 16
+    return lead_in + record[16:]
+
+
+def test_run_table_record_preceded_by_zeros_is_parsed():
+    # The #108 shape: 0x400035E8 "Qualifying 4" sat behind 16 zero bytes.
+    rec = _with_lead_in(_run_record(0x400035E8, 0x800009D5, "Qualifying 4"), bytes(16))
+    assert ccc.parse_runs(bytes(16) + rec + bytes(16)) == [
+        {"run_id": "0x400035E8", "group_id": "0x800009D5", "name": "Qualifying 4"},
+    ]
+
+
+def test_run_table_record_with_other_leading_bytes_is_parsed():
+    lead_in = struct.pack("<IIII", 0x6523A1B0, 0x6523A1B1, 0x6523A1B2, 0x6523A1B3)
+    rec = _with_lead_in(_run_record(0x400035DD, 0x800009D3, "Race 15 - 2nd Race"), lead_in)
+    assert ccc.parse_runs(rec) == [
+        {"run_id": "0x400035DD", "group_id": "0x800009D3", "name": "Race 15 - 2nd Race"},
+    ]
+
+
+def test_nameless_run_record_keeps_its_group():
+    assert ccc.parse_runs(_run_record(0x40002807, name="")) == [
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": ""},
+    ]
+
+
+def test_nameless_record_without_the_leading_one_is_skipped():
+    # With no name to validate it, only the u32 1 lead-in vouches for it.
+    rec = _with_lead_in(_run_record(0x40002807, name=""), bytes(16))
+    assert ccc.parse_runs(bytes(16) + rec + bytes(16)) == []
+
+
+def test_a_named_record_wins_over_a_nameless_one_for_the_same_id():
+    buf = (
+        _run_record(0x40002807, 0x80000985, name="")
+        + _run_record(0x40002808, 0x80000985, name="Warm Up")
+        + _run_record(0x40002807, 0x80000985, name="Race 7 - 2nd Race")
+    )
+    assert ccc.parse_runs(buf) == [
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+        {"run_id": "0x40002808", "group_id": "0x80000985", "name": "Warm Up"},
+    ]
+
+
+MODEL_EXCERPT = Path(__file__).resolve().parent / "fixtures" / "model_pull_excerpt.bin"
+
+# The excerpt's slices and run records, as tests/fixtures/README.md lists
+# them.  Each run is (offset of its run id, lead-in, run id, group id, name),
+# written down from the record layout, not from parse_runs.
+EXCERPT_SLICES = {
+    "loop table": (0x0000, 0x0121),
+    "groups": (0x0121, 0x028B),
+    "runs, one nameless": (0x028B, 0x03B6),
+    "runs": (0x03B6, 0x1072),
+    "registry": (0x1072, 0x1222),
+}
+EXCERPT_RUNS = [
+    (0x029B, "u32 1", 0x400032B1, 0x800008F1, "Run 01."),
+    (0x0305, "u32 1", 0x400032B2, 0x800008F2, ""),
+    (0x035C, "zeros", 0x400032B3, 0x800008F3, "Run 02."),
+    (0x03C6, "u32 1", 0x400035D9, 0x800009D3, "Run 03."),
+    (0x0430, "u32 1", 0x400035DA, 0x800009D3, "Run 04......"),
+    (0x049F, "u32 1", 0x400035DB, 0x800009D3, "Run 05..........."),
+    (0x0599, "u32 1", 0x400035DC, 0x800009D3, "Run 06."),
+    (0x0603, "u32 1", 0x400035DD, 0x800009D3, "Run 07............"),
+    (0x06FE, "u32 1", 0x400035DE, 0x800009D4, "Run 08."),
+    (0x0768, "u32 1", 0x400035DF, 0x800009D4, "Run 09......"),
+    (0x07D7, "u32 1", 0x400035E0, 0x800009D4, "Run 10..........."),
+    (0x08D1, "u32 1", 0x400035E1, 0x800009D4, "Run 11."),
+    (0x093B, "u32 1", 0x400035E2, 0x800009D4, "Run 12............"),
+    (0x0A2A, "zeros", 0x400035E3, 0x800009D5, "Run 13."),
+    (0x0A94, "u32 1", 0x400035E4, 0x800009D5, "Run 14......"),
+    (0x0B03, "u32 1", 0x400035E5, 0x800009D5, "Run 15..........."),
+    (0x0BFD, "u32 1", 0x400035E6, 0x800009D5, "Run 16."),
+    (0x0C67, "u32 1", 0x400035E7, 0x800009D5, "Run 17............"),
+    (0x0D56, "zeros", 0x400035E8, 0x800009D6, "Run 18......"),
+    (0x0DC5, "u32 1", 0x400035E9, 0x800009D6, "Run 19."),
+    (0x0E2F, "u32 1", 0x400035EA, 0x800009D6, "Run 20..........."),
+    (0x0F29, "u32 1", 0x400035EB, 0x800009D6, "Run 21."),
+    (0x0F93, "u32 1", 0x400035EC, 0x800009D6, "Run 22............"),
+]
+# The anchor before #108: the run header only behind a u32 1.
+_OLD_RUN_ANCHOR = re.compile(
+    rb"\x01\x00\x00\x00.{12}(..\x00\x40)....(..\x00\x80)", re.DOTALL
+)
+
+
+def _excerpt() -> bytes:
+    return MODEL_EXCERPT.read_bytes()
+
+
+def _excerpt_runs(*, lead_in=None) -> list[dict]:
+    return [
+        {"run_id": f"0x{rid:08X}", "group_id": f"0x{gid:08X}", "name": name}
+        for _, kind, rid, gid, name in EXCERPT_RUNS
+        if lead_in is None or kind == lead_in
+    ]
+
+
+def test_model_excerpt_run_records_sit_where_its_readme_lists_them():
+    """The expected runs are read off the bytes by the record layout, so a
+    parser bug cannot write its own answer into them."""
+    buf = _excerpt()
+    for offset, kind, rid, gid, name in EXCERPT_RUNS:
+        lead_in = buf[offset - 16:offset]
+        if kind == "zeros":
+            assert lead_in == bytes(16), hex(offset)
+        else:
+            assert lead_in[:4] == b"\x01\x00\x00\x00", hex(offset)
+        run_id, _flags, group_id, length = struct.unpack_from("<IIII", buf, offset)
+        assert (run_id, group_id) == (rid, gid), hex(offset)
+        assert buf[offset + 16:offset + 16 + length] == name.encode(), hex(offset)
+
+
+def test_model_excerpt_runs_are_parsed_exactly():
+    assert ccc.parse_runs(_excerpt()) == _excerpt_runs()
+
+
+def test_model_excerpt_runs_behind_zeros_are_found_where_the_old_anchor_missed_them():
+    # The #108 shape in captured bytes: 0x400035E8 is that issue's qualifying run.
+    buf = _excerpt()
+    behind_zeros = _excerpt_runs(lead_in="zeros")
+    assert [r["run_id"] for r in behind_zeros] == ["0x400032B3", "0x400035E3", "0x400035E8"]
+    old = {struct.unpack("<I", m.group(1))[0] for m in _OLD_RUN_ANCHOR.finditer(buf)}
+    assert {f"0x{rid:08X}" for rid in old} == {
+        r["run_id"] for r in _excerpt_runs(lead_in="u32 1")
+    }
+    parsed = ccc.parse_runs(buf)
+    assert all(run in parsed for run in behind_zeros)
+
+
+def test_model_excerpt_non_run_records_yield_no_run():
+    buf = _excerpt()
+    for name in ("loop table", "groups", "registry"):
+        start, end = EXCERPT_SLICES[name]
+        assert ccc.parse_runs(buf[start:end]) == [], name
+    # The loop table's doubles really do take a run header's shape at 0x0061,
+    # so the parser has to reject that match, not merely never see one.
+    assert re.fullmatch(rb"..\x00\x40.{4}..\x00\x80", buf[0x0061:0x006D], re.DOTALL)
+
+
+def test_model_excerpt_groups_and_registry_records_parse_as_themselves():
+    buf = _excerpt()
+    assert ccc.parse_groups(buf) == {
+        "0x800009D3": "Group 01" + "." * 26,
+        "0x800009D4": "Group 02" + "." * 31,
+        "0x800009D5": "Group 03" + "." * 21,
+        "0x800009D6": "Group 04" + "." * 24,
+    }
+    assert [(r["registration_id"], r["transponder"]) for r in ccc.parse_registry(buf)] == [
+        ("aaaa0001", "1000001"), ("aaaa0002", "1000002"),
+    ]
+
+
+# The placeholders a scrub writes, as tests/fixtures/README.md describes, and
+# two runs of binary: the high bytes of the doubles 65.0 and 85.0.
+_PLACEHOLDER = re.compile(
+    rb"(?:Run|Group) \d\d\.*|Text\d{3}\.*|x{3,}|0{3,}|aaaa\d{4}|@[PU]@"
+)
+
+
+def test_model_excerpt_holds_only_placeholder_text():
+    """A re-scrubbed excerpt must not bring captured text back with it."""
+    buf = _excerpt()
+    assert re.findall(rb"[\x20-\x7e]{3,}", _PLACEHOLDER.sub(b"\x00", buf)) == []
+    assert re.findall(rb"(?:[\x20-\x7e]\x00){3,}", buf) == []  # no UTF-16 text either
 
 
 # ---------------------------------------------------------------------------
@@ -934,7 +1110,31 @@ async def test_a_complete_registry_pull_is_forwarded_as_one_preload(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_pull_with_no_registry_records_forwards_nothing(monkeypatch, caplog):
+async def test_a_pull_with_runs_but_no_registry_records_forwards_the_run_table(
+    monkeypatch, caplog
+):
+    """The server scopes a code to the running run's group from the run
+    table, so the runs travel even when no registry record is usable."""
+    writer = FakeWriter()
+    _harness(monkeypatch, [(_pulling(writer, registry=_run_record()), writer)])
+    batches = []
+    client = ccc.ClassCodeClient("timing-host", _collect(batches), **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: batches)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (msg,) = _preloads(batches)
+    assert msg["entries"] == []
+    assert msg["runs"] == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
+    assert "held no usable records" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_pull_with_no_registry_records_or_runs_forwards_nothing(monkeypatch, caplog):
     writer = FakeWriter()
     _harness(monkeypatch, [(_pulling(writer, registry=bytes(range(200))), writer)])
     batches = []
@@ -1018,6 +1218,79 @@ async def test_a_failed_preload_is_retried_and_a_newer_pull_replaces_it(monkeypa
     ]
     assert len(opened) == 2
     assert client._preload is None
+
+
+@pytest.mark.asyncio
+async def test_a_runs_only_pull_keeps_an_undelivered_preloads_records(monkeypatch):
+    """A pull with no usable record must not discard the registry an earlier
+    pull read and could not yet deliver: the server would never get it."""
+    closing = asyncio.Event()
+    first, second = FakeWriter(), FakeWriter()
+    connections = [
+        (_pulling(first, then=[closing, b""]), first),
+        (_pulling(second, registry=_run_record()), second),
+    ]
+    _harness(monkeypatch, connections, stop_after=2)
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+        if len(calls) == 2:
+            closing.set()
+        if len(calls) <= 2:
+            raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "retry_initial": 0.05})
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(calls) >= 3)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert calls[2]["entries"] == REGISTRY_ENTRIES
+    assert calls[2]["runs"] == [
+        {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+    ]
+    # Each part keeps the age of the pull it came from.
+    assert calls[2]["runs_age_seconds"] < calls[2]["age_seconds"]
+    assert client._preloaded == len(REGISTRY_ENTRIES)
+
+
+@pytest.mark.asyncio
+async def test_stale_held_records_never_take_a_fresh_run_table_with_them(monkeypatch):
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    now = time.monotonic()
+    runs = [{"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"}]
+    assert await client._deliver_preload({
+        "entries": REGISTRY_ENTRIES, "runs": runs,
+        "_observed": now - ccc.MAX_ENTRY_AGE - 1, "_runs_observed": now,
+    }) is True
+    (msg,) = calls
+    assert msg["entries"] == []
+    assert msg["runs"] == runs
+    assert msg["age_seconds"] == msg["runs_age_seconds"] < 5
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preload_delivery_keeps_both_read_times_for_its_retry():
+    async def on_batch(msg):
+        raise ConnectionError("server unreachable")
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    now = time.monotonic()
+    runs = [{"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"}]
+    held = {
+        "entries": REGISTRY_ENTRIES, "runs": runs,
+        "_observed": now - 3600, "_runs_observed": now - 60,
+    }
+    assert await client._deliver_preload(held) is False
+    assert client._preload["_observed"] == held["_observed"]
+    assert client._preload["_runs_observed"] == held["_runs_observed"]
 
 
 @pytest.mark.asyncio
@@ -2923,6 +3196,8 @@ async def test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows(mon
     finally:
         await _finish(task)
     (msg,) = _entry_lists(calls)
+    # The list carries its own age, as a list with no rows has no row's.
+    assert 0 <= msg.pop("age_seconds") < 5
     assert msg == {
         "type": "class_codes", "run_id": RUN_ID, "entry_list": True,
         "entries": [_listed("7"), _listed("8", "TD")],

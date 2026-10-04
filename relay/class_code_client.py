@@ -132,9 +132,10 @@ RESULTS_VIEW_PARAMS = (("LiveSectionDecimals", "1"), ("SectionDecimals", "3"), (
 
 _IDENTITY_FRAME_PREFIX = b"\x00\x00\x01\x04"
 
-# A kept entry older than this is dropped rather than retried: the server
-# would discard it anyway (its registry TTL is the same 12 hours), and a batch
-# the server keeps rejecting must not be retried for ever.
+# A kept entry older than this is dropped rather than retried: a batch the
+# server keeps rejecting must not be retried for ever.  The server keeps a
+# delivered class-code record for 36 hours, but its preload and runs for 12,
+# and an entry held undelivered this long belongs to a session long gone.
 MAX_ENTRY_AGE = 12 * 3600
 
 # A model is ~4.5 MB and grows with the host's archive; a stream still going
@@ -169,11 +170,13 @@ _GROUP_ANCHOR = re.compile(
     rb"(..\x00\x80).(....)(..\x00\x80|\xff\xff\xff\xff)", re.DOTALL
 )
 
-# A run-table record in the model: u32 1, 12 bytes, the run id (0x4000xxxx),
-# u32 flags, the group id (0x8000xxxx), then the run name as a ``str``.
-_RUN_ANCHOR = re.compile(
-    rb"\x01\x00\x00\x00.{12}(..\x00\x40)(....)(..\x00\x80)", re.DOTALL
-)
+# A run-table record in the model: 16 bytes, the run id (0x4000xxxx), u32
+# flags, the group id (0x8000xxxx), then the run name as a ``str``.  The 16
+# bytes in front vary (u32 1 plus 12 bytes, all zero, or other), so they are
+# not part of the anchor; see parse_runs.  A lookahead, so matches overlap
+# and a false match cannot consume a real record's bytes.
+_RUN_ANCHOR = re.compile(rb"(?=(..\x00\x40)(....)(..\x00\x80))", re.DOTALL)
+_RUN_LEAD_IN = b"\x01\x00\x00\x00"
 
 # An Announcements view frame is found by the view's title, written twice;
 # see AnnouncementParser for the offsets around it.
@@ -978,38 +981,50 @@ def parse_runs(buf: bytes) -> list[dict]:
     *buf* is the same model :func:`parse_registry` reads.  Each run record
     is laid out as below, integers u32 little-endian::
 
-        u32   1
-        12 bytes              not read
+        16 bytes              not read: u32 1 plus 12 bytes, 16 zero bytes,
+                              or other bytes
         u32   run id          0x4000xxxx
         u32   flags           not read
         u32   group id        0x8000xxxx: the championship the run belongs to
         str   run name
 
-    The table spans many past meetings, and run names repeat across them —
-    one name can belong to dozens of runs — so a name alone rarely picks one
-    run.  A run's name can also be edited after the table was pulled.  Ids
-    are returned as ``0x`` plus eight uppercase hex digits, the form the
-    pushes' run tags take.  A name that is empty, longer than 255 bytes or
-    not printable is skipped, as is a record running past the buffer.  The
-    rest are returned as ``{"run_id", "group_id", "name"}`` dicts, one per
-    run id, the first kept, in order of first appearance.
+    The record is anchored on its own fields, because the 16 bytes in front
+    vary: requiring the ``u32 1`` missed every run written behind zeros
+    (#108).  The table spans many past meetings, and run names repeat
+    across them — one name can belong to dozens of runs — so a name alone
+    rarely picks one run.  A run's name can also be edited after the table
+    was pulled.  Ids are returned as ``0x`` plus eight uppercase hex digits,
+    the form the pushes' run tags take.  A name longer than 255 bytes or not
+    printable is skipped, as is a record running past the buffer.
+
+    A run with an empty name is kept, with ``name`` ``""``, because its
+    group still scopes the run's pushes.  With no name to validate it, it is
+    kept only behind the ``u32 1`` lead-in, and only for an id no named
+    record claims.  The rest are returned as ``{"run_id", "group_id",
+    "name"}`` dicts, one per run id, the first named record kept, in order
+    of first appearance.
     """
-    runs: dict[str, dict] = {}
+    named: dict[str, dict] = {}
+    nameless: dict[str, dict] = {}
+    order: dict[str, None] = {}
     for m in _RUN_ANCHOR.finditer(buf):
         (rid,) = struct.unpack("<I", m.group(1))
         (gid,) = struct.unpack("<I", m.group(3))
-        cur = _Cursor(buf, m.end())
+        cur = _Cursor(buf, m.start() + 12)
         try:
             name = cur.string()
         except _ShortRecord:
             continue
-        if not name or not name.isprintable():
+        if not name.isprintable():
+            continue
+        lead_in = m.start() - 16
+        if not name and (lead_in < 0 or buf[lead_in:lead_in + 4] != _RUN_LEAD_IN):
             continue
         run_id = f"0x{rid:08X}"
-        runs.setdefault(
-            run_id, {"run_id": run_id, "group_id": f"0x{gid:08X}", "name": name}
-        )
-    return list(runs.values())
+        record = {"run_id": run_id, "group_id": f"0x{gid:08X}", "name": name}
+        (named if name else nameless).setdefault(run_id, record)
+        order.setdefault(run_id, None)
+    return [named.get(run_id) or nameless[run_id] for run_id in order]
 
 
 def parse_groups(buf: bytes) -> dict[str, str]:
@@ -1439,17 +1454,31 @@ class ClassCodeClient:
         self._runs = runs
         self._groups = groups
         self._pick_run()
-        if not entries:
+        if not entries and not runs:
             log.warning(
-                "Class-code registry pull of %d bytes held no usable records – "
-                "not forwarding a preload", len(model),
+                "Class-code registry pull of %d bytes held no usable records "
+                "and no runs – not forwarding a preload", len(model),
             )
             return
+        if not entries:
+            # The server scopes codes to the running run's group from the run
+            # table, and keeps the records it already holds.
+            log.warning(
+                "Class-code registry pull of %d bytes held no usable records – "
+                "forwarding its run table of %d runs only", len(model), len(runs),
+            )
+        held = self._preload
+        records_at = pulled_at
+        if not entries and held is not None and held["entries"]:
+            # An earlier pull's records still wait to be delivered; they
+            # travel with this run table, each part dated as it was read.
+            entries, records_at = held["entries"], held["_observed"]
         # Measured as the POST body will be, with an age as wide as a
         # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({
             "type": "class_code_preload", "entries": entries, "runs": runs,
             "age_seconds": MAX_ENTRY_AGE - 0.001,
+            "runs_age_seconds": MAX_ENTRY_AGE - 0.001,
         }))
         if size > MAX_PRELOAD_BYTES:
             log.warning(
@@ -1462,7 +1491,10 @@ class ClassCodeClient:
             "Class-code registry: %d bytes pulled, %d records with a class, %d runs",
             len(model), len(entries), len(runs),
         )
-        self._preload = {"entries": entries, "runs": runs, "_observed": pulled_at}
+        self._preload = {
+            "entries": entries, "runs": runs,
+            "_observed": records_at, "_runs_observed": pulled_at,
+        }
 
     async def _exchange(
         self, reader, writer, record: bytes, idle: float, *, limit: int | None = None
@@ -1983,28 +2015,49 @@ class ClassCodeClient:
             self._retry_delay = self.retry_initial
 
     async def _deliver_preload(self, preload: dict) -> bool:
-        """Hand *preload* to *on_batch*; return whether nothing is left to retry."""
-        age = time.monotonic() - preload["_observed"]
-        if age > MAX_ENTRY_AGE:
+        """Hand *preload* to *on_batch*; return whether nothing is left to retry.
+
+        Its records and its run table can come from different pulls, so each
+        carries its own age — ``age_seconds`` and ``runs_age_seconds`` — and
+        each is dropped alone once too old: stale records never take a fresh
+        run table with them.
+        """
+        now = time.monotonic()
+        age = now - preload["_observed"]
+        runs_age = now - preload.get("_runs_observed", preload["_observed"])
+        entries, runs = preload["entries"], preload.get("runs", [])
+        stale = entries and age > MAX_ENTRY_AGE
+        if stale:
+            entries = []
+        if runs and runs_age > MAX_ENTRY_AGE:
+            runs = []
+        if stale or not (entries or runs):
             log.warning(
-                "Dropping an undelivered class-code preload – older than %.0fh",
+                "Dropping an undelivered class-code %s – older than %.0fh",
+                "preload" if not (entries or runs) else "registry",
                 MAX_ENTRY_AGE / 3600,
             )
+        if not (entries or runs):
             return True
-        entries = preload["entries"]
+        preload = preload | {"entries": entries, "runs": runs}
         log.info("Forwarding a class-code preload of %d records", len(entries))
         try:
             await self.on_batch({
                 "type": "class_code_preload",
                 "entries": entries,
-                "runs": preload.get("runs", []),
-                "age_seconds": round(age, 3),
+                "runs": runs,
+                # A run table alone is dated by its own age, as a server that
+                # predates runs_age_seconds reads only this one.
+                "age_seconds": round(age if entries else runs_age, 3),
+                "runs_age_seconds": round(runs_age, 3),
             })
         except Exception:
             log.exception("Could not forward the class-code preload")
             self._preload = preload
             return False
-        self._preloaded = len(entries)
+        # A run table alone leaves the server's records as they were.
+        if entries:
+            self._preloaded = len(entries)
         self._delivered()
         return True
 
@@ -2067,6 +2120,8 @@ class ClassCodeClient:
                 "type": "class_codes",
                 "run_id": held["run_id"],
                 "entry_list": True,
+                # The list's own age too, as a list with no rows has none.
+                "age_seconds": round(age, 3),
                 "entries": [e | {"age_seconds": round(age, 3)} for e in entries],
             })
         except Exception:
