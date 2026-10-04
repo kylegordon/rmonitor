@@ -155,7 +155,7 @@ class RaceState:
     """Holds the current state of the race, updated by parsed messages."""
 
     def __init__(self):
-        # Keyed ``"<run id>\t<entrant id>"``; see _class_codes.  Created here,
+        # Keyed ``"<lower-cased run id>\t<entrant id>"``; see _class_codes.  Created here,
         # not in reset(), because reset() must never clear it.
         self.class_codes: dict[str, dict] = {}
         # The last registry preload; see _class_code_preload.  Never cleared
@@ -602,6 +602,9 @@ class RaceState:
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
+        # One run's records share a key whatever the case of its hex id: a
+        # start notice may spell it in lower case where pushes use upper.
+        run_key = run_id.lower()
         now = time.time()
         changed = False
         stored = 0
@@ -629,7 +632,7 @@ class RaceState:
             stale = [
                 k for k, v in self.class_codes.items()
                 if v.get("origin") == _ENTRY_LIST_ORIGIN
-                and k.split("\t", 1)[0].lower() == run_id.lower()
+                and k.split("\t", 1)[0] == run_key
             ]
             for k in stale:
                 del self.class_codes[k]
@@ -641,7 +644,7 @@ class RaceState:
             entry["received_at"] = now - age
             if entry_list:
                 entry["origin"] = _ENTRY_LIST_ORIGIN
-            self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
+            self.class_codes[f"{run_key}\t{entry.pop('entrant_id')}"] = entry
             changed = True
             stored += 1
         # Logged whatever was stored: a batch of codeless records stores
@@ -1554,18 +1557,30 @@ class RaceState:
         # a corrupt store can neither keep a code forever nor extend its life.
         now = time.time()
         try:
-            self.class_codes = {
-                k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
-                | {"received_at": min(stamp, now)}
-                # So the run's next entry list still replaces it.
-                | ({"origin": _ENTRY_LIST_ORIGIN}
-                   if v.get("origin") == _ENTRY_LIST_ORIGIN else {})
-                for k, v in (data.get("class_codes") or {}).items()
-                if isinstance(k, str) and isinstance(v, dict)
-                # The invariant _class_codes holds on ingest: never a codeless record.
-                and v.get("class_code") not in (None, "")
-                and (stamp := _finite_stamp(v.get("received_at"))) is not None
-            }
+            restored = {}
+            for k, v in (data.get("class_codes") or {}).items():
+                if not (
+                    isinstance(k, str) and isinstance(v, dict)
+                    # The invariant _class_codes holds on ingest: never a codeless record.
+                    and v.get("class_code") not in (None, "")
+                    and (stamp := _finite_stamp(v.get("received_at"))) is not None
+                ):
+                    continue
+                rec = (
+                    {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
+                    | {"received_at": min(stamp, now)}
+                    # So the run's next entry list still replaces it.
+                    | ({"origin": _ENTRY_LIST_ORIGIN}
+                       if v.get("origin") == _ENTRY_LIST_ORIGIN else {})
+                )
+                # Keyed as _class_codes keys: a store saved before run ids
+                # were lower-cased can hold one record under two spellings,
+                # and the newer is kept.
+                run, sep, entrant = k.partition("\t")
+                key = f"{run.lower()}{sep}{entrant}"
+                if key not in restored or rec["received_at"] >= restored[key]["received_at"]:
+                    restored[key] = rec
+            self.class_codes = restored
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
         self._prune_class_codes(now)

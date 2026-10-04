@@ -1458,10 +1458,32 @@ def test_an_entry_list_leaves_pushes_and_other_runs_lists_alone(state):
     _entry_list(state, "0x4000BBBB", _code_entry("a0000009", "9", "Saloon Cup", "SC", "9"))
     _entry_list(state, "0x4000AAAA", _code_entry("a0000008", "8", "Saloon Cup", "SC", "8"))
     _entry_list(state, "0x4000AAAA")
-    assert sorted(state.class_codes) == ["0x4000AAAA\te1", "0x4000BBBB\ta0000009"]
+    assert sorted(state.class_codes) == ["0x4000aaaa\te1", "0x4000bbbb\ta0000009"]
     # A plain batch never withdraws anything.
     _codes(state, "0x4000BBBB")
-    assert "0x4000BBBB\ta0000009" in state.class_codes
+    assert "0x4000bbbb\ta0000009" in state.class_codes
+
+
+def test_an_entry_list_replaces_a_push_under_its_run_id_spelled_in_either_case(state):
+    """A start notice may spell the run id in lower case where pushes use
+    upper; one entrant of one run must still be one record, or a car without
+    a transponder sees two codes and gets none."""
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7")
+    _codes(state, "0x400027FB", _code_entry("a0000007", "7", "Saloon Cup", "SC"))
+    _entry_list(state, "0x400027fb", _code_entry("a0000007", "7", "Saloon Cup", "SD"))
+    assert list(state.class_codes) == ["0x400027fb\ta0000007"]
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SD"
+
+
+def test_a_store_holding_a_record_under_two_spellings_keeps_the_newer(state):
+    rec = {"number": "7", "class_name": "Saloon Cup", "transponder": "", "class_code": "SC"}
+    state.load_class_codes({"class_codes": {
+        "0x400027FB\te1": {**rec, "received_at": time.time() - 60},
+        "0x400027fb\te1": {**rec, "class_code": "SD", "received_at": time.time() - 120},
+    }})
+    assert list(state.class_codes) == ["0x400027fb\te1"]
+    assert state.class_codes["0x400027fb\te1"]["class_code"] == "SC"
 
 
 @pytest.mark.parametrize("bad", [
