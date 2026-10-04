@@ -1464,6 +1464,19 @@ def test_an_entry_list_leaves_pushes_and_other_runs_lists_alone(state):
     assert "0x4000BBBB\ta0000009" in state.class_codes
 
 
+@pytest.mark.parametrize("bad", [
+    {"run_id": "0x4000AAAA"},
+    {"run_id": "0x4000AAAA", "entries": "not a list"},
+    {"run_id": "0x4000AAAA", "entries": {"a0000007": {}}},
+    {"run_id": "", "entries": []},
+])
+def test_a_malformed_entry_list_withdraws_nothing(state, bad):
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
+    before = dict(state.class_codes)
+    state.process({"type": "class_codes", "entry_list": True, **bad})
+    assert state.class_codes == before
+
+
 def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):
     import json
 

@@ -605,7 +605,9 @@ class RaceState:
         now = time.time()
         changed = False
         stored = 0
-        entry_list = bool(msg.get("entry_list"))
+        # Only a well-formed list may stand as the run's whole entry list: a
+        # malformed one must never withdraw the codes already stored.
+        entry_list = bool(msg.get("entry_list")) and bool(run_id) and isinstance(entries, list)
         if entry_list:
             stale = [
                 k for k, v in self.class_codes.items()
