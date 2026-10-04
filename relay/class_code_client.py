@@ -16,6 +16,10 @@ this module is a clean-room implementation of the client side.
 - **Every connect then pulls the host's competitor registry** with two more
   records, the same way.  It fills in entrants whose entry was edited while
   no relay was connected, which no push will ever repeat.
+- **The running run's entry list is requested on the held connection**, as
+  the timing console requests its results screen, so an entrant whose code
+  was never pushed — never edited while a relay was connected — still gets
+  it.  The request never opens a connection of its own.
 - **Every connect raises a visible notice on the timing operator's screen.**
   So there is no read-silence timeout, a connection is only replaced after it
   fails, and the reconnect delay is long and grows.
@@ -120,6 +124,11 @@ VIEW_TOKENS = (22,)
 _OP_VIEW_OPEN = b"\x21\x80"
 _OP_VIEW_CLOSE = b"\x22\x80"
 ANNOUNCEMENTS_VIEW = "lgView_Announcements"
+# The view the timing console opens from its results screen, with these
+# parameters before the run's UniqueID.  It answers with one row per entrant
+# for any run type, a qualifying run included; see EntryListParser.
+RESULTS_VIEW = "lgView_RaceResults"
+RESULTS_VIEW_PARAMS = (("LiveSectionDecimals", "1"), ("SectionDecimals", "3"), ("SpeedDecimals", "1"))
 
 _IDENTITY_FRAME_PREFIX = b"\x00\x00\x01\x04"
 
@@ -188,6 +197,17 @@ _ANN_ROW = re.compile(
     rb"(.{8})\x00\x0a\x00\x00\x00(\d\d/\d\d/\d{4}).{8}\x00\x08\x00\x00\x00(\d\d:\d\d:\d\d)",
     re.DOTALL,
 )
+
+# A results view frame is found by its view id and the two constants after
+# it; see EntryListParser for the offsets around them.
+_ENT_OPCODE_AT = -63
+_ENT_LENGTH_AT = -4
+_ENT_REPLY = b"\x24\x80"
+# The view id, 1, 0, two empty titles and the row count.
+_ENT_MIN_BLOCK = 24
+# CarAdditional0-9 in a row's tail; the code is CarAdditional2.
+_ENT_EXTRA_FIELDS = 10
+_ENT_CODE_FIELD = 2
 
 # The run-state notice the host announces on the live stream; see RunStateParser.
 _RUN_STATE_MARKER = b"\x0e\x00\x00\x00runstatechange"
@@ -581,6 +601,191 @@ def _announcement_rows(block: bytes, view_id: int) -> list[dict] | None:
     return rows
 
 
+class EntryListReply(NamedTuple):
+    """The reply to one entry-list subscription.
+
+    *rows* is *None* when the reply could not be read whole.
+    """
+
+    rows: list[dict] | None
+
+
+class EntryListParser:
+    """Parse the reply to one results view subscription out of the ``:51738`` stream.
+
+    Built per subscription for the awaited *view_id*.  The frame has the same
+    layout as an Announcements frame (:class:`AnnouncementParser`): a 59-byte
+    header with the opcode in its first two bytes, then — integers u32
+    little-endian, a ``str`` a u32 length then that many bytes::
+
+        u32   block length    counted from the view id
+        u32   view id         the id the client chose when it subscribed
+        u32   1
+        u32   0
+        str   title           "Not classified" in every capture
+        str   title           the same again
+        u32   row count
+        rows
+
+    The title is a classification group label, not the view's name, so the
+    frame is found by ``view id, 1, 0`` for the awaited view instead; it is
+    taken only with opcode ``24 80`` (the reply — the view's pushes and its
+    ``21 80`` column frame are skipped), two equal titles and a plausible
+    length.  Each row is a head and a tail, with a middle between them
+    holding position, laps, times and status — longer in a finished race,
+    and not read::
+
+        head: str number, 1 byte (not 0),
+              str first name, 00, str last name, 00, str name, 00, str class, 00
+        tail: (str, separator) x 10     CarAdditional0-9: model, capacity, code, …
+              str car reg, 00, str driver reg, 00
+              u32 n, 1 byte, n x u32    the numeric transponders
+              str transponder           as the rMonitor feed carries it
+
+    The ten CarAdditional fields share one separator byte, which is ``0f`` in
+    some replies and ``10`` in others — mixed within one reply between its
+    finished and DNS rows — so it is never fixed, only required non-zero and
+    the same across a row.  Every ``str`` read must hold no byte below
+    ``0x20``: a u32 in a finished row's middle can read as a length that runs
+    through the real model field's length prefix, and would otherwise anchor
+    a tail early.  Rows are found by walking these typed fields — a head,
+    then the first tail at or after its end, then the next head after that
+    tail — never by string scans keyed on name casing.  Number and class
+    must be non-empty.  A reply whose rows found disagree with its row count
+    is withheld (*rows* None) rather than forwarded in part.  A transponder
+    field holding two, comma-joined, is kept raw.
+    """
+
+    def __init__(self, view_id: int) -> None:
+        self.view_id = view_id
+        self._marker = struct.pack("<III", view_id, 1, 0)
+        self._buf = bytearray()
+
+    def feed(self, data: bytes) -> list[EntryListReply]:
+        """Absorb *data* and return the reply if it is now complete."""
+        self._buf += data
+        out: list[EntryListReply] = []
+        while True:
+            i = self._buf.find(self._marker)
+            if i < 0:
+                # Keep a tail that may hold the header and the start of a
+                # straddling marker.
+                del self._buf[:-(len(self._marker) - 1 - _ENT_OPCODE_AT)]
+                break
+            if i + _ENT_OPCODE_AT < 0:
+                # The header was cut off before this parser saw it.
+                del self._buf[:i + 1]
+                continue
+            (n,) = struct.unpack_from("<I", self._buf, i + _ENT_LENGTH_AT)
+            start = i + _ENT_OPCODE_AT
+            if (
+                bytes(self._buf[start:start + 2]) != _ENT_REPLY
+                or not _ENT_MIN_BLOCK <= n <= _MAX_RECORD_LEN
+            ):
+                del self._buf[:i + 1]
+                continue
+            end = i + n
+            if len(self._buf) < end:
+                del self._buf[:start]
+                break
+            block = bytes(self._buf[i:end])
+            cur = _Cursor(block, 12)
+            try:
+                titled = cur.string() == cur.string()
+                cur.u32()
+            except _ShortRecord:
+                titled = False
+            if not titled:
+                del self._buf[:i + 1]
+                continue
+            del self._buf[:end]
+            out.append(EntryListReply(_entry_list_rows(block, self.view_id, cur.pos)))
+        return out
+
+
+def _entry_list_head(block: bytes, pos: int) -> tuple[list[str], int] | None:
+    """Return a row head's five strings at *pos* and the offset after it."""
+    cur = _Cursor(block, pos)
+    try:
+        fields = [cur.printable()]
+        if cur.byte() == 0:
+            return None
+        for _ in range(4):
+            fields.append(cur.printable())
+            if cur.byte() != 0:
+                return None
+    except _ShortRecord:
+        return None
+    if not fields[0] or not fields[4]:
+        return None
+    return fields, cur.pos
+
+
+def _entry_list_tail(block: bytes, pos: int) -> tuple[list[str], str, str, int] | None:
+    """Return a row tail's CarAdditional fields, car reg and transponder at
+    *pos*, and the offset after it."""
+    cur = _Cursor(block, pos)
+    extra = []
+    sep = None
+    try:
+        for _ in range(_ENT_EXTRA_FIELDS):
+            extra.append(cur.printable())
+            b = cur.byte()
+            if b == 0 or (sep is not None and b != sep):
+                return None
+            sep = b
+        regs = []
+        for _ in range(2):
+            regs.append(cur.printable())
+            if cur.byte() != 0:
+                return None
+    except _ShortRecord:
+        return None
+    end = cur.pos
+    try:
+        n = cur.u32()
+        cur.skip(1 + 4 * n)
+        transponder = cur.printable()
+        end = cur.pos
+    except _ShortRecord:
+        transponder = ""
+    return extra, regs[0], transponder, end
+
+
+def _entry_list_rows(block: bytes, view_id: int, pos: int) -> list[dict] | None:
+    """Return the rows of one reply, *block* starting at its view id and its
+    rows at *pos*."""
+    (count,) = struct.unpack_from("<I", block, pos - 4)
+    rows = []
+    while pos < len(block):
+        head = _entry_list_head(block, pos)
+        if head is None:
+            pos += 1
+            continue
+        fields, q = head
+        while q < len(block) and (tail := _entry_list_tail(block, q)) is None:
+            q += 1
+        if q >= len(block):
+            break
+        extra, car_reg, transponder, pos = tail
+        rows.append({
+            "entrant_id": car_reg,
+            "number": fields[0],
+            "class_name": fields[4],
+            "transponder": transponder,
+            "class_code": extra[_ENT_CODE_FIELD],
+        })
+    if len(rows) != count:
+        # A reply runs to ~23 KB, so its bytes are logged only at debug.
+        log.warning(
+            "Entry list reply for view %d holds %d rows but %d were read – withheld",
+            view_id, count, len(rows),
+        )
+        log.debug("Withheld entry list reply for view %d: %s", view_id, block.hex())
+        return None
+    return rows
+
+
 def _parse_body(body: bytes) -> PushRecord | None:
     # The same decoding RMonitorClient applies to :50000, so the server's
     # exact class-name gate compares like with like.
@@ -616,6 +821,27 @@ def record_entry(rec: PushRecord) -> dict | None:
     }
 
 
+def entry_list_entries(rows: list[dict]) -> list[dict]:
+    """Return the join fields of entry-list *rows*, in :func:`record_entry`'s shape.
+
+    A row without a car reg or a code is dropped, and every entry is marked
+    ``kind`` ``"entry list"``.  The code is taken only from CarAdditional2,
+    the field the host labels "Class" — never derived from the class name.
+    """
+    return [
+        {
+            "entrant_id": r["entrant_id"],
+            "kind": "entry list",
+            "number": r["number"],
+            "class_name": r["class_name"],
+            "transponder": r["transponder"],
+            "class_code": r["class_code"],
+        }
+        for r in rows
+        if r["entrant_id"] and r["class_code"]
+    ]
+
+
 class _ShortRecord(Exception):
     """A registry record ran past the buffer or carried an implausible length."""
 
@@ -634,10 +860,24 @@ class _Cursor:
         self.pos += 4
         return value
 
+    def byte(self) -> int:
+        if self.pos >= len(self.buf):
+            raise _ShortRecord
+        self.pos += 1
+        return self.buf[self.pos - 1]
+
     def skip(self, n: int) -> None:
         if self.pos + n > len(self.buf):
             raise _ShortRecord
         self.pos += n
+
+    def printable(self) -> str:
+        """Read a ``str`` holding no byte below ``0x20``."""
+        start = self.pos + 4
+        text = self.string()
+        if any(b < 0x20 for b in self.buf[start:self.pos]):
+            raise _ShortRecord
+        return text
 
     def string(self, limit: int = _MAX_REGISTRY_STR) -> str:
         n = self.u32()
@@ -919,6 +1159,20 @@ class ClassCodeClient:
     one it picks the run by the session's name instead
     (:meth:`note_session`).
 
+    With *entry_list* set, the client also subscribes to the same run's
+    results view (:data:`RESULTS_VIEW`, :class:`EntryListParser`) on every
+    start, pick and reconnect: its reply lists every entrant of the run with
+    the code the host holds, DNS entrants included.  The reply is taken once
+    and the view closed, since an open one streams the whole table about
+    once a second; its rows join the pushes as ``class_codes`` entries of
+    ``kind`` ``"entry list"`` for that run, after the run itself.  The run is
+    subscribed again every *entry_list_refresh_interval* seconds, to catch an
+    entry edited mid-run that no push carried, and a subscription not
+    answered within *announce_reply_timeout* seconds is closed and sent again
+    on the same connection — never on a new one, since every connect raises
+    an operator notice.  A reply whose rows disagree with its count forwards
+    nothing and waits for the refresh.
+
     *on_status*, if given, is called with a :class:`ClassCodeStatus` on each
     connect attempt, completed handshake, connection failure, delivery and
     failed delivery; an exception it raises is logged and ignored.
@@ -951,6 +1205,8 @@ class ClassCodeClient:
         announce_resubscribe_delay: float = 1.0,
         announce_refresh_interval: float = 60.0,
         announce_reply_timeout: float = 10.0,
+        entry_list: bool = True,
+        entry_list_refresh_interval: float = 60.0,
     ) -> None:
         self.host = host
         self.port = port
@@ -973,6 +1229,8 @@ class ClassCodeClient:
         self.announce_resubscribe_delay = announce_resubscribe_delay
         self.announce_refresh_interval = announce_refresh_interval
         self.announce_reply_timeout = announce_reply_timeout
+        self.entry_list = entry_list
+        self.entry_list_refresh_interval = entry_list_refresh_interval
         self._retry_delay = retry_initial
         # Event-loop time before which a failed batch is not re-sent.
         self._retry_at = 0.0
@@ -1040,6 +1298,8 @@ class ClassCodeClient:
                 if self._ann_run is not None:
                     # The views died with the last connection.
                     self._ann_due = asyncio.get_running_loop().time()
+                    if self.entry_list:
+                        self._ent_due = self._ann_due
                 held_from = time.monotonic()
                 try:
                     await self._hold(reader, writer)
@@ -1084,7 +1344,8 @@ class ClassCodeClient:
         self._ann_parser = AnnouncementParser()
         # The view whose reply was last taken as the truth, the subscription
         # awaiting its reply (view id, loop time sent), the loop time the
-        # next subscription is due, and the views to close.
+        # next subscription is due, and the views to close — the entry
+        # list's among them.
         self._ann_view: int | None = None
         self._ann_pending: tuple[int, float] | None = None
         self._ann_due: float | None = None
@@ -1093,6 +1354,11 @@ class ClassCodeClient:
         # A push read while a subscription awaited its reply: that reply may
         # predate the change, so another subscription follows it.
         self._ann_stale = False
+        # The entry-list subscription awaiting its reply (view id, loop time
+        # sent, run id), its parser, and the loop time the next one is due.
+        self._ent_pending: tuple[int, float, str] | None = None
+        self._ent_parser: EntryListParser | None = None
+        self._ent_due: float | None = None
 
     def _drop_announcement_views(self) -> None:
         """Queue every view held or awaited for close."""
@@ -1103,6 +1369,14 @@ class ClassCodeClient:
         self._ann_view = None
         self._ann_pending = None
         self._ann_stale = False
+        self._drop_entry_list_view()
+
+    def _drop_entry_list_view(self) -> None:
+        """Queue an awaited entry-list view for close."""
+        if self._ent_pending is not None:
+            self._ann_close.append(self._ent_pending[0])
+        self._ent_pending = None
+        self._ent_parser = None
 
     async def _handshake(self, reader, writer) -> None:
         token, machine = relay_identity()
@@ -1233,6 +1507,10 @@ class ClassCodeClient:
                 deadline = min(deadline, self._ann_pending[1] + self.announce_reply_timeout)
             elif self._ann_run is not None and self._ann_due is not None:
                 deadline = min(deadline, self._ann_due)
+            if self._ent_pending is not None:
+                deadline = min(deadline, self._ent_pending[1] + self.announce_reply_timeout)
+            elif self.entry_list and self._ann_run is not None and self._ent_due is not None:
+                deadline = min(deadline, self._ent_due)
             if self._has_pending():
                 if self._delivering():
                     # Re-check once the delivery in flight may have finished.
@@ -1250,6 +1528,7 @@ class ClassCodeClient:
                     await writer.drain()
                     next_keepalive = now + self.keepalive_interval
                 self._write_announcement_records(writer, now)
+                self._write_entry_list_records(writer, now)
                 await writer.drain()
                 if (
                     self._has_pending()
@@ -1293,6 +1572,37 @@ class ClassCodeClient:
         self._ann_pending = (view_id, now)
         # The fallback if no reply comes.
         self._ann_due = now + self.announce_refresh_interval
+
+    def _write_entry_list_records(self, writer, now: float) -> None:
+        """Write a due entry-list subscription, on this connection only.
+
+        One left unanswered is closed and sent again on a new view of the
+        same connection: a request never opens a connection of its own, since
+        every connect raises a notice on the timing operator's screen.
+        """
+        if self._ann_run is None or not self.entry_list:
+            return
+        if self._ent_pending is not None:
+            if now - self._ent_pending[1] < self.announce_reply_timeout:
+                return
+            log.warning(
+                "Entry list subscription on view %d not answered – subscribing again",
+                self._ent_pending[0],
+            )
+            writer.write(build_view_close(self._session, view_id=self._ent_pending[0]))
+        elif self._ent_due is None or self._ent_due > now:
+            return
+        view_id = self._next_view_id
+        self._next_view_id += 1
+        writer.write(build_view_open(
+            self._session, view_id=view_id, name=RESULTS_VIEW,
+            params=[*RESULTS_VIEW_PARAMS, ("UniqueID", str(int(self._ann_run, 16)))],
+        ))
+        log.debug("Subscribed to the entry list for run %s on view %d", self._ann_run, view_id)
+        self._ent_pending = (view_id, now, self._ann_run)
+        self._ent_parser = EntryListParser(view_id)
+        # The fallback if no reply comes.
+        self._ent_due = now + self.entry_list_refresh_interval
 
     def _delivering(self) -> bool:
         return self._delivery is not None and not self._delivery.done()
@@ -1368,6 +1678,9 @@ class ClassCodeClient:
             self._take_run(run.run_id, run.name, run.event)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
+        if self._ent_parser is not None:
+            for reply in self._ent_parser.feed(data):
+                self._absorb_entry_list(reply)
 
     def _take_run(self, run_id: str, name: str, event: str = "") -> None:
         """Treat *run_id* as the started run: forward it and subscribe.
@@ -1387,6 +1700,10 @@ class ClassCodeClient:
         self._ann_start_key = start_key
         # The reply holds the rows that already exist.
         self._ann_due = asyncio.get_running_loop().time()
+        if self.entry_list:
+            # A start or pick takes a fresh entry list, even of the same run.
+            self._drop_entry_list_view()
+            self._ent_due = self._ann_due
 
     def note_session(self, number: str, description: str) -> None:
         """Note the session a feed ``$B`` record names.
@@ -1539,6 +1856,34 @@ class ClassCodeClient:
                 return
             due = now + self.announce_resubscribe_delay
             self._ann_due = due if self._ann_due is None else min(self._ann_due, due)
+
+    def _absorb_entry_list(self, reply: EntryListReply) -> None:
+        """Take an entry-list reply once and close its view.
+
+        The view would otherwise stream the whole results table about once a
+        second; the next start, pick or refresh subscribes again.
+        """
+        if self._ent_pending is None:
+            return
+        view_id, _, run_id = self._ent_pending
+        self._ann_close.append(view_id)
+        self._ent_pending = None
+        self._ent_parser = None
+        if self._ann_run is None or run_id != self._ann_run:
+            return
+        self._ent_due = asyncio.get_running_loop().time() + self.entry_list_refresh_interval
+        if reply.rows is None:
+            return
+        entries = entry_list_entries(reply.rows)
+        log.info(
+            "Entry list for run %s: %d rows, %d with a code",
+            run_id, len(reply.rows), len(entries),
+        )
+        observed = time.monotonic()
+        by_entrant = self._pending.setdefault(run_id, {})
+        for entry in entries:
+            entry["_observed"] = observed
+            by_entrant[entry["entrant_id"]] = entry
 
     async def _flush(self) -> None:
         pending, self._pending = self._pending, {}

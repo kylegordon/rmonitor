@@ -1411,6 +1411,21 @@ def test_class_code_joined_by_transponder_even_after_a_renumber(state):
     assert snap["class_code_missing"] == 0
 
 
+def test_an_entry_list_entry_gives_a_rental_transponder_car_its_code(state):
+    # An entrant never edited while the relay was connected: no push carries
+    # the code, and the run's entry list does, under the rental transponder's
+    # name as the feed carries it.
+    state.process({"type": "class_info", "unique_number": "1", "description": "KMSC Pre Injection 600"})
+    _add_car(state, "100", transponder="NE10")
+    _codes(state, "0x4000AAAA", {
+        **_code_entry("a0000100", "100", "KMSC Pre Injection 600", "PI6", "NE10"),
+        "kind": "entry list",
+    })
+    snap = state.snapshot()
+    assert _entry_for(snap, "100")["class_code"] == "PI6"
+    assert snap["class_code_missing"] == 0
+
+
 def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
     _add_car(state, "7")
