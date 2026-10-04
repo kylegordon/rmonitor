@@ -190,6 +190,9 @@ class RaceState:
         # save can skip rewriting a store that has not changed — with a
         # preload it is some hundreds of KB.
         self.class_codes_revision = 0
+        # When prune_expired_class_codes last ran, so it can tell a record
+        # that has since passed the unscoped read's cutoff.
+        self._class_codes_pruned_at: float | None = None
         # The push scope last logged, so a change is logged once; see snapshot.
         self._logged_scope: str | None = None
         # The timing host's announcements, lowercased run id to its rows,
@@ -1213,7 +1216,9 @@ class RaceState:
         A snapshot calls this too, but snapshots run only once something else
         dirtied the state: an idle page would otherwise show a code past its
         TTL.  So the broadcast loop calls it every interval as well, and an
-        expiry from either caller marks the state dirty.
+        expiry from either caller marks the state dirty.  So does a record
+        passing the unscoped read's cutoff since the last call, though it is
+        kept.
         """
         now = time.time()
         expired = self._prune_class_codes(now)
@@ -1227,6 +1232,16 @@ class RaceState:
         if expired:
             self.class_codes_revision += 1
             self._dirty = True
+        # A record passing _CLASS_CODE_TTL_SECONDS is kept for scoped reads,
+        # so nothing above sees it go, but an unscoped page must stop showing
+        # it; the store itself is unchanged, so only the page is told.
+        last, self._class_codes_pruned_at = self._class_codes_pruned_at, now
+        if last is not None and any(
+            last - v["received_at"] <= _CLASS_CODE_TTL_SECONDS < now - v["received_at"]
+            for v in self.class_codes.values()
+        ):
+            self._dirty = True
+            expired = True
         return expired
 
     def _prune_class_code_preload(self, now: float) -> bool:
