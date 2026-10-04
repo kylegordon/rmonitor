@@ -192,7 +192,7 @@ async def post_message(
 
 
 def _aged(msg: dict, elapsed: float) -> dict:
-    """Return *msg* with its ``age_seconds``, and its entries', grown by *elapsed*.
+    """Return *msg* with its ages, and its entries', grown by *elapsed*.
 
     A message's ages are taken when it is built, but a retry sends it later:
     the server dates each record by its age, so a retried entry list sent
@@ -203,10 +203,12 @@ def _aged(msg: dict, elapsed: float) -> dict:
         return msg
 
     def grow(d: dict) -> dict:
-        age = d.get("age_seconds")
-        if isinstance(age, (int, float)) and not isinstance(age, bool):
-            return d | {"age_seconds": round(age + elapsed, 3)}
-        return d
+        out = d
+        for key in ("age_seconds", "runs_age_seconds"):
+            age = d.get(key)
+            if isinstance(age, (int, float)) and not isinstance(age, bool):
+                out = out | {key: round(age + elapsed, 3)}
+        return out
 
     out = grow(msg)
     entries = msg.get("entries")

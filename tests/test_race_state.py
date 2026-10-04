@@ -2189,6 +2189,31 @@ def test_a_runs_only_preload_gives_the_running_run_its_group_scope(state):
     assert _entry_for(state.snapshot(), "7")["class_code"] == "SL"
 
 
+def test_a_preloads_records_and_run_table_are_dated_by_their_own_ages(state, monkeypatch):
+    """The relay can send an undelivered pull's records with a newer pull's
+    run table; stale records must neither shorten nor discard fresh runs."""
+    import server.race_state as rs
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(rs.time, "time", lambda: now[0])
+    runs = [_run_row(DC, GROUP_D3, "Warm Up"), _run_row(DD, GROUP_D3, RACE_15)]
+    msg = {
+        "type": "class_code_preload", "entries": [_pre("1234567", "Saloon Cup", "SC")],
+        "runs": runs, "age_seconds": 3600.0, "runs_age_seconds": 60.0,
+    }
+    assert state.process(dict(msg)) == "class_codes"
+    pre = state.class_code_preload
+    assert pre["received_at"] == now[0] - 3600.0
+    assert pre["runs_received_at"] == now[0] - 60.0
+    # Records past the TTL are dropped alone; the fresh run table is kept.
+    stale = dict(msg, age_seconds=rs._CLASS_CODE_TTL_SECONDS + 1)
+    state = RaceState()
+    assert state.process(stale) == "class_codes"
+    assert state.class_code_preload["entries"] == []
+    assert len(state.class_code_preload["runs"]) == 2
+    assert state.class_code_preload["runs_received_at"] == now[0] - 60.0
+
+
 def test_a_runs_only_preload_keeps_the_prior_records_without_renewing_them(
     state, monkeypatch
 ):

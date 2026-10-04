@@ -12,6 +12,7 @@ overwritten by a placeholder, as its README describes.
 """
 
 import asyncio
+import time
 import json
 import re
 import struct
@@ -1250,7 +1251,29 @@ async def test_a_runs_only_pull_keeps_an_undelivered_preloads_records(monkeypatc
     assert calls[2]["runs"] == [
         {"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
     ]
+    # Each part keeps the age of the pull it came from.
+    assert calls[2]["runs_age_seconds"] < calls[2]["age_seconds"]
     assert client._preloaded == len(REGISTRY_ENTRIES)
+
+
+@pytest.mark.asyncio
+async def test_stale_held_records_never_take_a_fresh_run_table_with_them(monkeypatch):
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    now = time.monotonic()
+    runs = [{"run_id": "0x40002806", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"}]
+    assert await client._deliver_preload({
+        "entries": REGISTRY_ENTRIES, "runs": runs,
+        "_observed": now - ccc.MAX_ENTRY_AGE - 1, "_runs_observed": now,
+    }) is True
+    (msg,) = calls
+    assert msg["entries"] == []
+    assert msg["runs"] == runs
+    assert msg["age_seconds"] == msg["runs_age_seconds"] < 5
 
 
 @pytest.mark.asyncio

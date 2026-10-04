@@ -111,7 +111,7 @@ async def test_a_retry_sends_the_ages_grown_by_the_time_it_waited(monkeypatch):
     ))
     msg = {
         "type": "class_codes", "run_id": "0x400035DD", "entry_list": True,
-        "age_seconds": 1.0,
+        "age_seconds": 1.0, "runs_age_seconds": 2.0,
         "entries": [{"entrant_id": "a0000008", "age_seconds": 1.0}],
     }
     session = FakeSession([503, 200])
@@ -119,6 +119,7 @@ async def test_a_retry_sends_the_ages_grown_by_the_time_it_waited(monkeypatch):
     first, retry = session.sent
     assert first == msg
     assert retry["age_seconds"] == 31.0
+    assert retry["runs_age_seconds"] == 32.0
     assert [e["age_seconds"] for e in retry["entries"]] == [31.0]
     assert msg["age_seconds"] == 1.0
     assert msg["entries"][0]["age_seconds"] == 1.0

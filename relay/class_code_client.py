@@ -1467,16 +1467,18 @@ class ClassCodeClient:
                 "Class-code registry pull of %d bytes held no usable records – "
                 "forwarding its run table of %d runs only", len(model), len(runs),
             )
-            held = self._preload
-            if held is not None and held["entries"]:
-                # An earlier pull's records still wait to be delivered; they
-                # travel with this run table, dated as they were read.
-                entries, pulled_at = held["entries"], held["_observed"]
+        held = self._preload
+        records_at = pulled_at
+        if not entries and held is not None and held["entries"]:
+            # An earlier pull's records still wait to be delivered; they
+            # travel with this run table, each part dated as it was read.
+            entries, records_at = held["entries"], held["_observed"]
         # Measured as the POST body will be, with an age as wide as a
         # millisecond-rounded one under MAX_ENTRY_AGE can print.
         size = len(json.dumps({
             "type": "class_code_preload", "entries": entries, "runs": runs,
             "age_seconds": MAX_ENTRY_AGE - 0.001,
+            "runs_age_seconds": MAX_ENTRY_AGE - 0.001,
         }))
         if size > MAX_PRELOAD_BYTES:
             log.warning(
@@ -1489,7 +1491,10 @@ class ClassCodeClient:
             "Class-code registry: %d bytes pulled, %d records with a class, %d runs",
             len(model), len(entries), len(runs),
         )
-        self._preload = {"entries": entries, "runs": runs, "_observed": pulled_at}
+        self._preload = {
+            "entries": entries, "runs": runs,
+            "_observed": records_at, "_runs_observed": pulled_at,
+        }
 
     async def _exchange(
         self, reader, writer, record: bytes, idle: float, *, limit: int | None = None
@@ -2010,22 +2015,42 @@ class ClassCodeClient:
             self._retry_delay = self.retry_initial
 
     async def _deliver_preload(self, preload: dict) -> bool:
-        """Hand *preload* to *on_batch*; return whether nothing is left to retry."""
-        age = time.monotonic() - preload["_observed"]
-        if age > MAX_ENTRY_AGE:
+        """Hand *preload* to *on_batch*; return whether nothing is left to retry.
+
+        Its records and its run table can come from different pulls, so each
+        carries its own age — ``age_seconds`` and ``runs_age_seconds`` — and
+        each is dropped alone once too old: stale records never take a fresh
+        run table with them.
+        """
+        now = time.monotonic()
+        age = now - preload["_observed"]
+        runs_age = now - preload.get("_runs_observed", preload["_observed"])
+        entries, runs = preload["entries"], preload.get("runs", [])
+        if entries and age > MAX_ENTRY_AGE:
+            log.warning(
+                "Dropping an undelivered class-code registry – older than %.0fh",
+                MAX_ENTRY_AGE / 3600,
+            )
+            entries = []
+        if runs and runs_age > MAX_ENTRY_AGE:
+            runs = []
+        if not entries and not runs:
             log.warning(
                 "Dropping an undelivered class-code preload – older than %.0fh",
                 MAX_ENTRY_AGE / 3600,
             )
             return True
-        entries = preload["entries"]
+        preload = preload | {"entries": entries, "runs": runs}
         log.info("Forwarding a class-code preload of %d records", len(entries))
         try:
             await self.on_batch({
                 "type": "class_code_preload",
                 "entries": entries,
-                "runs": preload.get("runs", []),
-                "age_seconds": round(age, 3),
+                "runs": runs,
+                # A run table alone is dated by its own age, as a server that
+                # predates runs_age_seconds reads only this one.
+                "age_seconds": round(age if entries else runs_age, 3),
+                "runs_age_seconds": round(runs_age, 3),
             })
         except Exception:
             log.exception("Could not forward the class-code preload")

@@ -734,7 +734,10 @@ class RaceState:
         ``age_seconds`` — and a message already past the TTL is ignored.
         A preload with no usable record but a run table replaces only the run
         table, dating it alone: the previous records are kept, their date
-        unrenewed.  One with neither is ignored.
+        unrenewed.  One with neither is ignored.  The records and the run
+        table can come from different pulls, so ``runs_age_seconds`` dates
+        the run table where given, and each part past the TTL is dropped
+        alone.
         """
         entries = msg.get("entries")
         if not isinstance(entries, list):
@@ -755,16 +758,28 @@ class RaceState:
             "Class-code preload: %d usable of %d records, %d runs",
             len(usable), len(entries), len(runs),
         )
+        # The records and the run table can come from different pulls, so
+        # each has its own age; a relay that predates runs_age_seconds sends
+        # one for both.
+        now = time.time()
         age = _entry_age(msg.get("age_seconds"))
-        if not (usable or runs) or age > _CLASS_CODE_TTL_SECONDS:
+        runs_age = (
+            _entry_age(msg["runs_age_seconds"]) if "runs_age_seconds" in msg else age
+        )
+        if age > _CLASS_CODE_TTL_SECONDS:
+            usable = []
+        if runs_age > _CLASS_CODE_TTL_SECONDS:
+            runs = []
+        if not (usable or runs):
             return None
-        pulled_at = time.time() - age
         if usable:
-            self.class_code_preload = _preload_store(usable, pulled_at, runs)
+            self.class_code_preload = _preload_store(
+                usable, now - age, runs, runs_received_at=now - runs_age
+            )
         else:
             pre = self.class_code_preload
             self.class_code_preload = _preload_store(
-                pre["entries"], pre["received_at"], runs, runs_received_at=pulled_at
+                pre["entries"], pre["received_at"], runs, runs_received_at=now - runs_age
             )
         self.class_codes_revision += 1
         self._dirty = True
