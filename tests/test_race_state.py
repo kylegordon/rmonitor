@@ -1575,6 +1575,25 @@ def test_a_retried_empty_list_is_dated_by_its_own_age_not_its_arrival(state):
     assert _entry_for(state.snapshot(), "7")["class_code"] == "F3"
 
 
+def test_a_store_saved_before_list_dates_rebuilds_them_from_its_list_rows(state):
+    """A store from before list dates were saved still supersedes on restart."""
+    import json
+
+    _race_15(state)
+    _car_in_class(state, "7", "1234567", SLW)
+    _car_in_class(state, "8", "7654321", SLW)
+    _codes(state, DC, _aged(_code_entry("e7", "7", SLW, "F3", "1234567"), 600))
+    _entry_list(state, DD, _code_entry("a0000008", "8", SLW, "SL", "7654321"))
+    data = json.loads(json.dumps(state.class_codes_to_dict()))
+    del data["class_code_lists"]
+    restored = RaceState()
+    restored.load_class_codes(data)
+    assert restored.class_code_lists == state.class_code_lists
+    _session(restored, RACE_15, "15")
+    _car_in_class(restored, "7", "1234567", SLW)
+    assert _entry_for(restored.snapshot(), "7")["class_code"] == ""
+
+
 def test_an_empty_lists_date_survives_a_save_and_restore(state):
     import json
 
@@ -2120,7 +2139,8 @@ def test_a_preloads_run_table_outlives_its_registry_for_day_two(state, monkeypat
         entries=[_pre("7654321", SLW, "SL")],
     )
     _codes(state, DC, _code_entry("e7", "7", SLW, "F3", "1234567"))
-    now[0] += 20 * 3600
+    # Between the two lifetimes: the records have expired, the run table not.
+    now[0] += (rs._CLASS_CODE_TTL_SECONDS + rs._PUSHED_CODE_TTL_SECONDS) / 2
     revision = state.class_codes_revision
     state._dirty = False
     assert state.prune_expired_class_codes() is True

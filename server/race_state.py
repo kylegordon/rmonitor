@@ -1252,7 +1252,7 @@ class RaceState:
         return True
 
     def _prune_class_codes(self, now: float) -> bool:
-        """Drop registry entries and list dates past their TTL; return whether any went."""
+        """Drop records and list dates past their TTL; return whether any went."""
         expired = [
             k for k, v in self.class_codes.items()
             if now - v["received_at"] > _PUSHED_CODE_TTL_SECONDS
@@ -1758,9 +1758,17 @@ class RaceState:
             self.class_codes = restored
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
-        self.class_code_lists = _restore_list_dates(
-            data.get("class_code_lists") if isinstance(data, dict) else None, now
-        )
+        saved_lists = data.get("class_code_lists") if isinstance(data, dict) else None
+        self.class_code_lists = _restore_list_dates(saved_lists, now)
+        if saved_lists is None:
+            # A store saved before list dates were kept: date each run's list
+            # by its newest row, as the server did then.
+            for key, rec in self.class_codes.items():
+                if rec.get("origin") == _ENTRY_LIST_ORIGIN:
+                    run = key.split("\t", 1)[0]
+                    self.class_code_lists[run] = max(
+                        rec["received_at"], self.class_code_lists.get(run, 0.0)
+                    )
         self._prune_class_codes(now)
         self.class_code_preload = _preload_store([], None)
         try:

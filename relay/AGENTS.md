@@ -71,7 +71,7 @@ operator notice. Each reply is taken and the view closed, as an open one streams
 each second, and subscribed again every `entry_list_refresh_interval` (60 s) for mid-run edits. A
 reply whose rows disagree with its count is withheld. Each list is the run's whole entry list, so
 it safely replaces the run's earlier one, withdrawing a cleared code, and the running run's latest
-list supersedes older in-scope pushes. Guarded by
+list supersedes older in-scope pushes and the registry. Guarded by
 `test_the_entry_list_is_refreshed_after_its_interval`,
 `test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection` and
 `test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees` in
