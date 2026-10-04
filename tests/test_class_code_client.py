@@ -388,6 +388,53 @@ def test_run_table_skips_noise_and_truncated_records():
     )
     assert ccc.parse_runs(buf) == [
         {"run_id": "0x40002805", "group_id": "0x80000985", "name": "Race 6 - AMENDED GRID"},
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": ""},
+    ]
+
+
+def _with_lead_in(record: bytes, lead_in: bytes) -> bytes:
+    """*record* with its ``u32 1`` + 12 bytes replaced by *lead_in*."""
+    assert len(lead_in) == 16
+    return lead_in + record[16:]
+
+
+def test_run_table_record_preceded_by_zeros_is_parsed():
+    # The #108 shape: 0x400035E8 "Qualifying 4" sat behind 16 zero bytes.
+    rec = _with_lead_in(_run_record(0x400035E8, 0x800009D5, "Qualifying 4"), bytes(16))
+    assert ccc.parse_runs(bytes(16) + rec + bytes(16)) == [
+        {"run_id": "0x400035E8", "group_id": "0x800009D5", "name": "Qualifying 4"},
+    ]
+
+
+def test_run_table_record_with_other_leading_bytes_is_parsed():
+    lead_in = struct.pack("<IIII", 0x6523A1B0, 0x6523A1B1, 0x6523A1B2, 0x6523A1B3)
+    rec = _with_lead_in(_run_record(0x400035DD, 0x800009D3, "Race 15 - 2nd Race"), lead_in)
+    assert ccc.parse_runs(rec) == [
+        {"run_id": "0x400035DD", "group_id": "0x800009D3", "name": "Race 15 - 2nd Race"},
+    ]
+
+
+def test_nameless_run_record_keeps_its_group():
+    assert ccc.parse_runs(_run_record(0x40002807, name="")) == [
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": ""},
+    ]
+
+
+def test_nameless_record_without_the_leading_one_is_skipped():
+    # With no name to validate it, only the u32 1 lead-in vouches for it.
+    rec = _with_lead_in(_run_record(0x40002807, name=""), bytes(16))
+    assert ccc.parse_runs(bytes(16) + rec + bytes(16)) == []
+
+
+def test_a_named_record_wins_over_a_nameless_one_for_the_same_id():
+    buf = (
+        _run_record(0x40002807, 0x80000985, name="")
+        + _run_record(0x40002808, 0x80000985, name="Warm Up")
+        + _run_record(0x40002807, 0x80000985, name="Race 7 - 2nd Race")
+    )
+    assert ccc.parse_runs(buf) == [
+        {"run_id": "0x40002807", "group_id": "0x80000985", "name": "Race 7 - 2nd Race"},
+        {"run_id": "0x40002808", "group_id": "0x80000985", "name": "Warm Up"},
     ]
 
 

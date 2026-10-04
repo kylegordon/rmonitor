@@ -132,9 +132,10 @@ RESULTS_VIEW_PARAMS = (("LiveSectionDecimals", "1"), ("SectionDecimals", "3"), (
 
 _IDENTITY_FRAME_PREFIX = b"\x00\x00\x01\x04"
 
-# A kept entry older than this is dropped rather than retried: the server
-# would discard it anyway (its registry TTL is the same 12 hours), and a batch
-# the server keeps rejecting must not be retried for ever.
+# A kept entry older than this is dropped rather than retried: a batch the
+# server keeps rejecting must not be retried for ever.  The server keeps a
+# delivered class-code record for 36 hours, but its preload and runs for 12,
+# and an entry held undelivered this long belongs to a session long gone.
 MAX_ENTRY_AGE = 12 * 3600
 
 # A model is ~4.5 MB and grows with the host's archive; a stream still going
@@ -169,11 +170,13 @@ _GROUP_ANCHOR = re.compile(
     rb"(..\x00\x80).(....)(..\x00\x80|\xff\xff\xff\xff)", re.DOTALL
 )
 
-# A run-table record in the model: u32 1, 12 bytes, the run id (0x4000xxxx),
-# u32 flags, the group id (0x8000xxxx), then the run name as a ``str``.
-_RUN_ANCHOR = re.compile(
-    rb"\x01\x00\x00\x00.{12}(..\x00\x40)(....)(..\x00\x80)", re.DOTALL
-)
+# A run-table record in the model: 16 bytes, the run id (0x4000xxxx), u32
+# flags, the group id (0x8000xxxx), then the run name as a ``str``.  The 16
+# bytes in front vary (u32 1 plus 12 bytes, all zero, or other), so they are
+# not part of the anchor; see parse_runs.  A lookahead, so matches overlap
+# and a false match cannot consume a real record's bytes.
+_RUN_ANCHOR = re.compile(rb"(?=(..\x00\x40)(....)(..\x00\x80))", re.DOTALL)
+_RUN_LEAD_IN = b"\x01\x00\x00\x00"
 
 # An Announcements view frame is found by the view's title, written twice;
 # see AnnouncementParser for the offsets around it.
@@ -978,38 +981,50 @@ def parse_runs(buf: bytes) -> list[dict]:
     *buf* is the same model :func:`parse_registry` reads.  Each run record
     is laid out as below, integers u32 little-endian::
 
-        u32   1
-        12 bytes              not read
+        16 bytes              not read: u32 1 plus 12 bytes, 16 zero bytes,
+                              or other bytes
         u32   run id          0x4000xxxx
         u32   flags           not read
         u32   group id        0x8000xxxx: the championship the run belongs to
         str   run name
 
-    The table spans many past meetings, and run names repeat across them —
-    one name can belong to dozens of runs — so a name alone rarely picks one
-    run.  A run's name can also be edited after the table was pulled.  Ids
-    are returned as ``0x`` plus eight uppercase hex digits, the form the
-    pushes' run tags take.  A name that is empty, longer than 255 bytes or
-    not printable is skipped, as is a record running past the buffer.  The
-    rest are returned as ``{"run_id", "group_id", "name"}`` dicts, one per
-    run id, the first kept, in order of first appearance.
+    The record is anchored on its own fields, because the 16 bytes in front
+    vary: requiring the ``u32 1`` missed every run written behind zeros
+    (#108).  The table spans many past meetings, and run names repeat
+    across them — one name can belong to dozens of runs — so a name alone
+    rarely picks one run.  A run's name can also be edited after the table
+    was pulled.  Ids are returned as ``0x`` plus eight uppercase hex digits,
+    the form the pushes' run tags take.  A name longer than 255 bytes or not
+    printable is skipped, as is a record running past the buffer.
+
+    A run with an empty name is kept, with ``name`` ``""``, because its
+    group still scopes the run's pushes.  With no name to validate it, it is
+    kept only behind the ``u32 1`` lead-in, and only for an id no named
+    record claims.  The rest are returned as ``{"run_id", "group_id",
+    "name"}`` dicts, one per run id, the first named record kept, in order
+    of first appearance.
     """
-    runs: dict[str, dict] = {}
+    named: dict[str, dict] = {}
+    nameless: dict[str, dict] = {}
+    order: dict[str, None] = {}
     for m in _RUN_ANCHOR.finditer(buf):
         (rid,) = struct.unpack("<I", m.group(1))
         (gid,) = struct.unpack("<I", m.group(3))
-        cur = _Cursor(buf, m.end())
+        cur = _Cursor(buf, m.start() + 12)
         try:
             name = cur.string()
         except _ShortRecord:
             continue
-        if not name or not name.isprintable():
+        if not name.isprintable():
+            continue
+        lead_in = m.start() - 16
+        if not name and (lead_in < 0 or buf[lead_in:lead_in + 4] != _RUN_LEAD_IN):
             continue
         run_id = f"0x{rid:08X}"
-        runs.setdefault(
-            run_id, {"run_id": run_id, "group_id": f"0x{gid:08X}", "name": name}
-        )
-    return list(runs.values())
+        record = {"run_id": run_id, "group_id": f"0x{gid:08X}", "name": name}
+        (named if name else nameless).setdefault(run_id, record)
+        order.setdefault(run_id, None)
+    return [named.get(run_id) or nameless[run_id] for run_id in order]
 
 
 def parse_groups(buf: bytes) -> dict[str, str]:
