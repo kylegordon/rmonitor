@@ -1483,12 +1483,16 @@ class ClassCodeClient:
                 log.info(
                     "Announcements for run %s: %d rows", self._ann_run, len(frame.rows)
                 )
-                # The name lets a server that lost the started run restore it.
-                self._queue_announcement({
+                # The name lets a server that lost the started run restore it,
+                # and the event its race name.
+                msg = {
                     "type": "announcements", "run_id": self._ann_run,
                     "name": self._ann_name, "rows": frame.rows,
                     "start_key": self._ann_start_key,
-                })
+                }
+                if self._ann_event:
+                    msg["event"] = self._ann_event
+                self._queue_announcement(msg)
             # A withheld reply keeps the rows already forwarded; its view
             # still replaces the held one, so it is closed in turn.
             if self._ann_view is not None:

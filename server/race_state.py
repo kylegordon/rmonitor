@@ -756,18 +756,45 @@ class RaceState:
         that run (:meth:`_restore_started_run`) and renews its date when it
         is the started run held here (:meth:`_renew_started_run`): a session
         running past :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so
-        its announcements, while the relay still refreshes it.  A message
+        its announcements, while the relay still refreshes it.  Its optional
+        ``event`` restores the run's race name with it, or supplies one the
+        same start is held without (:meth:`_refresh_event`).  A message
         from a start a session boundary retired is ignored outright, so a
         late one never touches a restart of the same run.
+
+        A ``stopped`` message for the start waiting in
+        ``class_code_run_next`` drops its event: the relay sends one when it
+        drops a pick, whose start can still land afterwards, and a
+        same-named later session would otherwise bind it and show the old
+        race name.  A stopped run already bound keeps its race name until
+        the session's ``$B,95``, as the board still shows that session.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
         if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
             return None
+        event = msg.get("event")
+        if not isinstance(event, str):
+            event = ""
+        changed = False
         if not msg.get("stopped") and not msg.get("superseded"):
-            self._restore_started_run(run_id, msg.get("name"), msg.get("start_key"))
+            self._restore_started_run(
+                run_id, msg.get("name"), msg.get("start_key"), event
+            )
             self._renew_started_run(run_id)
+            changed = self._refresh_event(run_id, msg.get("start_key"), event)
+        elif msg.get("stopped"):
+            nxt = self.class_code_run_next
+            if (
+                nxt is not None
+                and "event" in nxt
+                and _start_id(nxt["run_id"], nxt.get("start_key"))
+                == _start_id(run_id, msg.get("start_key"))
+            ):
+                del nxt["event"]
+                self.class_codes_revision += 1
+                self._dirty = changed = True
         rows = []
         for row in raw:
             if not isinstance(row, dict):
@@ -787,7 +814,7 @@ class RaceState:
         key = run_id.lower()
         rows.sort(key=lambda r: r["ticks"])
         if self.announcements.get(key, []) == rows:
-            return None
+            return "announcements" if changed else None
         self.announcements.pop(key, None)
         # A run with none is not kept, so clears never crowd a run with rows
         # out of the capped store.
@@ -807,7 +834,7 @@ class RaceState:
         self._retired_runs[_start_id(run["run_id"], run.get("start_key"))] = now
         self.class_codes_revision += 1
 
-    def _restore_started_run(self, run_id: str, name, start_key) -> None:
+    def _restore_started_run(self, run_id: str, name, start_key, event: str = "") -> None:
         """Bind the relay's subscribed run *run_id* when no run is bound.
 
         A server that crashed after accepting a run's start but before saving
@@ -850,8 +877,32 @@ class RaceState:
         }
         if isinstance(start_key, str) and start_key:
             self.class_code_run["start_key"] = start_key
+        if event:
+            self.class_code_run["event"] = event
         self.class_codes_revision += 1
         self._dirty = True
+
+    def _refresh_event(self, run_id: str, start_key, event: str) -> bool:
+        """Set the *event* a refresh carries on the held start it names.
+
+        Only the same start — run id and start key — and only one not closed;
+        return whether anything changed.
+        """
+        if not event:
+            return False
+        for run in (self.class_code_run, self.class_code_run_next):
+            if (
+                run is not None
+                and not run.get("closed")
+                and _start_id(run["run_id"], run.get("start_key"))
+                == _start_id(run_id, start_key)
+                and run.get("event") != event
+            ):
+                run["event"] = event
+                self.class_codes_revision += 1
+                self._dirty = True
+                return True
+        return False
 
     def _renew_started_run(self, run_id: str) -> None:
         """Re-date the held started run *run_id* as read now, at most hourly."""

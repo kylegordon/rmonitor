@@ -1732,7 +1732,8 @@ async def test_the_subscription_reply_rows_are_forwarded_as_announcements(monkey
     # The start forwarded for the run names the same start.
     (run,) = [c for c in calls if c["type"] == "class_code_run"]
     assert run["start_key"] == key
-    assert msg == {"type": "announcements", "run_id": RUN_ID, "name": "Race 6 - AMENDED GRID", "rows": [{
+    assert msg == {"type": "announcements", "run_id": RUN_ID, "name": "Race 6 - AMENDED GRID",
+                   "event": "Test Meeting", "rows": [{
         "text": "Track clear", "ticks": 5, "date": "03/10/2026", "time": "10:42:14",
         "type": "Official message", "priority": "0",
     }]}
@@ -1852,6 +1853,27 @@ async def test_announcements_are_refreshed_after_the_refresh_interval(monkeypatc
         await _finish(task)
     assert [v for v, _ in _view_opens(writer)][:3] == [1, 2, 3]
     assert _view_closes(writer)[:2] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_announcements_carry_the_runs_event_so_a_server_can_restore_it(monkeypatch):
+    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+
+    def sent(run_id):
+        return [
+            c for c in calls
+            if c["type"] == "announcements" and c["run_id"] == run_id
+            and not c.get("stopped")
+        ]
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: sent("0x40002805"))
+        host.queue.append(_notice("Run 'Race 8' [0x40002806] is started"))
+        await _until(lambda: sent("0x40002806"))
+    finally:
+        await _finish(task)
+    assert all(a["event"] == "Test Meeting" for a in sent("0x40002805"))
+    assert all("event" not in a for a in sent("0x40002806"))
 
 
 @pytest.mark.asyncio

@@ -2478,12 +2478,17 @@ def test_a_dropped_pick_accepted_late_resurfaces_no_rows_in_a_later_same_named_s
     _session(state, number="5")
     _announce(state, ("Old notice", 100))
     _session(state, "Race 8", number="6")
-    _started(state)  # the pick's delivery, accepted after the drop
+    # The pick's delivery, accepted after the drop.
+    state.process({
+        "type": "class_code_run", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
+        "event": "Old Championship", "age_seconds": 0.0,
+    })
     state.process({
         "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
     })
     _session(state, number="7")
     assert _shown(state) == []
+    assert state.snapshot()["race_name"] == ""
 
 
 def test_announcements_show_while_their_run_is_the_running_session(state):
@@ -2648,6 +2653,54 @@ def test_a_server_that_lost_the_started_run_restores_it_from_a_refresh(state):
     _refresh(state, ("Track clear", 100))
     assert state.class_code_run["run_id"] == "0x40002806"
     assert _shown(state) == ["Track clear"]
+
+
+def test_a_refresh_restores_the_race_name_with_the_started_run(state):
+    _session(state)
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
+        "start_key": "k1", "event": EVENT, "rows": [],
+    })
+    assert state.class_code_run["event"] == EVENT
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_a_refresh_supplies_the_event_of_the_held_start_only(state):
+    """A run held without an event — from an older relay, or restored before
+    the relay knew one — takes it from a refresh of the same start."""
+    _started_with_event(state, event="")
+    _session(state)
+    refresh = {
+        "type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
+        "start_key": "other", "event": EVENT, "rows": [],
+    }
+    state.process(refresh)
+    assert state.snapshot()["race_name"] == ""
+    state.process(refresh | {"start_key": "k1"})
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_a_stop_of_the_bound_run_keeps_its_race_name_until_the_95(state):
+    """Only a waiting start loses its event to a stop; the board still shows
+    the session that ran."""
+    _started_with_event(state)
+    _session(state)
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "start_key": "k1",
+    })
+    assert state.snapshot()["race_name"] == EVENT
+    _closing(state)
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_a_stop_of_another_start_leaves_the_waiting_runs_event(state):
+    _started_with_event(state)
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [], "stopped": True,
+        "start_key": "retired",
+    })
+    assert state.class_code_run_next["event"] == EVENT
 
 
 def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state):
