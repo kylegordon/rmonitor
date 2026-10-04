@@ -835,7 +835,10 @@ class RaceState:
         ``event`` restores the run's race name with it, or supplies one the
         same start is held without (:meth:`_refresh_event`).  A message
         from a start a session boundary retired is ignored outright, so a
-        late one never touches a restart of the same run.
+        late one never touches a restart of the same run — except that the
+        previous session's start (:meth:`_carried_run`) still takes rows,
+        and only rows, while no held run shares its id: race control posts
+        after a stop, and a reply can arrive after the restart's ``$B``.
 
         A ``stopped`` message also marked ``dropped`` drops the event of the
         start it names: the relay sends one when it drops a mid-run pick,
@@ -848,13 +851,16 @@ class RaceState:
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
             return None
-        if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
+        rows_only = _start_id(run_id, msg.get("start_key")) in self._retired_runs
+        if rows_only and not self._is_carry_candidate(run_id, msg.get("start_key")):
             return None
         event = msg.get("event")
         if not isinstance(event, str):
             event = ""
         changed = False
-        if not msg.get("stopped") and not msg.get("superseded"):
+        # A retired start is never restored or renewed; no held run shares
+        # its id, so a dropped one's event below is not touched either.
+        if not rows_only and not msg.get("stopped") and not msg.get("superseded"):
             self._restore_started_run(
                 run_id, msg.get("name"), msg.get("start_key"), event
             )
@@ -901,6 +907,22 @@ class RaceState:
         self._dirty = True
         return "announcements"
 
+    def _is_carry_candidate(self, run_id: str, start_key) -> bool:
+        """Return whether *run_id*'s start *start_key* is the previous session's run.
+
+        Not while a held run shares its id: rows are stored per run id, so a
+        late reply of the retired start would replace a same-id restart's.
+        """
+        prev = self._previous_run
+        if prev is None or _start_id(prev["run_id"], prev.get("start_key")) != _start_id(
+            run_id, start_key
+        ):
+            return False
+        return all(
+            held is None or held["run_id"].lower() != run_id.lower()
+            for held in (self.class_code_run, self.class_code_run_next)
+        )
+
     def _retire_run(self, run: dict) -> None:
         """Record that a session boundary discarded *run*; see :meth:`_restore_started_run`."""
         now = time.time()
@@ -919,7 +941,10 @@ class RaceState:
         again, so its announcements would stay hidden all session.  It is
         restored only while no run is bound and none is waiting under this id
         (the next ``$B`` binds that), *name* is the running session's
-        description, and the session has not closed.  Never a run a session
+        description, and the session is open — or closed, the relay keeping
+        a stopped run subscribed: a start lost until after the ``$B,95`` is
+        then restored closed, as the 95 would have left it, so the next
+        ``$B`` discards it and its race name stays hidden.  Never a run a session
         boundary discarded (``_retired_runs``): a same-named next session must
         not take the old run back.  The relay names each start it reads with
         a *start_key*, carried by the start and every refresh, and that start
@@ -943,14 +968,17 @@ class RaceState:
             or not isinstance(name, str)
             or not name
             or name != self.run_description
-            or self._run_number in ("", "95")
+            or not self._run_number
         ):
             return
         log.info("Restoring started run %s %r from its announcements", run_id, name)
         self.class_code_run = {
             "run_id": run_id, "name": name, "received_at": time.time(),
-            "session_number": self._run_number,
         }
+        if self._run_number == "95":
+            self.class_code_run["closed"] = True
+        else:
+            self.class_code_run["session_number"] = self._run_number
         if isinstance(start_key, str) and start_key:
             self.class_code_run["start_key"] = start_key
         if event:

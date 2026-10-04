@@ -2843,6 +2843,32 @@ def test_a_restart_does_not_carry_past_a_session_with_no_run(state):
     assert _shown(state) == ["Restart over 5 laps"]
 
 
+
+def test_late_rows_of_the_carried_run_still_show(state):
+    """Race control posts after a stop, and a reply can arrive after the
+    restart's $B has retired the old start."""
+    _restart(state, b_first=True)
+    _announce(state, ("Red flag", 100), ("Restart on the original grid", 150))
+    assert _shown(state) == [
+        "Red flag", "Restart on the original grid", "Restart over 5 laps",
+    ]
+    # Rows only: the retired start is not taken back.
+    held = (state.class_code_run, state.class_code_run_next)
+    assert [r["run_id"] for r in held if r is not None] == [RESTART_ID]
+
+
+def test_a_late_reply_of_a_same_run_restarts_old_start_changes_nothing(state):
+    _started_with_event(state, start_key="k1")
+    _session(state)
+    _announce_start(state, "k1", ("Red flag", 100))
+    _closing(state)
+    _started_with_event(state, start_key="k2")
+    _session(state, number="28")
+    _announce_start(state, "k2", ("Restart over 5 laps", 200))
+    assert _announce_start(state, "k1", ("Red flag", 100)) is None
+    assert _shown(state) == ["Restart over 5 laps"]
+
+
 def test_a_run_whose_name_only_shares_a_prefix_does_not_carry(state):
     _started(state)
     _session(state)
@@ -3047,13 +3073,25 @@ def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state)
     assert _shown(state) == []
 
 
-@pytest.mark.parametrize("closing", [False, True])
-def test_a_refresh_restores_nothing_for_another_session_or_a_closed_one(state, closing):
+def test_a_refresh_restores_nothing_for_another_session(state):
     _session(state, "Race 8 - Final", number="28")
-    if closing:
-        _closing(state, "Race 7 - 2nd Race")
     _refresh(state, ("Track clear", 100))
     assert state.class_code_run is None
+
+
+def test_a_refresh_after_the_95_restores_the_closed_sessions_run_closed(state):
+    """The relay keeps a stopped run subscribed, so a start lost until after
+    the close is restored as the 95 would have left it: its rows shown, its
+    race name hidden, and the next session's $B discarding it."""
+    _session(state)
+    _closing(state)
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run["closed"]
+    assert _shown(state) == ["Track clear"]
+    assert state.snapshot()["race_name"] == ""
+    _session(state, "Race 8 - Final", number="28")
+    assert state.class_code_run is None
+    assert _shown(state) == []
 
 
 def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
