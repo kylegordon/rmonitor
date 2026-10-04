@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.22](https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22) (2026-10-04)
+
+## What's Changed
+* feat(relay): pick a run by name when started mid-run by @kylegordon in https://github.com/kylegordon/rmonitor/pull/104
+* feat(server): show total time during a race, lap times otherwise by @kylegordon in https://github.com/kylegordon/rmonitor/pull/109
+* feat: show the race name from the timing host by @kylegordon in https://github.com/kylegordon/rmonitor/pull/110
+* feat(relay): request the running run's entry list on the held :51738 connection by @kylegordon in https://github.com/kylegordon/rmonitor/pull/113
+* fix: keep a run's announcements after it stops, and carry them into a restart run by @kylegordon in https://github.com/kylegordon/rmonitor/pull/114
+* docs(agents): slim AGENTS.md into skills and role subagents by @kylegordon in https://github.com/kylegordon/rmonitor/pull/117
+* fix: class codes blank in later sessions of a meeting by @kylegordon in https://github.com/kylegordon/rmonitor/pull/116
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22
+
+
 ## [0.1.21](https://github.com/kylegordon/rmonitor/compare/v0.1.20...v0.1.21) (2026-10-03)
 
 ## What's Changed
