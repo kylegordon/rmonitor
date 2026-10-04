@@ -1469,11 +1469,15 @@ def test_an_entry_list_leaves_pushes_and_other_runs_lists_alone(state):
     {"run_id": "0x4000AAAA", "entries": "not a list"},
     {"run_id": "0x4000AAAA", "entries": {"a0000007": {}}},
     {"run_id": "", "entries": []},
+    {"run_id": "0x4000AAAA", "entries": [None]},
+    {"run_id": "0x4000AAAA", "entries": [{"entrant_id": "a0000008", "class_code": ""}]},
+    {"run_id": "0x4000AAAA", "entries": [], "entry_list": False},
+    {"run_id": "0x4000AAAA", "entries": [], "entry_list": "yes"},
 ])
 def test_a_malformed_entry_list_withdraws_nothing(state, bad):
     _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
     before = dict(state.class_codes)
-    state.process({"type": "class_codes", "entry_list": True, **bad})
+    state.process({"type": "class_codes", "entry_list": True} | bad)
     assert state.class_codes == before
 
 

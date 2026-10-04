@@ -605,9 +605,26 @@ class RaceState:
         now = time.time()
         changed = False
         stored = 0
-        # Only a well-formed list may stand as the run's whole entry list: a
-        # malformed one must never withdraw the codes already stored.
-        entry_list = bool(msg.get("entry_list")) and bool(run_id) and isinstance(entries, list)
+        rows = []
+        for item in entries if isinstance(entries, list) else []:
+            if not isinstance(item, dict):
+                continue
+            entry = {
+                k: str(item[k]) if item.get(k) is not None else ""
+                for k in _CLASS_CODE_FIELDS
+            }
+            if entry["entrant_id"] and entry["class_code"]:
+                rows.append((entry, item))
+        # Only an explicit marker on a list whose every row is usable stands as
+        # the run's whole entry list — the relay sends no other kind — so a
+        # malformed batch never withdraws the codes already stored.  The
+        # marker arrives coerced to a string, so JSON true reads "True".
+        entry_list = (
+            msg.get("entry_list") == "True"
+            and bool(run_id)
+            and isinstance(entries, list)
+            and len(rows) == len(entries)
+        )
         if entry_list:
             stale = [
                 k for k, v in self.class_codes.items()
@@ -617,25 +634,16 @@ class RaceState:
             for k in stale:
                 del self.class_codes[k]
             changed = bool(stale)
-        if isinstance(entries, list):
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                entry = {
-                    k: str(item[k]) if item.get(k) is not None else ""
-                    for k in _CLASS_CODE_FIELDS
-                }
-                if not entry["entrant_id"] or not entry["class_code"]:
-                    continue
-                age = _entry_age(item.get("age_seconds"))
-                if age > _CLASS_CODE_TTL_SECONDS:
-                    continue
-                entry["received_at"] = now - age
-                if entry_list:
-                    entry["origin"] = _ENTRY_LIST_ORIGIN
-                self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
-                changed = True
-                stored += 1
+        for entry, item in rows:
+            age = _entry_age(item.get("age_seconds"))
+            if age > _CLASS_CODE_TTL_SECONDS:
+                continue
+            entry["received_at"] = now - age
+            if entry_list:
+                entry["origin"] = _ENTRY_LIST_ORIGIN
+            self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
+            changed = True
+            stored += 1
         # Logged whatever was stored: a batch of codeless records stores
         # nothing, and is otherwise indistinguishable from no batch at all.
         log.info(
