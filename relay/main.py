@@ -22,6 +22,7 @@ import os
 import pathlib
 import sys
 import threading
+import time
 from dataclasses import dataclass
 
 import aiohttp
@@ -149,11 +150,13 @@ async def post_message(
     headers = {"Authorization": f"Bearer {cfg.relay_secret}"}
     timeout = aiohttp.ClientTimeout(total=cfg.post_timeout)
     attempt = 0
+    started = time.monotonic()
     while True:
         on_attempt()
         try:
             async with session.post(
-                url, json=msg, headers=headers, timeout=timeout
+                url, json=_aged(msg, time.monotonic() - started),
+                headers=headers, timeout=timeout,
             ) as resp:
                 if resp.status not in _RETRIABLE:
                     if resp.status != 200:
@@ -186,6 +189,32 @@ async def post_message(
             log.error("POST failed: %s – exiting so the container can restart", exc)
             sys.exit(1)
         await asyncio.sleep(delay)
+
+
+def _aged(msg: dict, elapsed: float) -> dict:
+    """Return *msg* with its ``age_seconds``, and its entries', grown by *elapsed*.
+
+    A message's ages are taken when it is built, but a retry sends it later:
+    the server dates each record by its age, so a retried entry list sent
+    with its first attempt's ages would be dated newer than it is, and
+    supersede a push the host made while it waited.  *msg* is left as is.
+    """
+    if elapsed <= 0:
+        return msg
+
+    def grow(d: dict) -> dict:
+        age = d.get("age_seconds")
+        if isinstance(age, (int, float)) and not isinstance(age, bool):
+            return d | {"age_seconds": round(age + elapsed, 3)}
+        return d
+
+    out = grow(msg)
+    entries = msg.get("entries")
+    if isinstance(entries, list):
+        out = out | {
+            "entries": [grow(e) if isinstance(e, dict) else e for e in entries]
+        }
+    return out
 
 
 async def main(
