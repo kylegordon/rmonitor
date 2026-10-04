@@ -1792,21 +1792,42 @@ async def test_pushes_to_a_view_no_longer_held_are_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_run_forwards_empty_announcements_and_closes_its_view(monkeypatch):
-    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
+async def test_a_stopped_run_keeps_its_announcements_view_open(monkeypatch):
+    """Race control posts the reason for a stop after it, so a stop neither
+    clears the run's rows nor closes its view."""
+    task, host, writer, calls, client = await _running(monkeypatch, [("Track clear", 5)])
     try:
         host.queue.append(_run_state())
         await _until(lambda: _announcements(calls))
         host.queue.append(_run_state(state="stopped"))
-        await _until(lambda: len(_announcements(calls)) >= 2)
-        await _until(lambda: _view_closes(writer))
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
-    assert _announcements(calls) == [["Track clear"], []]
-    assert calls[-1]["run_id"] == RUN_ID
-    assert _view_closes(writer) == [1]
-    assert len(_view_opens(writer)) == 1
+    assert _announcements(calls) == [["Track clear"]]
+    assert _view_closes(writer) == []
+    assert client._ann_run == RUN_ID
+
+
+@pytest.mark.asyncio
+async def test_an_announcement_created_after_the_stop_is_forwarded(monkeypatch):
+    """The live 2026-10-04 case: a red flag stopped the run, and race control
+    posted its message 31 s later."""
+    task, host, writer, calls, _ = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _announcements(calls))
+        host.queue.append(_run_state(state="stopped"))
+        await asyncio.sleep(0.05)
+        host.rows = [("RED FLAG - Race re-started on original Grid", 6)]
+        host.queue.append(_ann_frame(b"\x27\x80", 1, host.rows))
+        await _until(lambda: _announcements(calls)[-1])
+    finally:
+        await _finish(task)
+    msg = [c for c in calls if c["type"] == "announcements"][-1]
+    assert [r["text"] for r in msg["rows"]] == ["RED FLAG - Race re-started on original Grid"]
+    assert msg["run_id"] == RUN_ID
+    assert not msg.get("stopped")
+    assert not msg.get("superseded")
 
 
 @pytest.mark.asyncio
@@ -1963,70 +1984,16 @@ async def test_a_failed_announcements_delivery_is_retried_and_a_newer_one_replac
 
 
 @pytest.mark.asyncio
-async def test_a_stop_clears_announcements_this_process_never_forwarded(monkeypatch):
-    """After a relay restart the server may still hold the run's rows, so
-    the stop's clear does not depend on what this process forwarded."""
+async def test_a_stop_forwards_no_announcements_clear(monkeypatch):
+    """Not even for a run this process never subscribed: only the next run
+    moves a run's rows on."""
     task, host, writer, calls, _ = await _running(monkeypatch)
     try:
         host.queue.append(_run_state(state="stopped"))
-        await _until(lambda: _announcements(calls))
-    finally:
-        await _finish(task)
-    assert [c for c in calls if c["type"] == "announcements"] == [
-        {"type": "announcements", "run_id": RUN_ID, "rows": [], "stopped": True,
-         "start_key": ""},
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("unrelated_first", [True, False])
-async def test_an_unrelated_stop_does_not_displace_the_subscribed_runs_clear(
-    monkeypatch, unrelated_first
-):
-    task, host, writer, calls, _ = await _running(monkeypatch, [("Track clear", 5)])
-    try:
-        host.queue.append(_run_state())
-        await _until(lambda: _announcements(calls))
-        stops = [
-            _run_state("Race 5", run_id=0x40002804, state="stopped"),
-            _run_state(state="stopped"),
-        ]
-        host.queue.append(b"".join(stops if unrelated_first else stops[::-1]))
-        await _until(lambda: len(_announcements(calls)) >= 3)
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
-    clears = [c["run_id"] for c in calls if c["type"] == "announcements" and not c["rows"]]
-    assert sorted(clears) == ["0x40002804", RUN_ID]
-
-
-@pytest.mark.asyncio
-async def test_a_failed_clear_is_retried_beside_another_runs_clear(monkeypatch):
-    attempts = []
-
-    async def on_batch(msg):
-        if msg["type"] != "announcements" or msg["rows"]:
-            return
-        attempts.append(msg["run_id"])
-        if attempts.count(RUN_ID) == 1 and msg["run_id"] == RUN_ID:
-            raise ConnectionError("server unreachable")
-
-    task, host, writer, _, _ = await _running(
-        monkeypatch, [("Track clear", 5)], on_batch=on_batch,
-        retry_initial=0.05, keepalive_interval=0.05,
-    )
-    try:
-        host.queue.append(_run_state())
-        await asyncio.sleep(0.1)
-        host.queue.append(
-            _run_state("Race 5", run_id=0x40002804, state="stopped") + _run_state(state="stopped")
-        )
-        await _until(lambda: attempts.count(RUN_ID) >= 2)
-        await asyncio.sleep(0.1)
-    finally:
-        await _finish(task)
-    assert attempts.count(RUN_ID) == 2
-    assert attempts.count("0x40002804") == 1
+    assert [c for c in calls if c["type"] == "announcements"] == []
 
 
 @pytest.mark.asyncio
@@ -2096,20 +2063,22 @@ async def test_a_reply_awaited_when_a_change_was_pushed_is_withheld(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_an_earlier_runs_empty_reply_is_dropped_but_its_stop_clear_kept(monkeypatch):
-    """Only ``stopped`` marks a clear; an empty reply for a run no longer
-    subscribed could otherwise restore that run on the server."""
+async def test_an_earlier_runs_empty_reply_is_retried_only_marked_superseded(monkeypatch):
+    """An empty reply for a run no longer subscribed could otherwise restore
+    that run on the server."""
     delivered = []
     host_ref = []
+    failed = []
 
     async def on_batch(msg):
         if msg["type"] != "announcements":
             return
-        if msg["run_id"] == RUN_ID and not msg.get("stopped") and not delivered:
+        if msg["run_id"] == RUN_ID and not failed:
+            failed.append(msg)
             host_ref[0].queue.append(_run_state("Race 7", run_id=0x40002806))
             await asyncio.sleep(0.1)  # the hold loop subscribes the new run meanwhile
             raise ConnectionError("server unreachable")
-        delivered.append((msg["run_id"], bool(msg.get("stopped"))))
+        delivered.append((msg["run_id"], bool(msg.get("superseded"))))
 
     task, host, writer, _, _ = await _running(
         monkeypatch, on_batch=on_batch, retry_initial=0.05, keepalive_interval=0.05,
@@ -2117,13 +2086,11 @@ async def test_an_earlier_runs_empty_reply_is_dropped_but_its_stop_clear_kept(mo
     host_ref.append(host)
     try:
         host.queue.append(_run_state())
-        await _until(lambda: delivered)
-        host.queue.append(_run_state(state="stopped"))
-        await _until(lambda: (RUN_ID, True) in delivered)
-        await asyncio.sleep(0.1)
+        await _until(lambda: ("0x40002806", False) in delivered)
+        await asyncio.sleep(0.2)
     finally:
         await _finish(task)
-    assert (RUN_ID, False) not in delivered
+    assert [s for r, s in delivered if r == RUN_ID] == [True]
     assert ("0x40002806", False) in delivered
 
 
@@ -2182,6 +2149,17 @@ def _lowercase_stop(name, run_id, state="stopped") -> bytes:
         struct.pack("<I", 14) + b"runstatechange" + struct.pack("<I", len(text)) + text
         + b"d" + struct.pack("<I", run_id)
     )
+
+
+# A stop of a run nobody picked, read after another notice to show that one
+# was read: a stopped pick itself leaves no mark until its session ends.
+ELSEWHERE_ID = 0x400028FF
+
+
+async def _stop_read(client, host, stop):
+    host.queue.append(stop)
+    host.queue.append(_lowercase_stop("Elsewhere", ELSEWHERE_ID))
+    await _until(lambda: f"0x{ELSEWHERE_ID:08x}" in client._ended_runs)
 
 
 @pytest.mark.asyncio
@@ -2249,23 +2227,56 @@ async def test_a_stopped_pick_is_not_picked_again_for_the_same_description(monke
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _announcements(calls) and _runs_sent(calls))
-        host1.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
-        await _until(lambda: _view_closes(first))
+        await _stop_read(client, host1, _lowercase_stop(PICK_NAME, 0x4000280A))
+        # The timing software closes the session as the run stops, which
+        # ends the pick — matched despite the case.
+        client.note_session("95", PICK_NAME)
+        assert "0x4000280a" in client._ended_runs
         host1.queue.append(b"")
         # The reconnect pulls the same run table again.
         await _until(lambda: not host2._pull)
+        await _until(lambda: _view_opens(second))
+        # The stop kept the pick subscribed, so the reconnect subscribed it
+        # again; the next session of its name does not pick it again.
+        assert client._ann_run == PICKED_ID
         client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_closes(second))
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
     (run,) = _runs_sent(calls)
-    (stop,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
-    assert stop["rows"] == []
-    # Matched despite the case, so the clear names the picked start.
-    assert stop["start_key"] == run["start_key"]
-    assert _view_closes(first) == [1]
-    assert _view_opens(second) == []
+    assert _view_closes(first) == []
+    assert _view_opens(second) == [(1, PICKED_DECIMAL)]
     assert client._ann_run is None
+    # Its rows are cleared only as a dropped pick's are, under the pick's start.
+    (clear,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert clear["dropped"] and clear["start_key"] == run["start_key"]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_pick_stays_subscribed_through_a_reconnect_before_the_95(monkeypatch):
+    """Race control posts the reason for a stop after it, and a reconnect's
+    pull picks again; while the session is open, the stopped pick is kept."""
+    first, second = FakeWriter(), FakeWriter()
+    host1, host2 = PullingViewHost(first), PullingViewHost(second)
+    task, _, _, calls, client = await _picking(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _announcements(calls) and _runs_sent(calls))
+        await _stop_read(client, host1, _lowercase_stop(PICK_NAME, 0x4000280A))
+        host1.queue.append(b"")
+        await _until(lambda: not host2._pull)
+        await _until(lambda: _view_opens(second))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert client._ann_run == PICKED_ID
+    assert _view_opens(second) == [(1, PICKED_DECIMAL)]
+    assert not [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
+    assert len(_runs_sent(calls)) == 1
 
 
 @pytest.mark.asyncio
@@ -2403,57 +2414,6 @@ async def test_a_pick_ended_while_its_failed_delivery_was_in_flight_is_not_retri
     assert client._run is None
 
 
-def _dropped_clear(start_key="k1"):
-    return {
-        "type": "announcements", "run_id": PICKED_ID, "rows": [], "stopped": True,
-        "dropped": True, "start_key": start_key,
-    }
-
-
-def _plain_stop(start_key=""):
-    return {
-        "type": "announcements", "run_id": PICKED_ID.lower(), "rows": [],
-        "stopped": True, "start_key": start_key,
-    }
-
-
-def test_a_keyless_stop_queued_after_a_dropped_clear_keeps_its_mark():
-    """A stop notice for a pick already dropped carries no start key; it
-    replaces the queued clear, but must still name the dropped start."""
-    client = ccc.ClassCodeClient("timing-host", _recording()[1], **FAST)
-    client._queue_announcement(_dropped_clear())
-    client._queue_announcement(_plain_stop())
-    (queued,) = client._announcements.values()
-    assert (queued["dropped"], queued["start_key"]) == (True, "k1")
-
-
-def test_a_stop_of_another_start_replaces_a_dropped_clear_as_it_is():
-    client = ccc.ClassCodeClient("timing-host", _recording()[1], **FAST)
-    client._queue_announcement(_dropped_clear())
-    client._queue_announcement(_plain_stop("k2"))
-    (queued,) = client._announcements.values()
-    assert "dropped" not in queued and queued["start_key"] == "k2"
-
-
-@pytest.mark.asyncio
-async def test_a_failed_dropped_clear_keeps_its_mark_under_a_newer_keyless_stop():
-    sent = []
-    client = None
-
-    async def on_batch(msg):
-        if msg.get("dropped") and not sent:
-            sent.append("failed")
-            client._queue_announcement(_plain_stop())
-            raise ConnectionError("server unreachable")
-        sent.append(msg)
-
-    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
-    client._queue_announcement(_dropped_clear())
-    await client._flush()
-    (queued,) = client._announcements.values()
-    assert (queued["dropped"], queued["start_key"]) == (True, "k1")
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lowercase", [False, True])
 async def test_the_picked_run_starting_keeps_the_picks_start(monkeypatch, lowercase):
@@ -2563,9 +2523,9 @@ async def test_a_picked_runs_start_notice_with_the_same_event_sends_nothing_more
 
 
 @pytest.mark.asyncio
-async def test_a_lowercase_stop_replaces_the_picks_failed_rows(monkeypatch):
-    """The clear and the picked run's rows are queued as one run, so rows
-    whose delivery failed during the stop are never sent after its clear."""
+async def test_a_lowercase_stop_keeps_the_picks_failed_rows_for_retry(monkeypatch):
+    """A stop clears nothing, so rows whose delivery failed during it are
+    retried for the pick, whatever the notice's case."""
     sent = []
     ref = []
 
@@ -2581,29 +2541,34 @@ async def test_a_lowercase_stop_replaces_the_picks_failed_rows(monkeypatch):
     writer = FakeWriter()
     host = PullingViewHost(writer, rows=[("Track clear", 5)])
     ref.append(host)
+    # A short keepalive wakes the hold loop for the retry: with the stop
+    # queuing nothing, nothing else does.
     task, _, _, _, client = await _picking(
         monkeypatch, connections=[(host, writer)], on_batch=on_batch, retry_initial=0.05,
+        keepalive_interval=0.05,
     )
     try:
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
-        await _until(lambda: any(m.get("stopped") for m in sent))
+        await _until(lambda: len(sent) >= 2)
         await asyncio.sleep(0.3)
     finally:
         await _finish(task)
-    assert [bool(m["rows"]) for m in sent] == [True, False]
+    assert [bool(m["rows"]) for m in sent] == [True, True]
+    assert not any(m.get("stopped") for m in sent)
     assert sent[-1]["run_id"] == PICKED_ID
 
 
 @pytest.mark.asyncio
 async def test_a_stopped_pick_is_not_picked_again_after_another_description(monkeypatch):
-    task, host, writer, calls, client = await _picking(monkeypatch)
+    # A short keepalive wakes the hold loop for each pick, which nothing
+    # else read or queued does.
+    task, host, writer, calls, client = await _picking(monkeypatch, keepalive_interval=0.05)
     try:
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _runs_sent(calls))
-        host.queue.append(_lowercase_stop(PICK_NAME, 0x4000280A))
-        await _until(lambda: _view_closes(writer))
+        await _stop_read(client, host, _lowercase_stop(PICK_NAME, 0x4000280A))
         client.note_session("6", "Race 1 - Qualifying")
         await _until(lambda: len(_runs_sent(calls)) >= 2)
         client.note_session("7", PICK_NAME)
@@ -2628,8 +2593,7 @@ async def test_a_newer_run_of_a_stopped_picks_name_is_picked_from_a_later_pull(m
         await _until(lambda: client._runs is not None)
         client.note_session("5", PICK_NAME)
         await _until(lambda: _runs_sent(calls))
-        host1.queue.append(_run_state(PICK_NAME, 0x4000280A, "stopped"))
-        await _until(lambda: _view_closes(first))
+        await _stop_read(client, host1, _run_state(PICK_NAME, 0x4000280A, "stopped"))
         host1.queue.append(b"")
         await _until(lambda: _view_opens(second) and len(_runs_sent(calls)) >= 2)
     finally:
@@ -3031,21 +2995,26 @@ async def test_an_unanswered_entry_list_subscription_is_retried_on_the_same_conn
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_run_closes_its_awaited_entry_list_view(monkeypatch):
-    writer = FakeWriter()
-    host = ResultsHost(writer, answer_results=False)
-    task, _, _, calls, _, _ = await _listing(monkeypatch, connections=[(host, writer)])
+async def test_a_stopped_run_keeps_its_entry_list_subscription(monkeypatch):
+    """Like its announcements, the run's entry list is refreshed after its
+    stop until the next run starts or is picked."""
+    task, host, writer, calls, _, _ = await _listing(
+        monkeypatch, [_entrant("7")], entry_list_refresh_interval=0.05,
+    )
     try:
         host.queue.append(_run_state())
-        await _until(lambda: _entry_list_opens(writer))
-        ((view_id, _),) = _entry_list_opens(writer)
+        await _until(lambda: _entry_lists(calls))
         host.queue.append(_run_state(state="stopped"))
-        await _until(lambda: view_id in _view_closes(writer))
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.02)
+        opened, listed = len(_entry_list_opens(writer)), len(_entry_lists(calls))
+        await _until(
+            lambda: len(_entry_list_opens(writer)) > opened
+            and len(_entry_lists(calls)) > listed
+        )
     finally:
         await _finish(task)
-    assert len(_entry_list_opens(writer)) == 1
-    assert _entry_lists(calls) == []
+    assert {u for _, u in _entry_list_opens(writer)} == {RUN_DECIMAL}
+    assert {c["run_id"] for c in _entry_lists(calls)} == {RUN_ID}
 
 
 @pytest.mark.asyncio

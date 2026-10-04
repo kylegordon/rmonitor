@@ -2615,15 +2615,20 @@ def test_announcements_show_while_their_run_is_the_running_session(state):
     assert state.snapshot()["announcements"] == [{"key": "100", "text": "Track clear"}]
 
 
-def test_announcements_are_hidden_from_the_95_close_edge(state):
+def test_announcements_stay_shown_through_the_95_close_edge(state):
+    """Race control posts the reason for a stop after it, and the board
+    still shows the closed session; the race name still hides there."""
     _started(state)
     _session(state)
     _announce(state, ("Track clear", 100))
     _closing(state)
-    assert _shown(state) == []
+    assert _shown(state) == ["Track clear"]
+    assert state.snapshot()["race_name"] == ""
 
 
-def test_announcements_are_cleared_by_the_relays_empty_rows_on_a_stop(state):
+def test_an_older_relays_stop_clear_still_empties_the_run(state):
+    """A relay from before #107 sent empty rows on every stop; the server
+    still applies them as the run's whole truth."""
     _started(state)
     _session(state)
     _announce(state, ("Track clear", 100))
@@ -2721,12 +2726,181 @@ def test_announcements_do_not_carry_into_a_same_named_session_through_the_preloa
 
 
 def test_another_runs_stop_does_not_clear_the_announcements_held(state):
-    """The relay clears on every stop, including runs it never subscribed."""
+    """An older relay cleared on every stop, including runs it never subscribed."""
     _started(state)
     _session(state)
     _announce(state, ("Track clear", 100))
     assert _announce(state, run_id="0x40002805") is None
     assert _shown(state) == ["Track clear"]
+
+
+def _announce_start(state, start_key, *rows, run_id="0x40002806"):
+    return state.process({
+        "type": "announcements", "run_id": run_id, "start_key": start_key,
+        "name": "Race 7 - 2nd Race",
+        "rows": [{"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows],
+    })
+
+
+RESTART_ID = "0x40002807"
+RESTART_NAME = "Race 7 - 2nd Race - Re-Start"
+
+
+def test_announcements_stay_until_the_next_sessions_b(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _closing(state)
+    assert _shown(state) == ["Track clear"]
+    _session(state, "Race 8 - Final", number="28")
+    assert _shown(state) == []
+
+
+def test_a_same_run_restart_shows_its_rows_again(state):
+    """A red flag before a lap is completed: race control re-runs the same
+    run, under a new start."""
+    _started_with_event(state, start_key="k1")
+    _session(state)
+    _announce_start(state, "k1", ("Red flag", 100))
+    _closing(state)
+    assert _shown(state) == ["Red flag"]
+    _started_with_event(state, start_key="k2")
+    _session(state, number="28")
+    _announce_start(state, "k2", ("Red flag", 100))
+    assert state.class_code_run["start_key"] == "k2"
+    assert _shown(state) == ["Red flag"]
+
+
+def _restart(state, b_first):
+    _started(state)
+    _session(state)
+    _announce(state, ("Red flag", 100))
+    _closing(state)
+    if b_first:
+        _session(state, RESTART_NAME, number="28")
+        _started(state, RESTART_ID, RESTART_NAME)
+    else:
+        _started(state, RESTART_ID, RESTART_NAME)
+        _session(state, RESTART_NAME, number="28")
+    _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
+
+
+@pytest.mark.parametrize("b_first", [True, False])
+def test_a_restart_run_shows_the_previous_runs_rows_first(state, b_first):
+    """A red flag after laps were run: race control restarts the race as a
+    new run named the old one's name plus " - "."""
+    _restart(state, b_first)
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
+
+@pytest.mark.parametrize("b_first", [True, False])
+def test_a_restart_runs_carry_ends_at_the_next_session(state, b_first):
+    _restart(state, b_first)
+    _session(state, "Race 8 - Final", number="29")
+    assert _shown(state) == []
+    _started(state, "0x40002808", "Race 8 - Final")
+    assert _shown(state) == []
+
+
+@pytest.mark.parametrize("restart_group, carried", [
+    ("0x80000999", False),
+    (None, True),
+    ("0x80000985", True),
+])
+def test_a_run_of_a_different_group_does_not_carry(state, restart_group, carried):
+    """A restart run created after the relay's pull has no known group, so
+    only the name decides then."""
+    runs = [_run_row()]
+    if restart_group is not None:
+        runs.append(_run_row(RESTART_ID, restart_group, RESTART_NAME))
+    _runs_preload(state, *runs)
+    _restart(state, b_first=False)
+    assert _shown(state) == (
+        ["Red flag", "Restart over 5 laps"] if carried else ["Restart over 5 laps"]
+    )
+
+
+def test_a_waiting_run_shown_for_its_session_carries_into_a_restart(state):
+    """Its $B came before its start, and the restart's $B follows with no
+    repeat and no 95 between, so it never became the bound run."""
+    _session(state)
+    _started(state)
+    _announce(state, ("Red flag", 100))
+    assert _shown(state) == ["Red flag"]
+    _session(state, RESTART_NAME, number="28")
+    _started(state, RESTART_ID, RESTART_NAME)
+    _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
+
+def test_a_restart_runs_carry_survives_its_b_repeats_and_an_init(state):
+    _restart(state, b_first=True)
+    state.process({"type": "init"})
+    _session(state, RESTART_NAME, number="28")
+    _session(state, RESTART_NAME, number="28")
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
+
+def test_a_restart_does_not_carry_past_a_session_with_no_run(state):
+    """The carry is of the board's previous session only, so a session
+    between with no run bound ends it."""
+    _started(state)
+    _session(state)
+    _announce(state, ("Red flag", 100))
+    _closing(state)
+    _session(state, "Race 8 - Final", number="28")
+    _closing(state, "Race 8 - Final")
+    _session(state, RESTART_NAME, number="29")
+    _started(state, RESTART_ID, RESTART_NAME)
+    _announce(state, ("Restart over 5 laps", 200), run_id=RESTART_ID)
+    assert _shown(state) == ["Restart over 5 laps"]
+
+
+def test_late_rows_of_the_carried_run_still_show(state):
+    """Race control posts after a stop, and a reply can arrive after the
+    restart's $B has retired the old start."""
+    _restart(state, b_first=True)
+    _announce(state, ("Red flag", 100), ("Restart on the original grid", 150))
+    assert _shown(state) == [
+        "Red flag", "Restart on the original grid", "Restart over 5 laps",
+    ]
+    # Rows only: the retired start is not taken back.
+    held = (state.class_code_run, state.class_code_run_next)
+    assert [r["run_id"] for r in held if r is not None] == [RESTART_ID]
+
+
+def test_a_dropped_clear_of_the_carried_run_keeps_its_rows(state):
+    """A relay picking by name drops the old run when the restart's $B
+    names no run it has pulled — after the server retired that start."""
+    _restart(state, b_first=True)
+    state.process({
+        "type": "announcements", "run_id": "0x40002806", "rows": [],
+        "stopped": True, "dropped": True,
+    })
+    assert _shown(state) == ["Red flag", "Restart over 5 laps"]
+
+
+def test_a_late_reply_of_a_same_run_restarts_old_start_changes_nothing(state):
+    _started_with_event(state, start_key="k1")
+    _session(state)
+    _announce_start(state, "k1", ("Red flag", 100))
+    _closing(state)
+    _started_with_event(state, start_key="k2")
+    _session(state, number="28")
+    _announce_start(state, "k2", ("Restart over 5 laps", 200))
+    assert _announce_start(state, "k1", ("Red flag", 100)) is None
+    assert _shown(state) == ["Restart over 5 laps"]
+
+
+def test_a_run_whose_name_only_shares_a_prefix_does_not_carry(state):
+    _started(state)
+    _session(state)
+    _announce(state, ("Red flag", 100))
+    _closing(state)
+    _started(state, RESTART_ID, "Race 7 - 2nd Race Final")
+    _session(state, "Race 7 - 2nd Race Final", number="28")
+    _announce(state, ("Final notice", 200), run_id=RESTART_ID)
+    assert _shown(state) == ["Final notice"]
 
 
 def test_a_refreshed_session_keeps_its_announcements_past_the_run_ttl(state, monkeypatch):
@@ -2742,6 +2916,24 @@ def test_a_refreshed_session_keeps_its_announcements_past_the_run_ttl(state, mon
     for hours in (2, 4, 6, 8, 10, 12, 14):
         monkeypatch.setattr(rs.time, "time", lambda h=hours: t0 + h * 3600)
         _announce(state, ("Track clear", 100))
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_closed_run_refreshed_overnight_keeps_its_announcements(state, monkeypatch):
+    """The announcements show until the next session, however long the gap,
+    while the relay keeps refreshing the stopped run."""
+    import server.race_state as rs
+
+    t0 = time.time()
+    monkeypatch.setattr(rs.time, "time", lambda: t0)
+    _started(state)
+    _session(state)
+    _announce(state, ("Track clear", 100))
+    _closing(state)
+    for hours in (2, 4, 6, 8, 10, 12, 14):
+        monkeypatch.setattr(rs.time, "time", lambda h=hours: t0 + h * 3600)
+        _announce(state, ("Track clear", 100))
+        state.prune_expired_class_codes()
     assert _shown(state) == ["Track clear"]
 
 
@@ -2904,13 +3096,25 @@ def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state)
     assert _shown(state) == []
 
 
-@pytest.mark.parametrize("closing", [False, True])
-def test_a_refresh_restores_nothing_for_another_session_or_a_closed_one(state, closing):
+def test_a_refresh_restores_nothing_for_another_session(state):
     _session(state, "Race 8 - Final", number="28")
-    if closing:
-        _closing(state, "Race 7 - 2nd Race")
     _refresh(state, ("Track clear", 100))
     assert state.class_code_run is None
+
+
+def test_a_refresh_after_the_95_restores_the_closed_sessions_run_closed(state):
+    """The relay keeps a stopped run subscribed, so a start lost until after
+    the close is restored as the 95 would have left it: its rows shown, its
+    race name hidden, and the next session's $B discarding it."""
+    _session(state)
+    _closing(state)
+    _refresh(state, ("Track clear", 100))
+    assert state.class_code_run["closed"]
+    assert _shown(state) == ["Track clear"]
+    assert state.snapshot()["race_name"] == ""
+    _session(state, "Race 8 - Final", number="28")
+    assert state.class_code_run is None
+    assert _shown(state) == []
 
 
 def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
