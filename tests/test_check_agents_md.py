@@ -592,3 +592,28 @@ def test_skill_outside_the_naming_convention_is_reported(tmp_path: Path) -> None
     findings = check_agents_md.run_checks(root)
 
     assert any(".claude/skills/other-skill/SKILL.md" in f and "rmonitor-*" in f for f in findings)
+
+
+def test_a_comment_needs_whitespace_to_start_a_block_scalar() -> None:
+    """``|#x`` is a plain scalar in YAML, not a block header with a comment."""
+    parsed = check_agents_md.parse_frontmatter("---\ndescription: |#x\n---\n")
+
+    assert parsed is not None
+    assert parsed[0] == {"description": "|#x"}
+
+
+def test_skill_paths_pattern_matching_only_an_empty_directory_is_reported(
+    tmp_path: Path,
+) -> None:
+    root = make_repo(tmp_path)
+    (root / "empty").mkdir()
+    path = _add_skill(root, "rmonitor-fixture")
+    path.write_text(
+        "---\nname: rmonitor-fixture\ndescription: Use when testing.\npaths:\n"
+        '  - "empty/**"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+
+    findings = check_agents_md.run_checks(root)
+
+    assert any("`empty/**`" in f for f in findings)

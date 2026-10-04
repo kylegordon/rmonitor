@@ -558,11 +558,20 @@ def _as_text(value: str | list[str] | None) -> str:
 
 
 def _pattern_matches(root: Path, pattern: str) -> bool:
-    """Return whether the glob *pattern* matches any path of this checkout."""
+    """Return whether the glob *pattern* matches any file of this checkout.
+
+    Files only: Claude Code loads a skill for a file being worked on, so a pattern
+    matching nothing but an empty directory never fires.
+    """
+    # A trailing ``**`` means every file beneath to Claude Code, but before Python 3.13
+    # ``Path.glob`` matches only directories with it, so spell the files out.
+    if pattern.endswith("**"):
+        pattern += "/*"
     try:
         matches = root.glob(pattern)
         return any(
-            not set(m.relative_to(root).parts) & _SKIP_DIRS
+            m.is_file()
+            and not set(m.relative_to(root).parts) & _SKIP_DIRS
             and not m.relative_to(root).as_posix().startswith(_SKIP_PREFIXES)
             for m in matches
         )
