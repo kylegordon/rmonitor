@@ -5,7 +5,8 @@ scrubbed, and push records are built in-test from invented names, numbers and
 codes — never from a capture.  The one exception is the Announcements view:
 its records and frames are captured layouts, kept byte for byte because the
 layout is the thing under test, with every identity slot zeroed and only an
-operator's test text in them.
+operator's test text in them.  Results view replies are built from the
+layout alone, with invented entrants.
 """
 
 import asyncio
@@ -445,6 +446,9 @@ class _Stop(BaseException):
 FAST = dict(
     first_idle=0.01, record_idle=0.01, model_idle=0.01, flush_quiet=0.05,
     keepalive_interval=10.0,
+    # The harness hosts answer every view open as Announcements; entry-list
+    # tests switch it on.
+    entry_list=False,
 )
 
 
@@ -2668,3 +2672,572 @@ async def test_a_new_session_number_under_the_same_description_ends_the_pick(mon
     (clear,) = [c for c in calls if c["type"] == "announcements" and c.get("stopped")]
     assert clear["run_id"] == PICKED_ID and clear["start_key"] == run["start_key"]
     assert client._ann_run is None
+
+
+# ---------------------------------------------------------------------------
+# Entry list: the results view reply
+# ---------------------------------------------------------------------------
+
+def _results_row(row) -> bytes:
+    """One results row in the layout ``EntryListParser`` documents.
+
+    *row* holds ``number, first, last, class_name, code, reg, transponder``,
+    and optionally ``sep`` (default ``0x0f``) and ``finished`` (default
+    False).  A finished row's middle holds a decoy: a u32 whose value, read
+    as a length, runs through the model field's length prefix to its end.
+    """
+    sep = bytes([row.get("sep", 0x0f)])
+    model = row.get("model", "Test Car")
+    head = (
+        _s(row["number"]) + b"\x01" + _s(row["first"]) + b"\x00" + _s(row["last"]) + b"\x00"
+        + _s(f"{row['first']} {row['last']}") + b"\x00" + _s(row["class_name"]) + b"\x00"
+    )
+    if row.get("finished"):
+        rest = b"\x01" + _s("1:02.345") + _s("Finished") + b"\x02"
+        middle = _s("1") + b"\x00" + struct.pack("<I", len(rest) + 4 + len(model)) + rest
+    else:
+        middle = bytes(4) + b"\x01" + _s("DNS") + b"\x00"
+    extra = [model, "1000", row["code"]] + [""] * 7
+    tail = b"".join(_s(v) + sep for v in extra)
+    tail += _s(row["reg"]) + b"\x00" + _s("d" + row["reg"][1:]) + b"\x00"
+    numeric = [int(t) for t in row["transponder"].split(", ") if t.isdigit()]
+    tail += struct.pack("<I", len(numeric)) + b"\x00"
+    tail += b"".join(struct.pack("<I", t) for t in numeric) + _s(row["transponder"])
+    return head + middle + tail + _s("") + b"\x00"
+
+
+def _results_frame(opcode, view_id, rows, *, count=None, title="Not classified"):
+    """One results view frame; *count* overrides the row count."""
+    block = struct.pack("<III", view_id, 1, 0) + _s(title) * 2
+    block += struct.pack("<I", len(rows) if count is None else count)
+    if rows:
+        body = b"".join(_results_row(r) for r in rows)
+        block += struct.pack("<II", len(rows), 0) + b"\xff\xff"
+        block += struct.pack("<I", len(body)) + body
+    return opcode + _ANN_HEADER + struct.pack("<I", len(block)) + block
+
+
+def _entrant(number="7", code="TC", *, reg=None, transponder="1234567", **extra):
+    return {
+        "number": number, "first": "Ann", "last": "EXAMPLE", "class_name": "Test Cup",
+        "code": code, "reg": f"a{int(number):07d}" if reg is None else reg,
+        "transponder": transponder,
+        **extra,
+    }
+
+
+def _row(number="7", code="TC", *, reg=None, transponder="1234567"):
+    """The row ``EntryListParser`` reads from ``_entrant`` with the same arguments."""
+    return {
+        "entrant_id": f"a{int(number):07d}" if reg is None else reg, "number": number,
+        "class_name": "Test Cup", "transponder": transponder, "class_code": code,
+    }
+
+
+def test_results_frame_helper_matches_a_captured_row_shape():
+    row = _results_row({
+        "number": "7", "first": "Ann", "last": "EXAMPLE", "class_name": "Test Cup",
+        "code": "TC", "reg": "a0000001", "transponder": "1234567", "model": "Car",
+    })
+    assert row == bytes.fromhex(
+        # head: number, 01, first, 00, last, 00, name, 00, class, 00
+        "0100000037" "01" "03000000416e6e" "00" "070000004558414d504c45" "00"
+        "0b000000416e6e204558414d504c45" "00" "080000005465737420437570" "00"
+        # middle, not read
+        "00000000" "01" "03000000444e53" "00"
+        # model, capacity and code, then seven empties, each with its separator
+        "03000000436172" "0f" "0400000031303030" "0f" "020000005443" "0f"
+        + "000000000f" * 7 +
+        # car reg, 00, driver reg, 00
+        "080000006130303030303031" "00" "080000006430303030303031" "00"
+        # one numeric transponder, then the transponder as text
+        "01000000" "00" "87d61200" "0700000031323334353637"
+        # the next column, not read
+        "00000000" "00"
+    )
+
+
+def test_entry_list_parser_reads_a_reply_with_its_rows():
+    data = bytes(100) + _results_frame(b"\x24\x80", 6, [_entrant("7"), _entrant("12", "TD")])
+    assert ccc.EntryListParser(6).feed(data + bytes(10)) == [
+        ccc.EntryListReply([_row("7"), _row("12", "TD")]),
+    ]
+
+
+def test_entry_list_parser_reads_rows_with_either_separator():
+    for seps in ([0x0f, 0x0f], [0x10, 0x10], [0x10, 0x0f]):
+        rows = [_entrant("7", sep=seps[0], finished=True), _entrant("8", sep=seps[1])]
+        (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
+        assert reply.rows == [_row("7"), _row("8")], seps
+
+
+def test_entry_list_parser_is_not_misled_by_a_finished_rows_decoy_length():
+    """A u32 in a finished row's middle can read as a length running through
+    the model field's length prefix; without the no-control-byte rule a tail
+    would anchor there."""
+    row = _results_row(_entrant("7", finished=True))
+    decoy = row.index(_s("1") + b"\x00") + len(_s("1") + b"\x00")
+    assert ccc._entry_list_tail(row, decoy) is None
+    (reply,) = ccc.EntryListParser(6).feed(
+        _results_frame(b"\x24\x80", 6, [_entrant("7", finished=True), _entrant("8", finished=True)])
+    )
+    assert reply.rows == [_row("7"), _row("8")]
+
+
+def test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees(caplog):
+    data = _results_frame(b"\x24\x80", 6, [_entrant("7")], count=2)
+    assert ccc.EntryListParser(6).feed(data) == [ccc.EntryListReply(None)]
+    assert "withheld" in caplog.text
+
+
+def test_entry_list_parser_joins_a_reply_split_across_reads():
+    parser = ccc.EntryListParser(6)
+    data = bytes(30) + _results_frame(b"\x24\x80", 6, [_entrant("7"), _entrant("8")])
+    out = []
+    for i in range(0, len(data), 7):
+        out += parser.feed(data[i:i + 7])
+    assert out == [ccc.EntryListReply([_row("7"), _row("8")])]
+
+
+def test_entry_list_parser_ignores_other_views_and_non_reply_opcodes():
+    """Announcements on another view, and the awaited view's ``21 80`` column
+    frame and ``26 80`` push, are never taken for its reply."""
+    columns = b"\x21\x80" + _ANN_HEADER + struct.pack("<I", 40) + struct.pack("<III", 6, 1, 0)
+    data = (
+        _ann_frame(b"\x24\x80", 5, [("Track clear", 5)]) + columns + bytes(28)
+        + _results_frame(b"\x26\x80", 6, [_entrant("7")])
+        + _results_frame(b"\x24\x80", 7, [_entrant("7")])
+    )
+    assert ccc.EntryListParser(6).feed(data) == []
+
+
+def test_entry_list_parser_reads_an_empty_reply():
+    assert ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, [])) == [
+        ccc.EntryListReply([]),
+    ]
+
+
+def test_entry_list_parser_keeps_a_joined_transponder_raw():
+    rows = [_entrant("7", transponder="1135070, 3809352"), _entrant("8", transponder="NE10")]
+    (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
+    assert [r["transponder"] for r in reply.rows] == ["1135070, 3809352", "NE10"]
+
+
+def test_entry_list_entries_skip_codeless_rows_and_carry_their_kind():
+    rows = [_row("7"), _row("8", ""), {**_row("9"), "entrant_id": ""}]
+    assert ccc.entry_list_entries(rows) == [{
+        "entrant_id": "a0000007", "kind": "entry list", "number": "7",
+        "class_name": "Test Cup", "transponder": "1234567", "class_code": "TC",
+    }]
+    assert set(ccc.entry_list_entries(rows)[0]) == set(ccc.record_entry(
+        ccc.PushRecord("added", RUN_ID, _fields())
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Entry list: the subscription on the held connection
+# ---------------------------------------------------------------------------
+
+def _view_open_params(writer):
+    """Return ``(view id, name, params)`` for every view open written."""
+    out = []
+    for w in writer.writes:
+        if w[:2] != b"\x21\x80":
+            continue
+        cur = ccc._Cursor(w, 59)
+        cur.u32()
+        name = cur.string()
+        view_id, count = cur.u32(), cur.u32()
+        out.append((view_id, name, [(cur.string(), cur.string()) for _ in range(count)]))
+    return out
+
+
+def _entry_list_opens(writer):
+    """Return ``(view id, UniqueID)`` for every results view open written."""
+    return [
+        (view_id, dict(params)["UniqueID"])
+        for view_id, name, params in _view_open_params(writer) if name == ccc.RESULTS_VIEW
+    ]
+
+
+def _entry_lists(calls):
+    return [c for c in calls if c["type"] == "class_codes"]
+
+
+class ResultsHost(ViewHost):
+    """A :class:`ViewHost` that answers a results view open with *entrants*.
+
+    With *answer_results* False it leaves results opens unanswered; *count*
+    overrides the reply's row count.
+    """
+
+    def __init__(self, writer, rows=(), *, entrants=(), answer_results=True):
+        super().__init__(writer, rows)
+        self.entrants = list(entrants)
+        self.answer_results = answer_results
+        self.count = None
+
+    async def read(self, n):
+        while True:
+            if not self._identified and self._writer.writes:
+                self._identified = True
+                return IDENT_FRAME
+            opens = _view_open_params(self._writer)
+            if self._identified and len(opens) > self._answered:
+                view_id, name, _ = opens[self._answered]
+                self._answered += 1
+                if name != ccc.RESULTS_VIEW:
+                    return _ann_frame(b"\x24\x80", view_id, self.rows)
+                if self.answer_results:
+                    return _results_frame(
+                        b"\x24\x80", view_id, self.entrants, count=self.count
+                    )
+                continue
+            if self.queue:
+                return self.queue.pop(0)
+            await asyncio.sleep(0.002)
+
+
+class PullingResultsHost(PullingViewHost, ResultsHost):
+    """A :class:`ResultsHost` that first answers the registry pull."""
+
+
+async def _listing(monkeypatch, entrants=(), *, connections=None, **knobs):
+    """Start a client with the entry list on against a :class:`ResultsHost`.
+
+    Returns ``(task, host, writer, calls, client, opened)``.
+    """
+    if connections is None:
+        writer = FakeWriter()
+        connections = [(ResultsHost(writer, entrants=entrants), writer)]
+    host, writer = connections[0]
+    opened, _ = _harness(monkeypatch, connections, stop_after=knobs.pop("stop_after", 1))
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg if msg["type"] != "class_codes" else _without_age(msg))
+    client = ccc.ClassCodeClient(
+        "timing-host", on_batch, **{**ANN_FAST, "entry_list": True, **knobs}
+    )
+    task = asyncio.ensure_future(client.run())
+    await _until(lambda: host._identified)
+    return task, host, writer, calls, client, opened
+
+
+def _listed(number="7", code="TC"):
+    """The entry forwarded for ``_entrant(number, code)``."""
+    return ccc.entry_list_entries([_row(number, code)])[0]
+
+
+@pytest.mark.asyncio
+async def test_entry_list_subscription_sends_the_consoles_results_request(monkeypatch):
+    task, host, writer, calls, _, _ = await _listing(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_list_opens(writer))
+    finally:
+        await _finish(task)
+    (view_id, _), = _entry_list_opens(writer)
+    (rec,) = [w for w in writer.writes if w[:2] == b"\x21\x80" and b"RaceResults" in w]
+    assert rec == ccc.build_view_open(
+        SESSION, view_id=view_id, name="lgView_RaceResults",
+        params=[("LiveSectionDecimals", "1"), ("SectionDecimals", "3"),
+                ("SpeedDecimals", "1"), ("UniqueID", RUN_DECIMAL)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows(monkeypatch):
+    task, host, writer, calls, _, opened = await _listing(
+        monkeypatch, [_entrant("7"), _entrant("8", "TD")],
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_lists(calls))
+        await _until(lambda: _entry_list_opens(writer)[0][0] in _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (msg,) = _entry_lists(calls)
+    assert msg == {
+        "type": "class_codes", "run_id": RUN_ID, "entry_list": True,
+        "entries": [_listed("7"), _listed("8", "TD")],
+    }
+    types = [c["type"] for c in calls]
+    assert types.index("class_code_run") < types.index("class_codes")
+    ((view_id, _),) = _entry_list_opens(writer)
+    assert _view_closes(writer).count(view_id) == 1
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_picked_run_subscribes_its_entry_list(monkeypatch):
+    writer = FakeWriter()
+    host = PullingResultsHost(writer)
+    host.entrants = [_entrant("7")]
+    task, _, _, calls, client, _ = await _listing(monkeypatch, connections=[(host, writer)])
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _entry_lists(calls))
+    finally:
+        await _finish(task)
+    assert [u for _, u in _entry_list_opens(writer)] == [PICKED_DECIMAL]
+    (msg,) = _entry_lists(calls)
+    assert msg["run_id"] == PICKED_ID
+    assert msg["entries"] == [_listed("7")]
+
+
+@pytest.mark.asyncio
+async def test_announcements_and_the_entry_list_share_one_connection_without_mixing(
+    monkeypatch,
+):
+    writer = FakeWriter()
+    host = ResultsHost(writer, [("Track clear", 5)], entrants=[_entrant("7")])
+    task, _, _, calls, _, opened = await _listing(monkeypatch, connections=[(host, writer)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_lists(calls) and _announcements(calls))
+    finally:
+        await _finish(task)
+    assert _announcements(calls) == [["Track clear"]]
+    assert [m["entries"] for m in _entry_lists(calls)] == [[_listed("7")]]
+    ids = [v for v, _, _ in _view_open_params(writer)]
+    assert len(ids) == len(set(ids)) == 2
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection(
+    monkeypatch,
+):
+    """Every connect raises an operator notice, so a retry rides the held
+    connection: the unanswered view is closed and a new one opened on it."""
+    writer = FakeWriter()
+    host = ResultsHost(writer, answer_results=False)
+    task, _, _, calls, _, opened = await _listing(
+        monkeypatch, connections=[(host, writer)], announce_reply_timeout=0.1,
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: len(_entry_list_opens(writer)) >= 2)
+    finally:
+        await _finish(task)
+    (first, _), (second, _) = _entry_list_opens(writer)[:2]
+    assert first != second
+    assert first in _view_closes(writer)
+    assert len(opened) == 1
+    assert _entry_lists(calls) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_closes_its_awaited_entry_list_view(monkeypatch):
+    writer = FakeWriter()
+    host = ResultsHost(writer, answer_results=False)
+    task, _, _, calls, _, _ = await _listing(monkeypatch, connections=[(host, writer)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_list_opens(writer))
+        ((view_id, _),) = _entry_list_opens(writer)
+        host.queue.append(_run_state(state="stopped"))
+        await _until(lambda: view_id in _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert len(_entry_list_opens(writer)) == 1
+    assert _entry_lists(calls) == []
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_resubscribes_the_entry_list(monkeypatch):
+    first, second = FakeWriter(), FakeWriter()
+    host1 = ResultsHost(first, entrants=[_entrant("7")])
+    host2 = ResultsHost(second, entrants=[_entrant("7"), _entrant("8")])
+    task, _, _, calls, _, _ = await _listing(
+        monkeypatch, connections=[(host1, first), (host2, second)], stop_after=2,
+    )
+    try:
+        host1.queue.append(_run_state())
+        await _until(lambda: _entry_lists(calls))
+        host1.queue.append(b"")
+        await _until(lambda: _entry_list_opens(second))
+        await _until(lambda: len(_entry_lists(calls)) >= 2)
+    finally:
+        await _finish(task)
+    assert [u for _, u in _entry_list_opens(second)] == [RUN_DECIMAL]
+    assert [len(m["entries"]) for m in _entry_lists(calls)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_the_entry_list_is_refreshed_after_its_interval(monkeypatch):
+    task, host, writer, calls, _, opened = await _listing(
+        monkeypatch, [_entrant("7")], entry_list_refresh_interval=0.05,
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: len(_entry_list_opens(writer)) >= 2)
+        await _until(lambda: _entry_list_opens(writer)[1][0] in _view_closes(writer))
+    finally:
+        await _finish(task)
+    (first, _), (second, _) = _entry_list_opens(writer)[:2]
+    assert first in _view_closes(writer)
+    assert second in _view_closes(writer)
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_entry_list_reply_forwards_nothing(monkeypatch, caplog):
+    writer = FakeWriter()
+    host = ResultsHost(writer, entrants=[_entrant("7")])
+    host.count = 2
+    task, _, _, calls, _, _ = await _listing(monkeypatch, connections=[(host, writer)])
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_list_opens(writer))
+        ((view_id, _),) = _entry_list_opens(writer)
+        await _until(lambda: view_id in _view_closes(writer))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _entry_lists(calls) == []
+    assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("push_first", [False, True])
+async def test_a_push_read_with_an_entry_list_reply_goes_to_the_server_after_it(push_first):
+    """Read in one chunk, a push after the reply is newer, and one before it
+    carries an edit the reply already holds, so the push must win either
+    way: it is read after the reply and delivered after it."""
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(msg)
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._ann_run = RUN_ID
+    client._ent_pending = (6, 0.0, RUN_ID)
+    client._ent_parser = ccc.EntryListParser(6)
+    reply = _results_frame(b"\x24\x80", 6, [_entrant("7", "TC")])
+    push = _push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TD"))
+    client._absorb(push + reply if push_first else reply + push)
+    assert client._ent_pending is None
+    listed = client._entry_lists[RUN_ID.lower()]["_observed"]
+    assert listed <= client._pending[RUN_ID]["a0000007"]["_observed"]
+    await client._flush()
+    assert [(c.get("entry_list", False), [e["class_code"] for e in c["entries"]])
+            for c in calls] == [(True, ["TC"]), (False, ["TD"])]
+
+
+def _held(*numbers):
+    return {"run_id": RUN_ID, "entries": [_listed(n) for n in numbers],
+            "_observed": ccc.time.monotonic()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer", [False, True])
+async def test_a_failed_entry_list_delivery_is_retried_and_a_newer_one_replaces_it(newer):
+    calls = []
+    failures = [True]
+    client = None
+
+    async def on_batch(msg):
+        if failures:
+            failures.pop()
+            if newer:
+                # Read while the failing delivery was in flight.
+                client._entry_lists[RUN_ID.lower()] = _held("8")
+            raise RuntimeError("server down")
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    await client._flush()
+    assert calls == []
+    await client._flush()
+    assert [[e["number"] for e in c["entries"]] for c in calls] == [["8" if newer else "7"]]
+    assert calls[0]["entry_list"] is True
+    assert client._entry_lists == {}
+
+
+@pytest.mark.asyncio
+async def test_an_entry_list_is_not_counted_as_pushed():
+    """Every refresh resends the whole list, so counting it would grow the
+    status's pushed count by the whole grid each minute."""
+    statuses = []
+    client = ccc.ClassCodeClient(
+        "timing-host", _collect([]), on_status=statuses.append,
+        **{**FAST, "entry_list": True},
+    )
+    client._connected = True
+    client._entry_lists[RUN_ID.lower()] = _held("7", "8")
+    await client._flush()
+    client._absorb(_push("added", RUN_ID, _fields("e1")))
+    await client._flush()
+    assert [s.pushed for s in statuses] == [0, 1]
+    assert statuses[0].last_delivery is not None
+
+
+def test_entry_list_parser_withholds_a_reply_with_a_cut_short_transponder(caplog):
+    """A row whose transponders do not read whole is no row, so the reply is
+    withheld rather than forwarded without it — a list missing a row would
+    withdraw that entrant's code on the server."""
+    frame = bytearray(_results_frame(b"\x24\x80", 6, [_entrant("7"), _entrant("8")]))
+    # Row 7's numeric transponder count: one claimed, far more than follow.
+    at = frame.index(_s("d0000007") + b"\x00") + len(_s("d0000007") + b"\x00")
+    frame[at:at + 4] = struct.pack("<I", 100_000)
+    assert ccc.EntryListParser(6).feed(bytes(frame)) == [ccc.EntryListReply(None)]
+    assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_runs_pushes_wait_for_its_failed_entry_list():
+    """A list retried after a newer push was delivered would overwrite that
+    push on the server, so the run's pushes are held back with it."""
+    calls = []
+    failures = [True]
+
+    async def on_batch(msg):
+        if msg.get("entry_list") and failures:
+            failures.pop()
+            raise RuntimeError("server down")
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    client._absorb(
+        _push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TD"))
+        + _push("added", "0x40002806", _fields("e9", "9", "Test Cup", "TE"))
+    )
+    await client._flush()
+    # Another run's pushes still go.
+    assert [c["run_id"] for c in calls] == ["0x40002806"]
+    await client._flush()
+    assert [(c["run_id"], c.get("entry_list", False)) for c in calls[1:]] == [
+        (RUN_ID, True), (RUN_ID, False),
+    ]
+    assert calls[-1]["entries"][0]["class_code"] == "TD"
+
+
+def test_entry_list_parser_withholds_a_reply_with_a_row_lacking_its_car_reg(caplog):
+    """A row dropped for having no car reg would leave the list short, and the
+    server would withdraw that entrant's code; the reply is withheld instead."""
+    rows = [_entrant("7", reg=""), _entrant("8")]
+    (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
+    assert reply == ccc.EntryListReply(None)
+    assert "withheld" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_push_kept_from_before_an_entry_list_is_dropped_once_the_list_is_delivered():
+    """A push kept from a failed delivery is older than a list read since,
+    which already holds its edit; sent after the list it would overwrite it
+    on the server, so it is dropped.  A push read after the list still goes."""
+    calls = []
+
+    async def on_batch(msg):
+        calls.append(_without_age(msg))
+    client = ccc.ClassCodeClient("timing-host", on_batch, **{**FAST, "entry_list": True})
+    client._absorb(_push("modified", RUN_ID, _fields("a0000007", "7", "Test Cup", "TB")))
+    client._entry_lists[RUN_ID.lower()] = _held("7")
+    client._absorb(_push("added", RUN_ID, _fields("a0000009", "9", "Test Cup", "TE")))
+    await client._flush()
+    assert [(c.get("entry_list", False), [e["entrant_id"] for e in c["entries"]])
+            for c in calls] == [(True, ["a0000007"]), (False, ["a0000009"])]

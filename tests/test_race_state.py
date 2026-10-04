@@ -1411,6 +1411,113 @@ def test_class_code_joined_by_transponder_even_after_a_renumber(state):
     assert snap["class_code_missing"] == 0
 
 
+def test_an_entry_list_entry_gives_a_rental_transponder_car_its_code(state):
+    # An entrant never edited while the relay was connected: no push carries
+    # the code, and the run's entry list does, under the rental transponder's
+    # name as the feed carries it.
+    state.process({"type": "class_info", "unique_number": "1", "description": "KMSC Pre Injection 600"})
+    _add_car(state, "100", transponder="NE10")
+    _codes(state, "0x4000AAAA", {
+        **_code_entry("a0000100", "100", "KMSC Pre Injection 600", "PI6", "NE10"),
+        "kind": "entry list",
+    })
+    snap = state.snapshot()
+    assert _entry_for(snap, "100")["class_code"] == "PI6"
+    assert snap["class_code_missing"] == 0
+
+
+def _entry_list(state, run_id, *entries):
+    return state.process({
+        "type": "class_codes", "run_id": run_id, "entry_list": True,
+        "entries": [{**e, "kind": "entry list"} for e in entries],
+    })
+
+
+def test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave(state):
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7", transponder="1234567")
+    _add_car(state, "8", transponder="7654321")
+    _entry_list(state, "0x4000AAAA",
+                _code_entry("a0000007", "7", "Saloon Cup", "SC", "1234567"),
+                _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321"))
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SC"
+    # The host cleared car 7's code, so the next list leaves it out.
+    assert _entry_list(
+        state, "0x4000aaaa", _code_entry("a0000008", "8", "Saloon Cup", "SC", "7654321")
+    ) == "class_codes"
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["class_code"] == ""
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+    # An empty list withdraws the rest.
+    assert _entry_list(state, "0x4000AAAA") == "class_codes"
+    assert state.class_codes == {}
+
+
+def test_an_entry_list_leaves_pushes_and_other_runs_lists_alone(state):
+    _codes(state, "0x4000AAAA", _code_entry("e1", "7", "Saloon Cup", "SC", "1234567"))
+    _entry_list(state, "0x4000BBBB", _code_entry("a0000009", "9", "Saloon Cup", "SC", "9"))
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000008", "8", "Saloon Cup", "SC", "8"))
+    _entry_list(state, "0x4000AAAA")
+    assert sorted(state.class_codes) == ["0x4000aaaa\te1", "0x4000bbbb\ta0000009"]
+    # A plain batch never withdraws anything.
+    _codes(state, "0x4000BBBB")
+    assert "0x4000bbbb\ta0000009" in state.class_codes
+
+
+def test_an_entry_list_replaces_a_push_under_its_run_id_spelled_in_either_case(state):
+    """A start notice may spell the run id in lower case where pushes use
+    upper; one entrant of one run must still be one record, or a car without
+    a transponder sees two codes and gets none."""
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "7")
+    _codes(state, "0x400027FB", _code_entry("a0000007", "7", "Saloon Cup", "SC"))
+    _entry_list(state, "0x400027fb", _code_entry("a0000007", "7", "Saloon Cup", "SD"))
+    assert list(state.class_codes) == ["0x400027fb\ta0000007"]
+    assert _entry_for(state.snapshot(), "7")["class_code"] == "SD"
+
+
+def test_a_store_holding_a_record_under_two_spellings_keeps_the_newer(state):
+    rec = {"number": "7", "class_name": "Saloon Cup", "transponder": "", "class_code": "SC"}
+    state.load_class_codes({"class_codes": {
+        "0x400027FB\te1": {**rec, "received_at": time.time() - 60},
+        "0x400027fb\te1": {**rec, "class_code": "SD", "received_at": time.time() - 120},
+    }})
+    assert list(state.class_codes) == ["0x400027fb\te1"]
+    assert state.class_codes["0x400027fb\te1"]["class_code"] == "SC"
+
+
+@pytest.mark.parametrize("bad", [
+    {"run_id": "0x4000AAAA"},
+    {"run_id": "0x4000AAAA", "entries": "not a list"},
+    {"run_id": "0x4000AAAA", "entries": {"a0000007": {}}},
+    {"run_id": "", "entries": []},
+    {"run_id": "0x4000AAAA", "entries": [None]},
+    {"run_id": "0x4000AAAA", "entries": [{"entrant_id": "a0000008", "class_code": ""}]},
+    {"run_id": "0x4000AAAA", "entries": [], "entry_list": False},
+    {"run_id": "0x4000AAAA", "entries": [], "entry_list": "yes"},
+    {"run_id": "0x4000AAAA", "entries": [{"entrant_id": "a0000008", "class_code": "SC"}]},
+    {"run_id": "0x4000AAAA", "entries": [
+        {"entrant_id": "a0000008", "class_code": "SC", "number": "8"}]},
+])
+def test_a_malformed_entry_list_withdraws_nothing(state, bad):
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
+    before = dict(state.class_codes)
+    state.process({"type": "class_codes", "entry_list": True} | bad)
+    # A usable row may still be stored additively; nothing is withdrawn.
+    assert state.class_codes.items() >= before.items()
+
+
+def test_a_restored_entry_list_code_is_still_withdrawn_by_the_next_list(state):
+    import json
+
+    _entry_list(state, "0x4000AAAA", _code_entry("a0000007", "7", "Saloon Cup", "SC", "1"))
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.class_codes == state.class_codes
+    _entry_list(restored, "0x4000AAAA")
+    assert restored.class_codes == {}
+
+
 def test_class_code_joined_by_exact_number_and_class_when_no_transponder(state):
     state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
     _add_car(state, "7")

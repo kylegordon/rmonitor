@@ -72,6 +72,9 @@ _MAX_ANNOUNCED_RUNS = 4
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
+# Marks a stored class code that came from a run's entry list, which the
+# run's next entry list replaces; see _class_codes.
+_ENTRY_LIST_ORIGIN = "entry list"
 
 # The fields a ``class_code_preload`` entry carries, all strings.
 _PRELOAD_FIELDS = ("transponder", "class_name", "class_code")
@@ -152,7 +155,7 @@ class RaceState:
     """Holds the current state of the race, updated by parsed messages."""
 
     def __init__(self):
-        # Keyed ``"<run id>\t<entrant id>"``; see _class_codes.  Created here,
+        # Keyed ``"<lower-cased run id>\t<entrant id>"``; see _class_codes.  Created here,
         # not in reset(), because reset() must never clear it.
         self.class_codes: dict[str, dict] = {}
         # The last registry preload; see _class_code_preload.  Never cleared
@@ -589,29 +592,64 @@ class RaceState:
         ``age_seconds`` — a duration on the relay's own clock, so the two
         hosts' clocks need not agree — and an entry already past the TTL is
         not stored.  A missing or unusable age counts as zero.
+
+        A batch marked ``entry_list`` is the run's whole entry list as the
+        timing host holds it, so it first removes every code an earlier entry
+        list stored for that run: a code cleared on the host, or an entrant
+        taken off the run, is withdrawn rather than kept until it expires.  A
+        push stored under the same key since then is newer and stays; an
+        entry list storing over a push replaces it, as any later batch does.
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
+        # One run's records share a key whatever the case of its hex id: a
+        # start notice may spell it in lower case where pushes use upper.
+        run_key = run_id.lower()
         now = time.time()
         changed = False
         stored = 0
-        if isinstance(entries, list):
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                entry = {
-                    k: str(item[k]) if item.get(k) is not None else ""
-                    for k in _CLASS_CODE_FIELDS
-                }
-                if not entry["entrant_id"] or not entry["class_code"]:
-                    continue
-                age = _entry_age(item.get("age_seconds"))
-                if age > _CLASS_CODE_TTL_SECONDS:
-                    continue
-                entry["received_at"] = now - age
-                self.class_codes[f"{run_id}\t{entry.pop('entrant_id')}"] = entry
-                changed = True
-                stored += 1
+        rows = []
+        for item in entries if isinstance(entries, list) else []:
+            if not isinstance(item, dict):
+                continue
+            entry = {
+                k: str(item[k]) if item.get(k) is not None else ""
+                for k in _CLASS_CODE_FIELDS
+            }
+            if entry["entrant_id"] and entry["class_code"]:
+                rows.append((entry, item))
+        # Only an explicit marker on a list whose every row is whole stands as
+        # the run's whole entry list — the relay sends no other kind — so a
+        # malformed batch never withdraws the codes already stored.  The
+        # marker arrives coerced to a string, so JSON true reads "True".
+        entry_list = (
+            msg.get("entry_list") == "True"
+            and bool(run_id)
+            and isinstance(entries, list)
+            and len(rows) == len(entries)
+            # The relay reads a number and class for every row; one without
+            # either could never be joined.
+            and all(e["number"] and e["class_name"] for e, _ in rows)
+        )
+        if entry_list:
+            stale = [
+                k for k, v in self.class_codes.items()
+                if v.get("origin") == _ENTRY_LIST_ORIGIN
+                and k.split("\t", 1)[0] == run_key
+            ]
+            for k in stale:
+                del self.class_codes[k]
+            changed = bool(stale)
+        for entry, item in rows:
+            age = _entry_age(item.get("age_seconds"))
+            if age > _CLASS_CODE_TTL_SECONDS:
+                continue
+            entry["received_at"] = now - age
+            if entry_list:
+                entry["origin"] = _ENTRY_LIST_ORIGIN
+            self.class_codes[f"{run_key}\t{entry.pop('entrant_id')}"] = entry
+            changed = True
+            stored += 1
         # Logged whatever was stored: a batch of codeless records stores
         # nothing, and is otherwise indistinguishable from no batch at all.
         log.info(
@@ -1522,15 +1560,30 @@ class RaceState:
         # a corrupt store can neither keep a code forever nor extend its life.
         now = time.time()
         try:
-            self.class_codes = {
-                k: {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
-                | {"received_at": min(stamp, now)}
-                for k, v in (data.get("class_codes") or {}).items()
-                if isinstance(k, str) and isinstance(v, dict)
-                # The invariant _class_codes holds on ingest: never a codeless record.
-                and v.get("class_code") not in (None, "")
-                and (stamp := _finite_stamp(v.get("received_at"))) is not None
-            }
+            restored = {}
+            for k, v in (data.get("class_codes") or {}).items():
+                if not (
+                    isinstance(k, str) and isinstance(v, dict)
+                    # The invariant _class_codes holds on ingest: never a codeless record.
+                    and v.get("class_code") not in (None, "")
+                    and (stamp := _finite_stamp(v.get("received_at"))) is not None
+                ):
+                    continue
+                rec = (
+                    {f: str(v.get(f, "")) for f in _CLASS_CODE_FIELDS[1:]}
+                    | {"received_at": min(stamp, now)}
+                    # So the run's next entry list still replaces it.
+                    | ({"origin": _ENTRY_LIST_ORIGIN}
+                       if v.get("origin") == _ENTRY_LIST_ORIGIN else {})
+                )
+                # Keyed as _class_codes keys: a store saved before run ids
+                # were lower-cased can hold one record under two spellings,
+                # and the newer is kept.
+                run, sep, entrant = k.partition("\t")
+                key = f"{run.lower()}{sep}{entrant}"
+                if key not in restored or rec["received_at"] >= restored[key]["received_at"]:
+                    restored[key] = rec
+            self.class_codes = restored
         except (AttributeError, TypeError, ValueError):
             self.class_codes = {}
         self._prune_class_codes(now)
