@@ -2576,8 +2576,14 @@ async def test_a_new_description_with_no_matching_run_drops_the_pick(monkeypatch
     }
 
 
+def _dropped_clears(calls):
+    return [c for c in calls if c["type"] == "announcements" and c.get("dropped")]
+
+
 @pytest.mark.asyncio
-async def test_a_closing_95_and_a_repeated_description_do_not_re_pick(monkeypatch):
+async def test_a_closing_95_and_a_repeated_description_do_not_re_pick_and_drop_the_pick(
+    monkeypatch,
+):
     task, host, writer, calls, client = await _picking(monkeypatch)
     try:
         await _until(lambda: client._runs is not None)
@@ -2585,11 +2591,14 @@ async def test_a_closing_95_and_a_repeated_description_do_not_re_pick(monkeypatc
         await _until(lambda: _announcements(calls) and _runs_sent(calls))
         client.note_session("95", PICK_NAME)
         client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_closes(writer) and _dropped_clears(calls))
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
-    assert len(_runs_sent(calls)) == 1
+    (run,) = _runs_sent(calls)
     assert len(_view_opens(writer)) == 1
+    assert _view_closes(writer) == [1]
+    assert [c["start_key"] for c in _dropped_clears(calls)] == [run["start_key"]]
 
 
 @pytest.mark.asyncio
@@ -2833,8 +2842,10 @@ async def test_a_lowercase_stop_keeps_the_picks_failed_rows_for_retry(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_pick_is_not_picked_again_after_another_description(monkeypatch):
-    # A short keepalive wakes the hold loop for each pick, which nothing
+async def test_a_later_session_is_never_picked(monkeypatch):
+    """A later session's real start is on its way, so it is never picked,
+    under its own name or the pick's, and the held pick is dropped there."""
+    # A short keepalive wakes the hold loop for the drop, which nothing
     # else read or queued does.
     task, host, writer, calls, client = await _picking(monkeypatch, keepalive_interval=0.05)
     try:
@@ -2843,15 +2854,57 @@ async def test_a_stopped_pick_is_not_picked_again_after_another_description(monk
         await _until(lambda: _runs_sent(calls))
         await _stop_read(client, host, _lowercase_stop(PICK_NAME, 0x4000280A))
         client.note_session("6", "Race 1 - Qualifying")
-        await _until(lambda: len(_runs_sent(calls)) >= 2)
+        await _until(lambda: _view_closes(writer) and _dropped_clears(calls))
         client.note_session("7", PICK_NAME)
-        await _until(lambda: len(_view_closes(writer)) >= 2)
         await asyncio.sleep(0.1)
     finally:
         await _finish(task)
-    assert [r["run_id"] for r in _runs_sent(calls)] == [PICKED_ID, "0x40002803"]
-    assert [u for _, u in _view_opens(writer)] == [PICKED_DECIMAL, str(0x40002803)]
+    (run,) = _runs_sent(calls)
+    assert run["run_id"] == PICKED_ID
+    assert [u for _, u in _view_opens(writer)] == [PICKED_DECIMAL]
+    assert _view_closes(writer) == [1]
+    assert [c["start_key"] for c in _dropped_clears(calls)] == [run["start_key"]]
     assert client._ann_run is None
+
+
+@pytest.mark.asyncio
+async def test_a_real_start_after_a_dropped_pick_is_delivered(monkeypatch):
+    """The #106 case: the next session's name is in the run table, but its
+    real start, under another id, is on its way.  Nothing is picked for it
+    meanwhile — a wrong pick would hold the session on the server while the
+    real start waited unbound — and the real start is delivered."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _runs_sent(calls))
+        client.note_session("6", "Race 1 - Qualifying")
+        await _until(lambda: _view_closes(writer) and _dropped_clears(calls))
+        host.queue.append(_run_state("Race 1 - Qualifying", 0x4000280B, "started"))
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    picked, started = _runs_sent(calls)
+    assert [picked["run_id"], started["run_id"]] == [PICKED_ID, "0x4000280B"]
+    assert picked["start_key"] != started["start_key"]
+    assert client._ann_run == "0x4000280B"
+
+
+@pytest.mark.asyncio
+async def test_a_relay_whose_first_session_record_is_a_95_never_picks(monkeypatch):
+    """Its first session closed before this process saw it open, so the next
+    session is a later one, whose real start is on its way."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("95", PICK_NAME)
+        client.note_session("5", PICK_NAME)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert _runs_sent(calls) == []
+    assert _view_opens(writer) == []
 
 
 @pytest.mark.asyncio
