@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.23](https://github.com/kylegordon/rmonitor/compare/v0.1.22...v0.1.23) (2026-10-10)
+
+## What's Changed
+* test(relay): free the GUI tests' Tk objects on the main thread by @kylegordon in https://github.com/kylegordon/rmonitor/pull/118
+* chore(agents): git-ignore bmad-output planning workspace by @kylegordon in https://github.com/kylegordon/rmonitor/pull/119
+* fix: save a run start before acknowledging it; pick by name only at relay start by @kylegordon in https://github.com/kylegordon/rmonitor/pull/121
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.22...v0.1.23
+
+
 ## [0.1.22](https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22) (2026-10-04)
 
 ## What's Changed
