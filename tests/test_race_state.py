@@ -2769,6 +2769,20 @@ def test_class_code_run_survives_init_and_round_trips(state):
     assert restored.snapshot()["class_code_scope"] == "0x40002806"
 
 
+
+def test_a_start_saved_mid_session_binds_on_the_next_repeat_after_a_restart(state):
+    """The start arrived after its session's $B and was saved on arrival; a
+    restart then binds it on the next repeat of that $B."""
+    import json
+
+    _session(state)
+    _started(state)
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _session(restored)
+    assert restored.class_code_run["run_id"] == "0x40002806"
+    assert restored.class_code_run["session_number"] == "27"
+
 EVENT = "Scottish Championship Pre-Injection 600"
 
 
@@ -3498,33 +3512,20 @@ def test_a_stop_clear_does_not_renew_its_run(state, monkeypatch):
     assert state.class_code_run["received_at"] == t0
 
 
-def _refresh(state, *rows, name="Race 7 - 2nd Race"):
-    return state.process({"type": "announcements", "run_id": "0x40002806", "name": name, "rows": [
-        {"text": text, "ticks": ticks, "priority": "0"} for text, ticks in rows
-    ]})
-
-
-def test_a_server_that_lost_the_started_run_restores_it_from_a_refresh(state):
-    """A crash after the start was accepted but before it was saved: the relay
-    never sends the start again, so its refresh restores the binding."""
-    _session(state)
-    _refresh(state, ("Track clear", 100))
-    assert state.class_code_run["run_id"] == "0x40002806"
-    assert _shown(state) == ["Track clear"]
-
-
-def test_a_refresh_restores_the_race_name_with_the_started_run(state):
+def test_a_refresh_alone_never_binds_a_run(state):
+    """A binding comes only from a start, saved before it is acknowledged: a
+    refresh's name cannot tell the current run from a same-named next one."""
     _session(state)
     state.process({
         "type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
-        "start_key": "k1", "event": EVENT, "rows": [],
+        "start_key": "k1", "rows": [{"text": "Track clear", "ticks": 100, "priority": "0"}],
     })
-    assert state.class_code_run["event"] == EVENT
-    assert state.snapshot()["race_name"] == EVENT
+    assert state.class_code_run is None
+    assert _shown(state) == []
 
 
 def test_a_refresh_supplies_the_event_of_the_held_start_only(state):
-    """A run held without an event — from an older relay, or restored before
+    """A run held without an event — from an older relay, or started before
     the relay knew one — takes it from a refresh of the same start."""
     _started_with_event(state, event="")
     _session(state)
@@ -3635,71 +3636,6 @@ def test_a_stop_of_another_start_leaves_the_waiting_runs_event(state):
     assert state.class_code_run_next["event"] == EVENT
 
 
-def test_a_refresh_does_not_restore_a_run_discarded_at_a_session_boundary(state):
-    _started(state)
-    _session(state)
-    _refresh(state, ("Track clear", 100))
-    _session(state, number="28")
-    _refresh(state, ("Track clear", 100))
-    assert state.class_code_run is None
-    assert _shown(state) == []
-
-
-def test_a_refresh_restores_nothing_for_another_session(state):
-    _session(state, "Race 8 - Final", number="28")
-    _refresh(state, ("Track clear", 100))
-    assert state.class_code_run is None
-
-
-def test_a_refresh_after_the_95_restores_the_closed_sessions_run_closed(state):
-    """The relay keeps a stopped run subscribed, so a start lost until after
-    the close is restored as the 95 would have left it: its rows shown, its
-    race name hidden, and the next session's $B discarding it."""
-    _session(state)
-    _closing(state)
-    _refresh(state, ("Track clear", 100))
-    assert state.class_code_run["closed"]
-    assert _shown(state) == ["Track clear"]
-    assert state.snapshot()["race_name"] == ""
-    _session(state, "Race 8 - Final", number="28")
-    assert state.class_code_run is None
-    assert _shown(state) == []
-
-
-def test_a_previous_runs_store_does_not_block_restoring_the_current_run(state):
-    """The crash lost the new run's start, and the store still holds the
-    previous run; the next $B discards that, and the refresh restores the
-    current one."""
-    import json
-
-    _started(state, run_id="0x40002805", name="Race 6")
-    _session(state, "Race 6", number="26")
-    restored = RaceState()
-    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
-    assert restored.class_code_run["run_id"] == "0x40002805"
-    _session(restored)
-    assert restored.class_code_run is None
-    _refresh(restored, ("Track clear", 100))
-    assert restored.class_code_run["run_id"] == "0x40002806"
-    assert _shown(restored) == ["Track clear"]
-
-
-def test_a_retired_run_stays_retired_across_a_restart(state):
-    """A same-named next session discarded the run; after a reload, the old
-    subscription's refresh must not restore it."""
-    import json
-
-    _started(state)
-    _session(state)
-    _session(state, number="28")
-    restored = RaceState()
-    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
-    _session(restored, number="28")
-    _refresh(restored, ("Track clear", 100))
-    assert restored.class_code_run is None
-    assert _shown(restored) == []
-
-
 def test_retired_runs_expire_with_the_run_ttl():
     restored = RaceState()
     now = time.time()
@@ -3720,46 +3656,3 @@ def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(sta
     assert _shown(state) == ["Current"]
     _session(state)
     assert _shown(state) == ["Next"]
-
-
-def test_a_run_restarted_under_a_retired_id_is_restored(state):
-    """A restart under the same id is a new start with its own key: its
-    refresh restores it, while the retired start's never does — however
-    late a retry of it arrives."""
-    import json
-
-    state.process({"type": "class_code_run", "run_id": "0x40002806",
-                   "name": "Race 7 - 2nd Race", "start_key": "first"})
-    _session(state)
-    _session(state, "Race 8 - Final", number="28")
-    restored = RaceState()
-    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
-    _session(restored, number="29")
-    old = {"type": "announcements", "run_id": "0x40002806", "name": "Race 7 - 2nd Race",
-           "rows": [{"text": "Track clear", "ticks": 1}], "start_key": "first"}
-    restored.process(old)
-    assert restored.class_code_run is None
-    restored.process(old | {"start_key": "second"})
-    assert restored.class_code_run["run_id"] == "0x40002806"
-    assert _shown(restored) == ["Track clear"]
-
-
-def test_a_restart_lost_in_a_crash_is_restored_after_its_saved_closed_run_retires(state):
-    """The store holds the run's earlier, closed start; the restart was lost.
-    The next $B retires the saved start only, so the restart's refresh restores."""
-    import json
-
-    state.process({"type": "class_code_run", "run_id": "0x40002806",
-                   "name": "Race 7 - 2nd Race", "start_key": "first"})
-    _session(state)
-    _closing(state)
-    restored = RaceState()
-    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
-    assert restored.class_code_run["closed"]
-    _session(restored, number="28")
-    assert restored.class_code_run is None
-    restored.process({"type": "announcements", "run_id": "0x40002806",
-                      "name": "Race 7 - 2nd Race", "start_key": "second",
-                      "rows": [{"text": "Track clear", "ticks": 1}]})
-    assert restored.class_code_run["start_key"] == "second"
-    assert _shown(restored) == ["Track clear"]

@@ -186,7 +186,7 @@ is unaffected — the path was already correct there.
 | `WEB_HOST` | `0.0.0.0` | Web server bind address |
 | `WEB_PORT` | `8080` | Web server port |
 | `STATE_FILE` | `data/state.json` | Where to persist race state; class codes go in `<name>-class-codes.json` beside it |
-| `SAVE_INTERVAL` | `10` | How often (seconds) to persist state |
+| `SAVE_INTERVAL` | `10` | How often (seconds) to persist state; a relay's run start is saved as it arrives |
 | `STATE_MAX_AGE` | `900` | Discard persisted state older than this (seconds) on startup |
 | `BROADCAST_INTERVAL` | `0.25` | WebSocket push interval (seconds) |
 

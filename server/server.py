@@ -9,6 +9,7 @@ import os
 import pathlib
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 
 from aiohttp import web
 
@@ -57,6 +58,8 @@ relay_secret_key = web.AppKey("relay_secret", str)
 # Mutable feed-state dict; mutate contents rather than reassigning the key.
 # Keys: "last_ingest_at" (float|None), "feed_lost" (bool), "watchdog_task" (Task|None)
 feed_state_key = web.AppKey("feed_state", dict)
+# Awaitable that persists the class-code store, or None; set once in create_app.
+class_codes_saver_key = web.AppKey("class_codes_saver", object)
 
 
 def _feed_state(app) -> dict:
@@ -101,7 +104,20 @@ def _if_none_match(request: web.Request, version: str) -> bool:
     return False
 
 
-def create_app(race_state, relay_secret: str = "", restored: bool = False) -> web.Application:
+def create_app(
+    race_state,
+    relay_secret: str = "",
+    restored: bool = False,
+    *,
+    save_class_codes: Callable[[], Awaitable[None]] | None = None,
+) -> web.Application:
+    """Build the application around *race_state*.
+
+    :param save_class_codes: persists the class-code store; awaited by
+        :func:`handle_ingest` before it acknowledges a ``class_code_run``.
+        ``None`` (the default, and every test that does not exercise it)
+        acknowledges without saving.
+    """
     # A registry preload is ~400 KB today (4,821 entries) and grows with the
     # timing host's archive.  aiohttp's default 1 MiB would one day answer it
     # with a 413 — on every retry, so the preload would never land.
@@ -112,6 +128,7 @@ def create_app(race_state, relay_secret: str = "", restored: bool = False) -> we
     app[page_key], app[page_version_key] = _load_page()
     app[relay_secret_key] = relay_secret
     app[feed_state_key] = {"last_ingest_at": None, "feed_lost": restored, "watchdog_task": None}
+    app[class_codes_saver_key] = save_class_codes
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
@@ -223,6 +240,16 @@ async def handle_ingest(request: web.Request) -> web.Response:
     Only rMonitor-feed messages feed the watchdog: a type in
     :data:`_NON_FEED_TYPES` is applied without touching ``last_ingest_at`` or
     ``feed_lost``.
+
+    A ``class_code_run`` is saved before it is acknowledged.  The relay counts
+    a 200 as delivered and never resends it, and nothing else on the server
+    can recover a started run lost between the periodic saves: a crash there
+    would leave the session unbound.  So the store is written first, and a
+    save that fails is answered 503.  The relay retries anything short of a
+    200, and the retry is deduplicated (the held ``run_id``, or the retired
+    start) rather than taken as a second start, then saved.  The saver is
+    awaited on every processed start, not only when it changed the state:
+    a retry after a failed save changes nothing, yet still has to be saved.
     """
     secret = request.app[relay_secret_key]
     auth = request.headers.get("Authorization", "")
@@ -262,6 +289,13 @@ async def handle_ingest(request: web.Request) -> web.Response:
     except Exception:
         log.exception("Error processing ingest message: %s", msg)
         raise web.HTTPBadRequest(reason="Message could not be processed")
+    saver = request.app[class_codes_saver_key]
+    if msg["type"] == "class_code_run" and saver is not None:
+        try:
+            await saver()
+        except Exception:
+            log.exception("Could not save the class-code store for a run start")
+            raise web.HTTPServiceUnavailable(reason="Run start could not be saved")
     if event == "init":
         await broadcast(request.app, "init", state.snapshot())
         state.mark_clean()

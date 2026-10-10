@@ -182,9 +182,9 @@ class RaceState:
         self.class_code_run: dict | None = None
         self.class_code_run_next: dict | None = None
         # The run starts a session boundary discarded, keyed "<lowercased
-        # run id>\t<start key>", to the time it did; see
-        # _restore_started_run.  Saved with the class codes, each kept for
-        # _CLASS_CODE_TTL_SECONDS.
+        # run id>\t<start key>", to the time it did, so a late resend of a
+        # discarded start is ignored (_class_code_run).  Saved with the class
+        # codes, each kept for _CLASS_CODE_TTL_SECONDS.
         self._retired_runs: dict[str, float] = {}
         # Bumped on every change to any class-code store, so the periodic
         # save can skip rewriting a store that has not changed — with a
@@ -885,13 +885,16 @@ class RaceState:
         periodic refresh broadcasts nothing.
 
         A message not marked ``stopped`` or ``superseded`` comes from a
-        subscription to the run the relay holds as started, so it may restore
-        that run (:meth:`_restore_started_run`) and renews its date when it
-        is the started run held here (:meth:`_renew_started_run`): a session
-        running past :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so
-        its announcements, while the relay still refreshes it.  Its optional
-        ``event`` restores the run's race name with it, or supplies one the
-        same start is held without (:meth:`_refresh_event`).  A message
+        subscription to the run the relay holds as started, so it renews that
+        run's date when it is the started run held here
+        (:meth:`_renew_started_run`): a session running past
+        :data:`_CLASS_CODE_TTL_SECONDS` keeps its run, and so its
+        announcements, while the relay still refreshes it.  Its optional
+        ``event`` supplies a race name the same start is held without
+        (:meth:`_refresh_event`).  It never binds a run: a binding comes only
+        from a start, which the server saves before acknowledging it, so
+        there is no lost start to infer from a refresh — and a refresh's name
+        could not tell the current run from a same-named next one.  A message
         from a start a session boundary retired is ignored outright, so a
         late one never touches a restart of the same run — except that the
         previous session's start (:meth:`_carried_run`) still takes rows,
@@ -921,11 +924,8 @@ class RaceState:
         if not isinstance(event, str):
             event = ""
         changed = False
-        # A retired start is never restored or renewed.
+        # A retired start is never renewed.
         if not rows_only and not msg.get("stopped") and not msg.get("superseded"):
-            self._restore_started_run(
-                run_id, msg.get("name"), msg.get("start_key"), event
-            )
             self._renew_started_run(run_id)
             changed = self._refresh_event(run_id, msg.get("start_key"), event)
         elif msg.get("stopped") and msg.get("dropped"):
@@ -986,67 +986,13 @@ class RaceState:
         )
 
     def _retire_run(self, run: dict) -> None:
-        """Record that a session boundary discarded *run*; see :meth:`_restore_started_run`."""
+        """Record that a session boundary discarded *run*; see :meth:`_class_code_run`."""
         now = time.time()
         self._retired_runs = {
             k: t for k, t in self._retired_runs.items() if now - t <= _CLASS_CODE_TTL_SECONDS
         }
         self._retired_runs[_start_id(run["run_id"], run.get("start_key"))] = now
         self.class_codes_revision += 1
-
-    def _restore_started_run(self, run_id: str, name, start_key, event: str = "") -> None:
-        """Bind the relay's subscribed run *run_id* when no run is bound.
-
-        A server that crashed after accepting a run's start but before saving
-        it has lost the binding — or holds the previous run's from the store,
-        which the next ``$B`` discards — and the relay does not send the start
-        again, so its announcements would stay hidden all session.  It is
-        restored only while no run is bound and none is waiting under this id
-        (the next ``$B`` binds that), *name* is the running session's
-        description, and the session is open — or closed, the relay keeping
-        a stopped run subscribed: a start lost until after the ``$B,95`` is
-        then restored closed, as the 95 would have left it, so the next
-        ``$B`` discards it and its race name stays hidden.  Never a run a session
-        boundary discarded (``_retired_runs``): a same-named next session must
-        not take the old run back.  The relay names each start it reads with
-        a *start_key*, carried by the start and every refresh, and that start
-        is what is retired: a run restarted under the same id has another key
-        and may be restored.  A message without one matches only a start
-        retired without one.
-
-        A known limitation, accepted: run names repeat, and the next run's
-        start can arrive before the current session ends.  If the server loses
-        both starts and the relay has already moved to that next run, a
-        refresh binds it to the current session under the same name — the
-        current session then shows the next run's announcements and scopes its
-        class codes to it, and the next run's own session, which retires it,
-        shows none.  After a restart nothing tells the two runs apart.
-        """
-        nxt = self.class_code_run_next
-        if (
-            self.class_code_run is not None
-            or (nxt is not None and nxt["run_id"].lower() == run_id.lower())
-            or _start_id(run_id, start_key) in self._retired_runs
-            or not isinstance(name, str)
-            or not name
-            or name != self.run_description
-            or not self._run_number
-        ):
-            return
-        log.info("Restoring started run %s %r from its announcements", run_id, name)
-        self.class_code_run = {
-            "run_id": run_id, "name": name, "received_at": time.time(),
-        }
-        if self._run_number == "95":
-            self.class_code_run["closed"] = True
-        else:
-            self.class_code_run["session_number"] = self._run_number
-        if isinstance(start_key, str) and start_key:
-            self.class_code_run["start_key"] = start_key
-        if event:
-            self.class_code_run["event"] = event
-        self.class_codes_revision += 1
-        self._dirty = True
 
     def _refresh_event(self, run_id: str, start_key, event: str) -> bool:
         """Set the *event* a refresh carries on the held start it names.
@@ -1760,7 +1706,8 @@ class RaceState:
         same reason and because the relay pulls it again only on a reconnect;
         the started runs under ``"run"`` and ``"run_next"``, because the host
         announces each once; the runs a session boundary retired under
-        ``"retired_runs"``, so a restart cannot restore one; and each run's
+        ``"retired_runs"``, so a late resend of one is still ignored after a
+        restart; and each run's
         latest entry-list date under ``"class_code_lists"``, so a restart
         cannot readmit what a list superseded.
         """
