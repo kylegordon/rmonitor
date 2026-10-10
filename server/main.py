@@ -11,6 +11,7 @@ responsibility.
 import asyncio
 import logging
 import os
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -45,8 +46,6 @@ if saved:
     race_state._load_dict(saved)
 race_state.load_class_codes(class_codes_store.load())
 
-app = create_app(race_state, relay_secret=RELAY_SECRET, restored=bool(saved))
-
 
 async def _broadcast_loop() -> None:
     """Periodically push dirty state to WebSocket clients."""
@@ -59,18 +58,67 @@ async def _broadcast_loop() -> None:
 
 
 _saved_class_codes_revision: int | None = None
+# Serialises every write: JsonFileStateStore writes a fixed <path>.tmp and is
+# not safe for concurrent writers, and the periodic save runs in a worker
+# thread while an ingest's immediate save (_save_class_codes) runs in another.
+_save_lock = threading.Lock()
 
 
 def _save_all() -> None:
     global _saved_class_codes_revision
-    store.save(race_state._to_dict())
-    # Rewritten only when it changed: with a registry preload it is some
-    # hundreds of KB, and this runs every SAVE_INTERVAL.  The revision is read
-    # first, so a change landing mid-save is saved next time.
-    revision = race_state.class_codes_revision
-    if revision != _saved_class_codes_revision:
-        class_codes_store.save(race_state.class_codes_to_dict())
+    with _save_lock:
+        store.save(race_state._to_dict())
+        # Rewritten only when it changed: with a registry preload it is some
+        # hundreds of KB, and this runs every SAVE_INTERVAL.  The revision is
+        # read first, so a change landing mid-save is saved next time.
+        revision = race_state.class_codes_revision
+        if revision != _saved_class_codes_revision:
+            class_codes_store.save(race_state.class_codes_to_dict())
+            _saved_class_codes_revision = revision
+
+
+def _write_class_codes(data: dict, revision: int) -> None:
+    """Write *data*, the class-code store as of *revision*, unless already newer.
+
+    The revision only ever increases, so a store saved at or past *revision*
+    (by the periodic save, which may have run while *data* waited for the
+    lock) is at least as new, and overwriting it would lose a change.
+    """
+    global _saved_class_codes_revision
+    with _save_lock:
+        if (
+            _saved_class_codes_revision is not None
+            and _saved_class_codes_revision >= revision
+        ):
+            return
+        class_codes_store.save(data)
         _saved_class_codes_revision = revision
+
+
+async def _save_class_codes() -> None:
+    """Persist the class-code store now, for a run start about to be acknowledged.
+
+    Writes nothing when the store on disk is already current, so a repeated
+    or rejected start costs one comparison.  The dict is built here, on the
+    loop, so no ingest can change it mid-build; only the write goes to a
+    thread.  Exceptions propagate: the caller answers them with a 503.
+    """
+    revision = race_state.class_codes_revision
+    if (
+        _saved_class_codes_revision is not None
+        and _saved_class_codes_revision >= revision
+    ):
+        return
+    data = race_state.class_codes_to_dict()
+    await asyncio.to_thread(_write_class_codes, data, revision)
+
+
+app = create_app(
+    race_state,
+    relay_secret=RELAY_SECRET,
+    restored=bool(saved),
+    save_class_codes=_save_class_codes,
+)
 
 
 async def _save_loop() -> None:

@@ -1,8 +1,10 @@
 """Tests for the aiohttp web server and WebSocket handling."""
 
 import asyncio
+import importlib
 import json
 import pathlib
+import sys
 import time
 
 import pytest
@@ -278,6 +280,109 @@ async def test_ingested_class_codes_reach_the_snapshot(client, app):
     car = next(e for e in snap["entries"] if e["reg_number"] == "7")
     assert car["class_code"] == "SC"
     assert snap["class_codes_available"] is True
+
+
+_RUN_START = {
+    "type": "class_code_run", "run_id": "0x40002805", "name": "Race 6",
+    "start_key": "k1", "age_seconds": 0,
+}
+
+
+@pytest.mark.asyncio
+async def test_a_run_start_is_saved_before_it_is_acknowledged(race_state):
+    """The relay never resends a start it got a 200 for, so the start must
+    already be on disk when the 200 goes out."""
+    saved = []
+
+    async def saver():
+        saved.append(race_state.class_code_run_next["run_id"])
+
+    app = create_app(race_state, relay_secret="test-secret", save_class_codes=saver)
+    async with test_utils.TestClient(test_utils.TestServer(app)) as c:
+        resp = await c.post(
+            "/api/ingest", json=_RUN_START,
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+    assert saved == ["0x40002805"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_start_that_cannot_be_saved_is_answered_503_and_saved_on_its_retry(race_state):
+    calls = []
+
+    async def saver():
+        calls.append(race_state.class_codes_revision)
+        if len(calls) == 1:
+            raise OSError("disk full")
+
+    app = create_app(race_state, relay_secret="test-secret", save_class_codes=saver)
+    headers = {"Authorization": "Bearer test-secret"}
+    revision = race_state.class_codes_revision
+    async with test_utils.TestClient(test_utils.TestServer(app)) as c:
+        first = await c.post("/api/ingest", json=_RUN_START, headers=headers)
+        assert first.status == 503
+        held = dict(race_state.class_code_run_next)
+        retry = await c.post("/api/ingest", json=_RUN_START, headers=headers)
+        assert retry.status == 200
+    assert len(calls) == 2
+    assert race_state.class_code_run_next == held
+    # The retry is the same start deduplicated, not a second one.
+    assert race_state.class_codes_revision == revision + 1
+
+
+@pytest.mark.asyncio
+async def test_other_ingest_types_do_not_save_immediately(race_state):
+    calls = []
+
+    async def saver():
+        calls.append(True)
+
+    app = create_app(race_state, relay_secret="test-secret", save_class_codes=saver)
+    async with test_utils.TestClient(test_utils.TestServer(app)) as c:
+        resp = await c.post(
+            "/api/ingest", json=_CLASS_CODES_MSG,
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status == 200
+    assert calls == []
+
+
+def _fresh_server_main(monkeypatch, tmp_path):
+    """Import ``server.main`` anew against a state file under *tmp_path*."""
+    monkeypatch.setenv("STATE_FILE", str(tmp_path / "state.json"))
+    if "server.main" in sys.modules:
+        return importlib.reload(sys.modules["server.main"])
+    return importlib.import_module("server.main")
+
+
+@pytest.mark.asyncio
+async def test_the_immediate_class_code_save_writes_the_store(monkeypatch, tmp_path):
+    main = _fresh_server_main(monkeypatch, tmp_path)
+    main.race_state.process(dict(_RUN_START))
+    await main._save_class_codes()
+    stored = json.loads((tmp_path / "state-class-codes.json").read_text())["data"]
+    assert stored["run_next"]["run_id"] == "0x40002805"
+
+
+def test_an_immediate_save_never_overwrites_a_newer_store(monkeypatch, tmp_path):
+    main = _fresh_server_main(monkeypatch, tmp_path)
+    main._write_class_codes({"fresh": True}, revision=2)
+    main._write_class_codes({"stale": True}, revision=1)
+    stored = json.loads((tmp_path / "state-class-codes.json").read_text())["data"]
+    assert "stale" not in stored and stored["fresh"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_start_writes_nothing(monkeypatch, tmp_path):
+    main = _fresh_server_main(monkeypatch, tmp_path)
+    main.race_state.process(dict(_RUN_START))
+    await main._save_class_codes()
+    path = tmp_path / "state-class-codes.json"
+    path.unlink()
+    main.race_state.process(dict(_RUN_START))
+    await main._save_class_codes()
+    assert not path.exists()
 
 
 @pytest.mark.asyncio

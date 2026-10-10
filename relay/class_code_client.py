@@ -1269,14 +1269,16 @@ class ClassCodeClient:
         self._reset_announcement_views()
         # What picks a run by name while no start has been read — the last
         # complete pull's run table and group names, the last $B number and
-        # non-95 description, whether a real start has been read, and the
-        # lower-cased ids of the runs seen ending meanwhile; all outlive a
-        # reconnect.
+        # non-95 description, whether a real start has been read, whether
+        # the first session seen has ended (picking ends with it; see
+        # note_session), and the lower-cased ids of the runs seen ending
+        # meanwhile; all outlive a reconnect.
         self._runs: list[dict] | None = None
         self._groups: dict[str, str] = {}
         self._session_number = ""
         self._session_desc = ""
         self._seen_start = False
+        self._picking_over = False
         self._ended_runs: set[str] = set()
         self._keepalive = b""
         self._session: dict[str, bytes] = {}
@@ -1726,22 +1728,33 @@ class ClassCodeClient:
 
         A relay started mid-run has read no start notice, so it would show
         no announcements and leave class codes on the server's name fallback
-        until the next run starts.  Until the first real start notice this
-        process reads, it picks instead the newest run (largest id) in the
+        until the next run starts.  For the session already open when this
+        process starts, it picks instead the newest run (largest id) in the
         run table whose name equals the description exactly — the rule of
         the server's ``_class_code_scope`` fallback — and treats it as
         started.  Names repeat across meetings, so a same-named run from
         elsewhere can be picked; that risk is accepted.
 
+        Only that first session is picked for: its green has passed, so no
+        start notice is coming.  Any later session's real start is on its
+        way, so it is never picked — a wrong pick would hold the session
+        while the real start waited unbound — and a pick still held is
+        dropped at that later session's boundary.  A relay whose first
+        ``$B`` is a ``$B,95`` never picks.  Picking also ends at the first
+        real start notice, whichever comes first.  The residual: a relay
+        started after a session loads but before its green picks for that
+        session, and the real start follows; if the pick is wrong, that one
+        session keeps it, because a same-named real start cannot be told
+        from the next run starting early.
+
         Picking is edge-triggered: only a new session — the number or the
         description changing, as the server's ``_run`` reads it — or a newly
-        pulled run table picks, and only while a session is open, never
-        after its ``$B,95``.  A session boundary ends the run picked for the
-        session it closes; a stop notice ends any other run at once, but
-        leaves the pick subscribed until that boundary.  Nothing is picked when
-        the newest run of the name has ended, under whatever description —
-        an older one of the name is older still; a newer run of the name, in
-        a later pull, is picked.
+        pulled run table picks, and only while the first session is open,
+        never after its ``$B,95``.  A stop notice ends any other run at
+        once, but leaves the pick subscribed until the boundary.  Nothing is
+        picked when the newest run of the name has ended, under whatever
+        description — an older one of the name is older still; a newer run
+        of the name, in a later pull of the same session, is picked.
 
         :param number: the record's session number.
         :param description: the record's session description.
@@ -1749,6 +1762,7 @@ class ClassCodeClient:
         if number == "95":
             if self._session_number not in ("", "95"):
                 self._end_session()
+            self._picking_over = True
             self._session_number = "95"
             return
         if not description or (number, description) == (
@@ -1765,6 +1779,7 @@ class ClassCodeClient:
         # Its views stay open until the next run starts or is picked, or the
         # next session names none: the board still shows the closed session,
         # and its rows with it.
+        self._picking_over = True
         if not self._seen_start and self._ann_run is not None:
             self._ended_runs.add(self._ann_run.lower())
 
@@ -1773,31 +1788,21 @@ class ClassCodeClient:
             self._seen_start
             or self._session_number in ("", "95")
             or not self._session_desc
-            or self._runs is None
         ):
+            return
+        if self._picking_over:
+            # A later session: its real start is on the way, so a pick
+            # still held from the first session is dropped, never replaced.
+            if self._ann_run is not None:
+                self._drop_pick()
+            return
+        if self._runs is None:
             return
         named = [r for r in self._runs if r["name"] == self._session_desc]
         record = max(named, key=lambda r: int(r["run_id"], 16)) if named else None
         run_id = record["run_id"] if record is not None else None
         if run_id is None or run_id.lower() in self._ended_runs:
-            if self._ann_run is not None:
-                # Its rows are cleared, so a start for it accepted after
-                # all — a delivery in flight — has no rows to show should a
-                # later session of its name bind it on the server; marked
-                # dropped, so that start shows no race name either.
-                self._queue_announcement({
-                    "type": "announcements", "run_id": self._ann_run, "rows": [],
-                    "stopped": True, "dropped": True,
-                    "start_key": self._ann_start_key,
-                })
-                self._drop_announcement_views()
-                self._ann_run = None
-                self._ann_due = None
-            # While picking, only a pick can be held here or in flight, and
-            # a failed delivery of one dropped is not retried either.
-            self._run = None
-            if self._run_in_flight is not None:
-                self._run_in_flight["_stopped"] = True
+            self._drop_pick()
             return
         event = self._groups.get(record["group_id"], "")
         if self._ann_run is not None and self._ann_run.lower() == run_id.lower():
@@ -1811,6 +1816,27 @@ class ClassCodeClient:
         )
         # A group missing from the pull leaves the event unknown, never guessed.
         self._take_run(run_id, self._session_desc, event)
+
+    def _drop_pick(self) -> None:
+        """Drop the picked run, if any, and any delivery of it."""
+        if self._ann_run is not None:
+            # Its rows are cleared, so a start for it accepted after all —
+            # a delivery in flight — has no rows to show should a later
+            # session of its name bind it on the server; marked dropped, so
+            # that start shows no race name either.
+            self._queue_announcement({
+                "type": "announcements", "run_id": self._ann_run, "rows": [],
+                "stopped": True, "dropped": True,
+                "start_key": self._ann_start_key,
+            })
+            self._drop_announcement_views()
+            self._ann_run = None
+            self._ann_due = None
+        # While picking, only a pick can be held here or in flight, and a
+        # failed delivery of one dropped is not retried either.
+        self._run = None
+        if self._run_in_flight is not None:
+            self._run_in_flight["_stopped"] = True
 
     def _correct_event(self, event: str) -> None:
         """Resend the subscribed run with *event* if that names a new one.
