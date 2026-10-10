@@ -6,6 +6,7 @@ exercises widget construction, default values, notification visibility,
 window-geometry persistence, and the close/teardown path.
 """
 
+import gc
 import re
 import importlib
 import logging
@@ -56,6 +57,32 @@ def _new_root() -> tk.Tk:
         pytest.skip(f"no display available: {exc}")
 
 
+def _live_tk_images() -> list:
+    """Every Tk image object still alive: tkinter's own and Pillow's, which
+    ttkbootstrap creates for its themed widgets."""
+    return [
+        obj for obj in gc.get_objects()
+        if isinstance(obj, tk.Image) or type(obj).__module__ == "PIL.ImageTk"
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _free_tk_objects_on_the_main_thread():
+    """Collect each test's Tk garbage here, on the main thread.
+
+    A destroyed root and its ttkbootstrap Style sit in reference cycles, so
+    they are freed by whichever thread next triggers a collection. When that
+    is a later test's RelayRunner loop thread, PIL's ``PhotoImage.__del__``
+    calls Tk off the main thread and blocks waiting for the main thread,
+    which is itself waiting on that loop: the suite deadlocks, then aborts.
+    Autouse, so it tears down after ``app`` and after ``monkeypatch`` has
+    released the Style.
+    """
+    yield
+    gc.collect()
+    assert _live_tk_images() == []
+
+
 @pytest.fixture
 def app(monkeypatch, tmp_path):
     monkeypatch.setattr(gui.env_config, "default_env_path", lambda: tmp_path / ".env")
@@ -75,6 +102,9 @@ def app(monkeypatch, tmp_path):
         application.root.destroy()
     except tk.TclError:
         pass  # a test (e.g. one exercising on_close()) may have already destroyed it
+    # pytest holds this fixture's value until every teardown has run, so drop
+    # the app's Tk objects now for _free_tk_objects_on_the_main_thread to collect.
+    vars(application).clear()
 
 
 def test_fields_show_documented_defaults_when_no_env_file(app):
