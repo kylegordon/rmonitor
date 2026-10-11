@@ -88,7 +88,8 @@ reads the same `/ws` snapshot and draws `entries` in server order, with `sort_mo
 air is accepted. It sets no page background (OBS and vMix key on the alpha), loads nothing
 external, writes feed text through `textContent` only, and moves rows by `transform`. A
 `full` reveals the tower only after a short wait that `no_feed` cancels, since a connect
-during an outage gets a stale `full` first. `Finish` draws a chequered flag bar.
+during an outage gets a stale `full` first. `Finish` draws a chequered flag bar, and a
+no-time best lap (`00:59:59.999`) is blank.
 Guarded by the `test_tv_*` tests in `tests/test_server.py`, and
 `test_the_tv_page_reloads_on_a_restart_and_never_reads_page_version`,
 `test_the_tv_page_is_transparent_and_self_contained` and

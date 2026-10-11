@@ -213,6 +213,13 @@
       return '';
     }
 
+    // A best lap, blank for a reset's zero and the feed's no-time sentinel, as
+    // index.html's totalText() withholds them.
+    function lapText(t) {
+      if (!t || t === '00:00:00.000' || t === '00:59:59.999') return '';
+      return t;
+    }
+
     const CLASS_PALETTE = [
       '#e10600', '#00d2be', '#ff8700', '#0090ff',
       '#ffd700', '#2ecc40', '#ff69b4', '#b0b0b0',
@@ -286,7 +293,7 @@
         if (e.status) {
           interval = e.status;
         } else if (bestLapSort) {
-          interval = e.best_lap_time || '';
+          interval = lapText(e.best_lap_time);
         } else {
           interval = intervalText(e.gap_ahead_seconds, e.gap_ahead_laps);
           if (interval === '—') interval = '';

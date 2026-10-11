@@ -433,6 +433,9 @@ def test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform() 
     ]
     assert not offenders, f"tv.html compares best_lap_time itself: {offenders}"
     assert ".sort(" not in source, "tv.html re-sorts the entries the server ordered"
+    assert "lapText(e.best_lap_time)" in source and "'00:59:59.999'" in source, (
+        "tv.html shows the feed's no-time best lap as a real time"
+    )
     for needle in ("translateY", "transition: transform", "prefers-reduced-motion"):
         assert needle in source, f"tv.html lost {needle}"
 
