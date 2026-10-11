@@ -3348,6 +3348,17 @@ def test_an_empty_description_under_the_same_number_renames_nothing(state):
     assert state.class_code_run is None or state.class_code_run["name"] == "Race 18 - 2nd Race"
 
 
+def test_a_run_renamed_in_the_first_session_record_after_an_init_stays_bound(state):
+    """A $I clears the last $B number but keeps the bound run's own, so a
+    rename the repopulating $B carries is still the same session."""
+    _started(state, "0x40002829", "Race 18 - 2nd Race - AMENDED GRID")
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    state.process({"type": "init"})
+    _session(state, "Race 18 - 2nd Race", number="5")
+    assert state.class_code_run["name"] == "Race 18 - 2nd Race"
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+
+
 def test_a_renamed_run_is_closed_by_the_95_carrying_its_new_name(state):
     _renamed_session(state)
     _closing(state, "Race 18 - 2nd Race")

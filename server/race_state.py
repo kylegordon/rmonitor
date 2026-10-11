@@ -384,10 +384,13 @@ class RaceState:
             self.class_code_run_next = nxt = None
         # The number names the session, and no capture reuses one for another
         # session, so a new description under the bound run's own number,
-        # with no 95 between, is race control renaming that run.
-        same_session = bool(desc) and number not in ("", "95") and number == self._run_number
+        # with no 95 between, is race control renaming that run.  A $I clears
+        # the last number but keeps the bound run's, so the first $B after
+        # it renames that run too.
+        same_session = bool(desc) and number not in ("", "95")
         if (
             same_session
+            and number == self._run_number
             and cur is None
             and nxt is not None
             and not nxt.get("closed")
@@ -399,6 +402,7 @@ class RaceState:
             nxt["name"] = desc
         renamed = (
             same_session
+            and self._run_number in ("", number)
             and cur is not None
             and not cur.get("closed")
             and cur.get("session_number") == number
