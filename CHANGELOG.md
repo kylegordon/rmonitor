@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.25](https://github.com/kylegordon/rmonitor/compare/v0.1.24...v0.1.25) (2026-10-11)
+
+## What's Changed
+* docs(agents): note how an added lap shows on both ports by @kylegordon in https://github.com/kylegordon/rmonitor/pull/132
+* feat(server): add a transparent F1-style timing tower at /tv by @kylegordon in https://github.com/kylegordon/rmonitor/pull/135
+* fix(server): clear a car's laps and interval when its passing is deleted by @kylegordon in https://github.com/kylegordon/rmonitor/pull/134
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.24...v0.1.25
+
+
 ## [0.1.24](https://github.com/kylegordon/rmonitor/compare/v0.1.23...v0.1.24) (2026-10-11)
 
 ## What's Changed
