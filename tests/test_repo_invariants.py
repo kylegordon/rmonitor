@@ -327,8 +327,7 @@ def test_the_page_shades_the_fastest_lap_row_from_the_server_flag() -> None:
     holder itself by comparing ``best_lap_time`` values.
 
     Like its siblings above, this guard is textual. What the page then *draws* -- the
-    purple shade, the bold Best Lap and the ``FL`` badge -- stays unguarded and is
-    checked by eye.
+    purple shade and the bold Best Lap -- stays unguarded and is checked by eye.
     """
     page = ROOT / "server" / "templates" / "index.html"
     source = page.read_text(encoding="utf-8")
@@ -339,8 +338,8 @@ def test_the_page_shades_the_fastest_lap_row_from_the_server_flag() -> None:
     assert "tbody tr.fastest-lap" in source, (
         "index.html has no style for the fastest-lap row"
     )
-    assert 'content: "FL" / "fastest lap";' in source, (
-        "index.html's fastest-lap row lost its non-colour, screen-reader-named marker"
+    assert 'content: "fastest lap";' in source, (
+        "index.html's fastest-lap row lost its screen-reader text"
     )
     offenders = [
         f"{number}: {line.strip()}"
