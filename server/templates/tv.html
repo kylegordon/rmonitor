@@ -70,12 +70,36 @@
     }
 
     #tower { position: relative; }
+    /* Position numbers hold still in their own column while the driver rows slide
+       behind it, so the order reads mid-move. */
+    #slots {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 44px;
+      z-index: 10;
+    }
+    .tv-slot {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      color: #15151e;
+      border-bottom: 1px solid rgba(21, 21, 30, 0.12);
+      font-weight: 700;
+      font-size: 20px;
+    }
+    .tv-slot.empty { visibility: hidden; }
+    /* A car that gained places moves first and rides over the cars it passed; those
+       follow 0.12s later underneath. */
     .tv-row {
       position: absolute;
       top: 0;
       left: 0;
       right: 0;
       height: 44px;
+      padding-left: 44px;
       display: flex;
       align-items: center;
       background: rgba(15, 15, 30, 0.85);
@@ -83,17 +107,24 @@
       font-weight: 700;
       font-size: 20px;
       text-transform: uppercase;
-      transition: transform 0.6s ease-in-out, opacity 0.4s;
+      z-index: 2;
+      transition: transform 0.7s cubic-bezier(0.3, 0, 0.2, 1) 0.12s,
+        background-color 0.8s ease-out, box-shadow 0.8s ease-out, opacity 0.4s;
       will-change: transform;
     }
-    .tv-pos {
-      width: 44px;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: #fff;
-      color: #15151e;
+    .tv-row.losing { z-index: 1; }
+    .tv-row.gaining { z-index: 3; transition-delay: 0s; }
+    .tv-row.lift {
+      background: rgba(38, 44, 78, 0.97);
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+      transition-duration: 0.7s, 0.2s, 0.2s, 0.4s;
+    }
+    /* `translate` is separate from `transform`, so the nudge never fights the slide. */
+    .tv-row.pass { animation: pull-out 0.82s ease-in-out; }
+    @keyframes pull-out {
+      0% { translate: 0 0; }
+      45% { translate: 20px 0; }
+      100% { translate: 0 0; }
     }
     .tv-class {
       width: 6px;
@@ -107,10 +138,21 @@
     }
     .tv-name {
       flex: 1;
+      min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .tv-delta {
+      width: 44px;
+      text-align: center;
+      font-size: 16px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .tv-delta.show { opacity: 1; }
+    .tv-delta.up { color: #2ecc40; }
+    .tv-delta.down { color: #ff4136; }
     .tv-fl {
       width: 14px;
       height: 14px;
@@ -132,6 +174,7 @@
 
     @media (prefers-reduced-motion: reduce) {
       .tv-row { transition: none; }
+      .tv-row.pass { animation: none; }
       #overlay { transition: none; }
     }
   </style>
@@ -161,7 +204,24 @@
     const towerEl = document.getElementById('tower');
     towerEl.style.height = (ROWS * ROW_H) + 'px';
 
+    const slotsEl = document.createElement('div');
+    slotsEl.id = 'slots';
+    const slots = [];
+    for (let i = 0; i < ROWS; i++) {
+      const slot = document.createElement('div');
+      slot.className = 'tv-slot empty';
+      slotsEl.appendChild(slot);
+      slots.push(slot);
+    }
+    towerEl.appendChild(slotsEl);
+
     let rowMap = {};
+    // Each row's index in the last snapshot drawn, and its pending move timers.
+    let lastIdx = {};
+    let moveTimers = {};
+    let lastSortMode = null;
+    const LIFT_MS = 900;
+    const MARKER_MS = 3000;
     let knownServerInstanceId = null;
     let revealTimer = null;
 
@@ -236,7 +296,7 @@
     function makeRow() {
       const row = document.createElement('div');
       row.className = 'tv-row';
-      for (const cls of ['tv-pos', 'tv-class', 'tv-number', 'tv-name', 'tv-fl', 'tv-interval']) {
+      for (const cls of ['tv-class', 'tv-number', 'tv-name', 'tv-delta', 'tv-fl', 'tv-interval']) {
         const cell = document.createElement('div');
         cell.className = cls;
         row.appendChild(cell);
@@ -248,7 +308,66 @@
       return row.querySelector('.' + cls);
     }
 
-    function render(data) {
+    function clearMoveTimers(key) {
+      const timers = moveTimers[key];
+      if (timers) {
+        clearTimeout(timers.lift);
+        clearTimeout(timers.marker);
+      }
+      delete moveTimers[key];
+    }
+
+    // Ends a row's marked move at once: no lift, nudge or marker left on it.
+    function clearMove(key) {
+      clearMoveTimers(key);
+      const row = rowMap[key];
+      row.classList.remove('gaining', 'losing', 'pass', 'lift');
+      cell(row, 'tv-delta').classList.remove('show');
+    }
+
+    // Marks a row that changed places since the last snapshot: a gainer lifts,
+    // nudges right and draws over the rows it passed; either way a green or red
+    // marker shows the places gained or lost for a few seconds.
+    function markMove(key, row, gained) {
+      const marker = cell(row, 'tv-delta');
+      const up = gained > 0;
+      row.classList.toggle('gaining', up);
+      row.classList.toggle('losing', !up);
+      marker.textContent = (up ? '▲' : '▼') + Math.abs(gained);
+      marker.className = 'tv-delta show ' + (up ? 'up' : 'down');
+      if (up) {
+        row.classList.remove('pass');
+        void row.offsetWidth;  // restarts the nudge when a row gains again mid-move
+        row.classList.add('pass', 'lift');
+      } else {
+        row.classList.remove('pass', 'lift');
+      }
+      clearMoveTimers(key);
+      moveTimers[key] = {
+        lift: setTimeout(() => row.classList.remove('lift'), LIFT_MS),
+        marker: setTimeout(() => clearMove(key), MARKER_MS),
+      };
+    }
+
+    function removeRow(key) {
+      clearMoveTimers(key);
+      rowMap[key].remove();
+      delete rowMap[key];
+      delete lastIdx[key];
+    }
+
+    // Moves are marked only on a live `update`; a `full` resyncs after an outage
+    // and `init` starts a session, so neither is a change of places on track.
+    // Within an update, a change of sort_mode reorders the whole tower, and the
+    // purple flag's total_time order is crossing order, so neither is marked
+    // either. A best_lap climb is a real improvement in qualifying, so it is.
+    function render(data, markMoves) {
+      const sortMode = data.sort_mode;
+      markMoves = markMoves && sortMode === lastSortMode && sortMode !== 'total_time';
+      lastSortMode = sortMode;
+      // A reorder that is not marked must not show a move left over from the
+      // last update either.
+      if (!markMoves) Object.keys(moveTimers).forEach(clearMove);
       flagBarEl.className = flagClass(data.flag);
       lapsOrTimeEl.textContent = lapsOrTime(data);
       const raceName = data.race_name || '';
@@ -275,10 +394,14 @@
           rowMap[key] = row;
           requestAnimationFrame(() => { row.style.opacity = '1'; });
         } else {
+          const gained = lastIdx[key] - idx;
+          if (markMoves && gained) markMove(key, row, gained);
           row.style.transform = y;
         }
+        lastIdx[key] = idx;
 
-        cell(row, 'tv-pos').textContent = bestLapSort ? String(idx + 1) : (e.position || '');
+        slots[idx].textContent = bestLapSort ? String(idx + 1) : (e.position || '');
+        slots[idx].classList.remove('empty');
         cell(row, 'tv-number').textContent = e.number || e.reg_number;
         cell(row, 'tv-name').textContent = (e.last_name || e.first_name || '').toUpperCase();
 
@@ -301,11 +424,13 @@
         cell(row, 'tv-interval').textContent = interval;
       });
 
+      for (let i = entries.length; i < ROWS; i++) {
+        slots[i].textContent = '';
+        slots[i].classList.add('empty');
+      }
+
       for (const key of Object.keys(rowMap)) {
-        if (!seen.has(key)) {
-          rowMap[key].remove();
-          delete rowMap[key];
-        }
+        if (!seen.has(key)) removeRow(key);
       }
     }
 
@@ -335,18 +460,17 @@
         }
 
         if (msg.event === 'full') {
-          render(msg.data);
+          render(msg.data, false);
           if (overlayEl.classList.contains('off-air') && revealTimer === null) {
             revealTimer = setTimeout(goOnAir, REVEAL_DELAY_MS);
           }
         } else if (msg.event === 'update') {
           goOnAir();
-          render(msg.data);
+          render(msg.data, true);
         } else if (msg.event === 'init') {
           goOnAir();
-          towerEl.replaceChildren();
-          rowMap = {};
-          render(msg.data);
+          Object.keys(rowMap).forEach(removeRow);
+          render(msg.data, false);
         } else if (msg.event === 'no_feed') {
           goOffAir();
         }
