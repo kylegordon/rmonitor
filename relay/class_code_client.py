@@ -1407,6 +1407,9 @@ class ClassCodeClient:
         # both outlive a reconnect.
         self._ann_run: str | None = None
         self._ann_name = ""
+        # Set once the subscribed run is seen stopping: its views stay open
+        # for the reason race control posts, but it is not sent again.
+        self._ann_stopped = False
         # The Event last sent for the subscribed run, so its start notice can
         # supply one a pick could not find.
         self._ann_event = ""
@@ -1827,6 +1830,8 @@ class ClassCodeClient:
                 stopped_id = run.run_id.lower()
                 if self._run is not None and self._run["run_id"].lower() == stopped_id:
                     self._run = None
+                if self._ann_run is not None and self._ann_run.lower() == stopped_id:
+                    self._ann_stopped = True
                 flying = self._run_in_flight
                 if flying is not None and flying["run_id"].lower() == stopped_id:
                     flying["_stopped"] = True
@@ -1870,7 +1875,8 @@ class ClassCodeClient:
         key, as that rename.  The pick's or start's key and subscription
         stand, and announcements name the run by its new name from now on.
         """
-        if name == self._ann_name:
+        if name == self._ann_name or self._ann_stopped:
+            # A stopped run is not forwarded, renamed or not.
             return
         log.info("Timing host renamed run %s %r", self._ann_run, name)
         self._ann_name = name
@@ -1896,6 +1902,7 @@ class ClassCodeClient:
         self._ann_name = name
         self._ann_event = event
         self._ann_start_key = start_key
+        self._ann_stopped = False
         # The reply holds the rows that already exist.
         self._ann_due = asyncio.get_running_loop().time()
         if self.entry_list:

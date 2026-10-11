@@ -2442,6 +2442,26 @@ async def test_a_session_renamed_under_its_number_leaves_a_started_run_alone(mon
 
 
 @pytest.mark.asyncio
+async def test_a_run_record_under_a_new_name_after_the_run_stopped_resends_nothing(
+    monkeypatch,
+):
+    """The stopped run's views stay open for the reason race control posts,
+    but a stopped run is not forwarded, renamed or not."""
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_run_state(state="stopped"))
+        host.queue.append(bytes(16) + _run_record(0x40002805, name="Race 6"))
+        await _until(lambda: not host.queue)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert len(_runs_sent(calls)) == 1
+    assert client._ann_run == "0x40002805"
+
+
+@pytest.mark.asyncio
 async def test_run_records_read_before_a_complete_pull_rename_nothing():
     """The pulled model holds run records too, some under an older name."""
     async def on_batch(msg):
