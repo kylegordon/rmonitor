@@ -300,6 +300,16 @@ def test_fastest_lap_handover_double_claim_flags_only_the_faster_car(state):
     assert _fastest(state) == {"94"}
 
 
+def test_an_unranked_qual_info_withdraws_an_earlier_fastest_lap_claim(state):
+    """$H can carry an empty position; it must replace an earlier rank 1, not
+    leave the car flagged from a stale claim."""
+    state.process({"type": "qual_info", "position": "1", "reg_number": "94", "best_lap": "8", "best_lap_time": "00:00:58.713"})
+    assert _fastest(state) == {"94"}
+    state.process({"type": "qual_info", "position": "", "reg_number": "94", "best_lap": "8", "best_lap_time": "00:00:58.713"})
+    assert state.competitors["94"]["best_lap_rank"] == ""
+    assert _fastest(state) == set()
+
+
 def test_rank_one_with_no_time_is_not_flagged_as_fastest_lap(state):
     state.process({"type": "qual_info", "position": "1", "reg_number": "1", "best_lap": "0", "best_lap_time": "00:00:00.000"})
     assert _fastest(state) == set()

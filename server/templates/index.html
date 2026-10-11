@@ -276,6 +276,17 @@
     /* Server-derived (entries[].fastest_lap); the page never compares times. */
     tbody tr.fastest-lap { background: rgba(155,89,182,0.35); }
     tbody tr.fastest-lap td:nth-child(9) { font-weight: 700; }
+    /* Non-colour cue on the name cell, shown in every sort; read as "fastest lap". */
+    tbody tr.fastest-lap td:nth-child(3)::after {
+      content: "FL";
+      content: "FL" / "fastest lap";
+      margin-left: 0.5rem;
+      padding: 0 0.3rem;
+      border: 1px solid var(--purple);
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
     tbody tr.updated { background: rgba(233,69,96,0.15); }
     td {
       padding: 0.5rem 0.8rem;

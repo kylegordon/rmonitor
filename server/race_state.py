@@ -464,14 +464,14 @@ class RaceState:
 
         The position field is Orbits' best-lap rank, so it is always kept as
         ``best_lap_rank``, which :meth:`snapshot` reads for the fastest-lap
-        marker.
+        marker.  An empty rank is stored too, so an unranked ``$H`` withdraws
+        an earlier rank-1 claim rather than leaving it stale.
         """
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if not self._seen_race_info and msg.get("position"):
             c["position"] = msg["position"]
-        if msg.get("position"):
-            c["best_lap_rank"] = msg["position"]
+        c["best_lap_rank"] = msg.get("position", "")
         if msg.get("best_lap_time"):
             c["best_lap_time"] = msg["best_lap_time"]
         if msg.get("best_lap"):
