@@ -438,36 +438,55 @@ class RunStateParser:
 
     def __init__(self) -> None:
         self._buf = bytearray()
+        # The stream offset of the buffer's first byte.
+        self._base = 0
+
+    @property
+    def fed(self) -> int:
+        """How many bytes of the stream have been fed."""
+        return self._base + len(self._buf)
+
+    def _drop(self, n: int) -> None:
+        n = max(0, min(n, len(self._buf)))
+        del self._buf[:n]
+        self._base += n
 
     def feed(self, data: bytes) -> list[RunState]:
         """Absorb *data* and return every run-state notice now complete."""
+        return [run for _, run in self.feed_with_ends(data)]
+
+    def feed_with_ends(self, data: bytes) -> list[tuple[int, RunState]]:
+        """As :meth:`feed`, each notice with the stream offset just past it."""
         self._buf += data
-        out: list[RunState] = []
+        out: list[tuple[int, RunState]] = []
         while True:
             i = self._buf.find(_RUN_STATE_MARKER)
             if i < 0:
                 # Keep a tail that may hold the start of a straddling marker.
-                del self._buf[:-(len(_RUN_STATE_MARKER) - 1)]
+                self._drop(len(self._buf) - (len(_RUN_STATE_MARKER) - 1))
                 break
             start = i + len(_RUN_STATE_MARKER)
             if len(self._buf) < start + 4:
-                del self._buf[:i]
+                self._drop(i)
                 break
             (n,) = struct.unpack_from("<I", self._buf, start)
             if n > _MAX_RECORD_LEN:
-                del self._buf[:i + 1]
+                self._drop(i + 1)
                 continue
             end = start + 4 + n
             if len(self._buf) < end:
-                del self._buf[:i]
+                self._drop(i)
                 break
             text = bytes(self._buf[start + 4:end]).decode("utf-8", errors="replace")
-            del self._buf[:end]
+            self._drop(end)
             m = _RUN_STATE_TEXT.match(text)
             if m is None:
                 log.debug("Skipping an unrecognised run-state notice: %.60r", text)
                 continue
-            out.append(RunState(m.group(2), m.group(1), m.group(3), m.group(4) or ""))
+            out.append((
+                self._base,
+                RunState(m.group(2), m.group(1), m.group(3), m.group(4) or ""),
+            ))
         return out
 
 
@@ -1088,6 +1107,54 @@ def parse_runs(buf: bytes) -> list[dict]:
     return [named.get(run_id) or nameless[run_id] for run_id in order]
 
 
+class RunRecordParser:
+    """Incrementally find run records, as :func:`parse_runs` reads them, in the live stream.
+
+    The host pushes a run's record when the run is saved, so a rename shows
+    up as the record under the new name — "Race 18 - 2nd Race - AMENDED
+    GRID" saved back as "Race 18 - 2nd Race", say, while the run is running;
+    no run-state notice follows.  Only named records are returned, as
+    ``(run id, name)`` pairs in stream order, each once: a record is
+    returned from the read that completes it, and a short tail is kept for
+    one straddling two reads.  The model a pull returns holds the same
+    records, some under an older name, so this reads only the stream after
+    a complete pull.
+    """
+
+    # A record's anchor, length and the longest name a record may carry.
+    _TAIL = 12 + 4 + _MAX_REGISTRY_STR
+
+    def __init__(self, start: int = 0) -> None:
+        """*start* is the stream offset this parser is first fed from."""
+        self._tail = b""
+        self._fed = start
+
+    def feed(self, data: bytes) -> list[tuple[str, str]]:
+        """Absorb *data* and return every run record it completes."""
+        return [(run_id, name) for _, run_id, name in self.feed_with_ends(data)]
+
+    def feed_with_ends(self, data: bytes) -> list[tuple[int, str, str]]:
+        """As :meth:`feed`, each record led by the stream offset just past it."""
+        buf = self._tail + data
+        base = self._fed - len(self._tail)
+        self._fed += len(data)
+        seen = len(self._tail)
+        self._tail = buf[-self._TAIL:]
+        out: list[tuple[int, str, str]] = []
+        for m in _RUN_ANCHOR.finditer(buf):
+            cur = _Cursor(buf, m.start() + 12)
+            try:
+                name = cur.string()
+            except _ShortRecord:
+                continue
+            # A record the last read completed was returned by that read.
+            if cur.pos <= seen or not name or not name.isprintable():
+                continue
+            (rid,) = struct.unpack("<I", m.group(1))
+            out.append((base + cur.pos, f"0x{rid:08X}", name))
+        return out
+
+
 def parse_groups(buf: bytes) -> dict[str, str]:
     """Return ``{group id: name}`` for the group records found in *buf*.
 
@@ -1238,6 +1305,9 @@ class ClassCodeClient:
     *on_batch* as a ``class_code_run`` message, after any preload and before
     the pushes of the same burst, and retried like them; the server uses it
     to keep only the running run's pushes.  A stopped run is not forwarded.
+    Race control can rename the run while it runs, keeping its id: the host
+    then pushes the run's record under the new name (:class:`RunRecordParser`),
+    and the run is sent again, same start key, under that name.
 
     The client also subscribes to the started run's announcements view
     (:func:`build_view_open`, :class:`AnnouncementParser`) and hands its rows
@@ -1349,6 +1419,8 @@ class ClassCodeClient:
         self._delivery: asyncio.Task | None = None
         self._parser = PushParser()
         self._run_parser = RunStateParser()
+        # Set once a connection's pull completes; see RunRecordParser.
+        self._rec_parser: RunRecordParser | None = None
         self._pending: dict[str, dict[str, dict]] = {}
         # The last run announced as started and not yet delivered, and the
         # one whose delivery is in flight.
@@ -1362,6 +1434,9 @@ class ClassCodeClient:
         # both outlive a reconnect.
         self._ann_run: str | None = None
         self._ann_name = ""
+        # Set once the subscribed run is seen stopping: its views stay open
+        # for the reason race control posts, but it is not sent again.
+        self._ann_stopped = False
         # The Event last sent for the subscribed run, so its start notice can
         # supply one a pick could not find.
         self._ann_event = ""
@@ -1403,6 +1478,7 @@ class ClassCodeClient:
             reason = "connection closed by the timing host"
             self._parser = PushParser()
             self._run_parser = RunStateParser()
+            self._rec_parser = None
             self._reset_announcement_views()
             try:
                 log.info("Connecting to class codes at %s:%s", self.host, self.port)
@@ -1559,6 +1635,10 @@ class ClassCodeClient:
             log.warning("Class-code registry pull incomplete – not forwarding a preload")
             return
         pulled_at = time.monotonic()
+        # The model has drained, so run records read from here on are live.
+        # After a pull cut short its tail could still follow, so renames are
+        # left to the server's reading of $B until the next connection.
+        self._rec_parser = RunRecordParser(self._run_parser.fed)
         entries, runs, groups = await asyncio.to_thread(_parse_model, bytes(model))
         # The run table holds even when the preload is withheld below.
         self._runs = runs
@@ -1766,47 +1846,85 @@ class ClassCodeClient:
                 continue
             entry["_observed"] = time.monotonic()
             self._pending.setdefault(rec.run_id, {})[entry["entrant_id"]] = entry
-        for run in self._run_parser.feed(data):
-            if run.state != "started":
-                log.debug("Run %s %r is %s", run.run_id, run.name, run.state)
-                # A run that stopped before its start was delivered is not
-                # running; a newer started run is left alone.  A delivery in
-                # flight for it is marked, so it is not retried either.
-                # A picked id is the run table's upper-case hex; a notice's
-                # may not be.
-                stopped_id = run.run_id.lower()
-                if self._run is not None and self._run["run_id"].lower() == stopped_id:
-                    self._run = None
-                flying = self._run_in_flight
-                if flying is not None and flying["run_id"].lower() == stopped_id:
-                    flying["_stopped"] = True
-                # Its views stay open until another run starts or is picked:
-                # race control posts the reason for a stop after it.
-                if not self._seen_start and (
-                    self._ann_run is None or self._ann_run.lower() != stopped_id
-                ):
-                    # A run seen stopping is never picked, under any later
-                    # description: it has ended.  The held pick is recorded
-                    # at its session's end instead (_end_session), so a
-                    # reconnect's pull before then keeps it subscribed.
-                    self._ended_runs.add(stopped_id)
-                continue
-            log.info("Timing host started run %s %r", run.run_id, run.name)
-            picked = (
-                not self._seen_start
-                and self._ann_run is not None
-                and self._ann_run.lower() == run.run_id.lower()
-            )
-            self._seen_start = True
-            if picked:
-                # The run picked by name has started: the pick's start key and
-                # subscription stand, and refreshes keep naming its start.
-                self._correct_event(run.event)
-                self._ann_name = run.name
-                continue
-            self._take_run(run.run_id, run.name, run.event)
+        # Run-state notices and run records are applied in stream order: a
+        # record read before a start in the same chunk is not its rename.
+        events: list[tuple[int, RunState | tuple[str, str]]] = list(
+            self._run_parser.feed_with_ends(data)
+        )
+        if self._rec_parser is not None:
+            events += [
+                (end, (run_id, name))
+                for end, run_id, name in self._rec_parser.feed_with_ends(data)
+            ]
+        for _, ev in sorted(events, key=lambda e: e[0]):
+            if isinstance(ev, RunState):
+                self._absorb_run_state(ev)
+            elif self._ann_run is not None and ev[0].lower() == self._ann_run.lower():
+                self._rename_run(ev[1])
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
+
+    def _absorb_run_state(self, run: RunState) -> None:
+        if run.state != "started":
+            log.debug("Run %s %r is %s", run.run_id, run.name, run.state)
+            # A run that stopped before its start was delivered is not
+            # running; a newer started run is left alone.  A delivery in
+            # flight for it is marked, so it is not retried either.
+            # A picked id is the run table's upper-case hex; a notice's
+            # may not be.
+            stopped_id = run.run_id.lower()
+            if self._run is not None and self._run["run_id"].lower() == stopped_id:
+                self._run = None
+            if self._ann_run is not None and self._ann_run.lower() == stopped_id:
+                self._ann_stopped = True
+            flying = self._run_in_flight
+            if flying is not None and flying["run_id"].lower() == stopped_id:
+                flying["_stopped"] = True
+            # Its views stay open until another run starts or is picked:
+            # race control posts the reason for a stop after it.
+            if not self._seen_start and (
+                self._ann_run is None or self._ann_run.lower() != stopped_id
+            ):
+                # A run seen stopping is never picked, under any later
+                # description: it has ended.  The held pick is recorded
+                # at its session's end instead (_end_session), so a
+                # reconnect's pull before then keeps it subscribed.
+                self._ended_runs.add(stopped_id)
+            return
+        log.info("Timing host started run %s %r", run.run_id, run.name)
+        picked = (
+            not self._seen_start
+            and self._ann_run is not None
+            and self._ann_run.lower() == run.run_id.lower()
+        )
+        self._seen_start = True
+        if picked:
+            # The run picked by name has started: the pick's start key and
+            # subscription stand, and refreshes keep naming its start.
+            self._correct_event(run.event)
+            self._ann_name = run.name
+            self._ann_stopped = False
+            return
+        self._take_run(run.run_id, run.name, run.event)
+
+    def _rename_run(self, name: str) -> None:
+        """Resend the subscribed run under *name* if that is a new one.
+
+        Race control can rename a run while it runs, keeping its id; the
+        server takes a repeat of the start it holds, under the same start
+        key, as that rename.  The pick's or start's key and subscription
+        stand, and announcements name the run by its new name from now on.
+        """
+        if name == self._ann_name or self._ann_stopped:
+            # A stopped run is not forwarded, renamed or not.
+            return
+        log.info("Timing host renamed run %s %r", self._ann_run, name)
+        self._ann_name = name
+        self._run = {
+            "run_id": self._ann_run, "name": name,
+            "start_key": self._ann_start_key, "event": self._ann_event,
+            "_observed": time.monotonic(),
+        }
 
     def _take_run(self, run_id: str, name: str, event: str = "") -> None:
         """Treat *run_id* as the started run: forward it and subscribe.
@@ -1824,6 +1942,7 @@ class ClassCodeClient:
         self._ann_name = name
         self._ann_event = event
         self._ann_start_key = start_key
+        self._ann_stopped = False
         # The reply holds the rows that already exist.
         self._ann_due = asyncio.get_running_loop().time()
         if self.entry_list:
@@ -1855,8 +1974,9 @@ class ClassCodeClient:
         session keeps it, because a same-named real start cannot be told
         from the next run starting early.
 
-        Picking is edge-triggered: only a new session — the number or the
-        description changing, as the server's ``_run`` reads it — or a newly
+        Picking is edge-triggered: only a new session — the number changing,
+        as the server's ``_run`` reads it, since a new description under the
+        same number is the run being renamed (:meth:`_rename_run`) — or a newly
         pulled run table picks, and only while the first session is open,
         never after its ``$B,95``.  A stop notice ends any other run at
         once, but leaves the pick subscribed until the boundary.  Nothing is
@@ -1876,6 +1996,24 @@ class ClassCodeClient:
         if not description or (number, description) == (
             self._session_number, self._session_desc
         ):
+            return
+        if number == self._session_number:
+            # The same number under a new description is race control
+            # renaming the run, as the server's _run reads it: the session
+            # and any pick stand, and a held pick takes the new name, so a
+            # later resend of it cannot name the old one.  A run held from a
+            # real start may be the next same-named run starting early; its
+            # own rename comes as its pushed record (RunRecordParser).  With none held,
+            # the new name may match a run where the old one did not.
+            if (
+                self._ann_run is not None
+                and not self._seen_start
+                and self._ann_name == self._session_desc
+            ):
+                self._rename_run(description)
+            self._session_desc = description
+            if self._ann_run is None:
+                self._pick_run()
             return
         if self._session_number not in ("", "95"):
             self._end_session()

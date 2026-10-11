@@ -63,6 +63,16 @@ current. Both recur, an active record up to 264 times, so a boundary is `unique_
 `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for
 the broadcast-per-init over the real ingest path.
 
+A new description under the same number, with no 95 between, is race control renaming the
+running run (its `:51738` id stays), not a boundary: the bound run keeps its binding and
+takes the name, and with no run bound a start arriving later under the old name is taken
+under the new one.
+The relay also reads the run's record pushed under the new name and resends the start, same
+key. Guarded by `test_a_run_renamed_mid_session_stays_bound_and_keeps_its_codes`
+in `tests/test_race_state.py` and
+`test_a_run_record_under_a_new_name_resends_the_held_run_with_its_start_key` in
+`tests/test_class_code_client.py`.
+
 ## A deleted passing is a `$G` with an empty lap count
 
 When race control deletes a crossing, Orbits re-sends the car's `$G` with no lap count and
