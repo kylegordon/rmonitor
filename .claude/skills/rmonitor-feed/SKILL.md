@@ -1,6 +1,6 @@
 ---
 name: rmonitor-feed
-description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) or a deleted passing in server/race_state.py, relay/rmonitor_client.py, relay/class_code_client.py or their tests.
+description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns (including Orbits' own Gap and Diff), RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) or a deleted passing in server/race_state.py, relay/rmonitor_client.py, relay/class_code_client.py or their tests.
 paths:
   - server/race_state.py
   - relay/rmonitor_client.py
@@ -90,8 +90,23 @@ When race control deletes a crossing, Orbits re-sends the car's `$G` with no lap
 
 An operator's manual time correction is added into the `$G` race time with no marker on
 `:50000`. On `:51738` it shows in the results view as `TotalTimeCorrection` above zero on the
-car's row, while `HasPenalties` stays 0. Nothing reads that column yet; its framing, the cell
-encoding and columns 57–67 are in [results-view.md](results-view.md).
+car's row, while `HasPenalties` stays 0. Nothing reads that column yet.
+
+## Orbits sends Gap and Diff on `:51738`; the server derives its own from `:50000`
+
+The rMonitor feed carries no intervals, so `RaceState` computes `Gap` and `Diff`. The results
+view does carry them (columns 47, 48 and 53, with the car number behind in 54), as the Orbits
+client shows them, but nothing reads them yet and they refresh only with the relay's 60 s poll.
+All 87 columns, the frame layout and the cell encoding are in
+[results-view.md](results-view.md).
+
+Planned, not started: take the intervals, and likely best/last laps with their best/better/
+worse styles, positions in class and penalties, from this view instead of deriving them in
+`RaceState`, then delete the derivation (`_apply_intervals`, `_time_behind_leader`, the
+`lap_times` index and its deleted-passing and restore handling). It is blocked on freshness:
+first capture one results view held open through a race to see whether Orbits pushes row
+updates per crossing. Without pushes, gaps would be up to 60 s stale. Look columns up by name
+from the column frame, not by index, in case an Orbits update reorders them.
 
 ## A car's DNF, DNS or DQ is only in the `:51738` results view, read from the row middle
 
