@@ -2548,6 +2548,23 @@ async def test_a_session_renamed_under_its_number_keeps_and_renames_the_pick(mon
 
 
 @pytest.mark.asyncio
+async def test_a_session_renamed_to_a_run_tables_name_picks_it(monkeypatch):
+    """A first description no run bears picks nothing; renamed under the same
+    number to one a run bears, that run is picked."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME + " - AMENDED GRID")
+        assert client._ann_run is None
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_opens(writer) and _runs_sent(calls))
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert (run["run_id"], run["name"]) == (PICKED_ID, PICK_NAME)
+
+
+@pytest.mark.asyncio
 async def test_a_session_known_before_the_pull_is_picked_when_the_run_table_arrives(
     monkeypatch,
 ):

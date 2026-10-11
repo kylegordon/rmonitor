@@ -355,7 +355,8 @@ class RaceState:
           between, is race control renaming the run, not a new session: the
           run stays bound and takes the new name, so the scope and the race
           name follow it.  A waiting run bearing the new name still takes
-          over, as above.
+          over, as above.  With none bound, a waiting run standing in for
+          the session shown is renamed with it and binds.
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
           still shows that session, so its run stays in scope until the next
@@ -384,11 +385,22 @@ class RaceState:
         # The number names the session, and no capture reuses one for another
         # session, so a new description under the bound run's own number,
         # with no 95 between, is race control renaming that run.
+        same_session = bool(desc) and number not in ("", "95") and number == self._run_number
+        if (
+            same_session
+            and cur is None
+            and nxt is not None
+            and not nxt.get("closed")
+            and nxt["name"] == self.run_description != desc
+        ):
+            # A waiting run standing in for the session shown is renamed
+            # with it, and then binds below as one bearing the name would.
+            log.info("Session %s renamed from %r to %r", number, nxt["name"], desc)
+            nxt["name"] = desc
         renamed = (
-            cur is not None
+            same_session
+            and cur is not None
             and not cur.get("closed")
-            and number not in ("", "95")
-            and number == self._run_number
             and cur.get("session_number") == number
             and cur["name"] != desc
             and (nxt is None or nxt["name"] != desc)

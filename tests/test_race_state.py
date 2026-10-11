@@ -3329,6 +3329,25 @@ def test_a_run_renamed_mid_session_stays_bound_and_keeps_its_codes(state):
     assert state.class_code_run["session_number"] == "5"
 
 
+def test_a_waiting_run_standing_in_for_the_session_is_renamed_with_it(state):
+    """A relay started mid-session sends the start after the session's $B, so
+    the run waits, standing in for the session, until a $B binds it."""
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _started(state, "0x40002829", "Race 18 - 2nd Race - AMENDED GRID")
+    _session(state, "Race 18 - 2nd Race", number="5")
+    assert state.class_code_run["name"] == "Race 18 - 2nd Race"
+    assert state.class_code_run["session_number"] == "5"
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+
+
+def test_an_empty_description_under_the_same_number_renames_nothing(state):
+    _session(state, "Race 18 - 2nd Race", number="5")
+    _started(state, "0x40002829", "Race 18 - 2nd Race")
+    _session(state, "Race 18 - 2nd Race", number="5")
+    _session(state, "", number="5")
+    assert state.class_code_run is None or state.class_code_run["name"] == "Race 18 - 2nd Race"
+
+
 def test_a_renamed_run_is_closed_by_the_95_carrying_its_new_name(state):
     _renamed_session(state)
     _closing(state, "Race 18 - 2nd Race")
