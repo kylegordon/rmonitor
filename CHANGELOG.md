@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.24](https://github.com/kylegordon/rmonitor/compare/v0.1.23...v0.1.24) (2026-10-11)
+
+## What's Changed
+* fix(relay): capture both timing ports in rmonitor_capture.py by @kylegordon in https://github.com/kylegordon/rmonitor/pull/127
+* feat(server): shade the fastest-lap driver's row by @kylegordon in https://github.com/kylegordon/rmonitor/pull/128
+* docs(agents): map the results view's time-correction columns by @kylegordon in https://github.com/kylegordon/rmonitor/pull/129
+* feat: show DNF/DNS/DQ status on the timing board by @kylegordon in https://github.com/kylegordon/rmonitor/pull/130
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.23...v0.1.24
+
+
 ## [0.1.23](https://github.com/kylegordon/rmonitor/compare/v0.1.22...v0.1.23) (2026-10-11)
 
 ## What's Changed
