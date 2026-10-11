@@ -65,3 +65,14 @@ readers only) and never compares times. Guarded by
 `test_fastest_lap_handover_double_claim_flags_only_the_faster_car` and its siblings in
 `tests/test_race_state.py`, and `test_the_page_shades_the_fastest_lap_row_from_the_server_flag`.
 What it draws is checked by eye.
+
+## A status replaces Diff, and a DNF's Total Time reads RETIRED
+
+Each snapshot entry carries `status` (DNF, DNS, DQ or `""`), joined from the scoped run's
+entry list as the class codes are and set only in a `Race` session not under the purple-flag
+sort; with no scoped run it is blank. The page shows whatever is set — the status in Diff, and
+RETIRED in Total Time for a DNF — without re-checking the session. Rows are not re-sorted
+or styled: the host already lists them after the classified cars. Guarded by
+`test_status_is_blank_outside_a_race`, `test_status_is_blank_under_a_purple_flag` and
+`test_conflicting_statuses_leave_the_car_blank` in `tests/test_race_state.py`, and
+`test_the_page_shows_a_status_in_diff_and_retired_in_total` in `tests/test_repo_invariants.py`.

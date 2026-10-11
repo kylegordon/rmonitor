@@ -255,6 +255,19 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
     )
 
 
+def test_the_page_shows_a_status_in_diff_and_retired_in_total() -> None:
+    """Guards the ``rmonitor-display`` skill: a car's ``status`` overrides two cells.
+
+    The server sends ``status`` only in a race and not under the purple flag, so the
+    page shows it whenever it is set: Diff reads the status, and a ``DNF`` reads
+    ``RETIRED`` in Total Time. Textual, like its siblings; what is drawn stays
+    unguarded.
+    """
+    source = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "{ text: e.status || intervalText(e.diff_leader_seconds, e.diff_leader_laps) }" in source
+    assert "e.status === 'DNF' ? 'RETIRED' : totalText(e.total_time)" in source
+
+
 def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
     """Guards the ``rmonitor-display`` skill: the time columns follow ``sort_mode`` too.
 
@@ -282,7 +295,8 @@ def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
     ):
         assert header in source, f"index.html is missing the header {header}"
 
-    assert "{ text: totalText(e.total_time), cls: 'total-col' }" in source, (
+    # Behind a DNF's RETIRED; see the status test above.
+    assert "totalText(e.total_time), cls: 'total-col' }" in source, (
         "index.html's row cells no longer show total_time through totalText()"
     )
     assert "classList.toggle('race', !bestLapSort)" in source, (

@@ -764,17 +764,19 @@
                        : e.position_change === 'up' ? ' <span class="arrow-up">▲</span>'
                        : e.position_change === 'down' ? ' <span class="arrow-down">▼</span>'
                        : ' <span class="arrow-none"></span>';
+        // The server sends a status only when it is to be shown (a race, not
+        // under the purple flag), so the page does not re-check.
         const cellData = [
           { html: escapeHtml(String(posText)) + posArrow, cls: 'pos', title: posTitle, aria: posAria },
           { text: e.number || e.reg_number, cls: 'number' },
           { text: name, title: vehicle },
           { text: intervalText(e.gap_ahead_seconds, e.gap_ahead_laps) },
-          { text: intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
+          { text: e.status || intervalText(e.diff_leader_seconds, e.diff_leader_laps) },
           { text: cls, title: clsTitle, aria: clsAria },
           { text: e.laps || '—' },
           { text: e.last_lap_time || '—', cls: 'lap-col' },
           { text: e.best_lap_time || '—', cls: 'lap-col' },
-          { text: totalText(e.total_time), cls: 'total-col' },
+          { text: e.status === 'DNF' ? 'RETIRED' : totalText(e.total_time), cls: 'total-col' },
         ];
 
         let tr = rowMap[e.reg_number];
