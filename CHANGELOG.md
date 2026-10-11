@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.28](https://github.com/kylegordon/rmonitor/compare/v0.1.27...v0.1.28) (2026-10-11)
+
+## What's Changed
+* fix: keep class codes when race control renames the running run by @kylegordon in https://github.com/kylegordon/rmonitor/pull/138
+* fix(server): open a session the timing host announces as a $B,95 by @kylegordon in https://github.com/kylegordon/rmonitor/pull/141
+* Document every :51738 results-view column by @kylegordon in https://github.com/kylegordon/rmonitor/pull/142
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.27...v0.1.28
+
+
 ## [0.1.27](https://github.com/kylegordon/rmonitor/compare/v0.1.26...v0.1.27) (2026-10-11)
 
 ## What's Changed
