@@ -22,6 +22,7 @@ The application is split into two components that can each run in Docker:
 - Parses the full rMonitor protocol (`$F`, `$A`, `$COMP`, `$B`, `$C`, `$E`, `$G`, `$H`, `$I`, `$J`, `$SP`, `$SR`)
 - Real-time HTML leaderboard via WebSocket — no polling, no page refresh
 - Shows entrant names, numbers, positions, lap times, lap speeds, best laps
+- Highlights the session's fastest-lap holder (from Orbits' best-lap rank)
 - Track name, race time, flag status and laps/time remaining in the header
 - Automatic reconnect to the timing feed on connection loss
 - Clears and restarts the display when a new session/race begins (`$I` init)
