@@ -43,7 +43,19 @@ order. A cell's layout follows its column's format:
 | 9 | `u32` n, 1 byte, n × `u32`, `str` | transponder list |
 
 The `str` is the text the Orbits client displays. The byte between value and text is a display
-style (seen: 0, 3, 4, 5, 6, 15, 16, 20), meaning not decoded. In a time cell, an `i64` of
+style, probably selecting one of the Orbits Display theme's special colours (`overallbest`,
+`personalbest`, `better`, `worse`, `inleadlap`, …). Counted over every row:
+
+- `4`: an overall best. `BestTm` carries it only on the session's fastest lap, and `LastTm`
+  when the last lap is that lap.
+- `3`: a personal best. `LastTm` carries it only when the last lap equals the car's `BestTm`.
+- `5` and `6`: better and worse. `LastTm` is `5` when quicker than `2ndLastTm` and `16` when
+  slower. On `Gap`, `5` came with a gap smaller than the previous reply's in 340 of 401 cases
+  and `6` with a larger one in 515 of 585; the reference is likely the previous lap, not the
+  previous 60 s poll.
+- `0`, `15`, `16`, `20` are not decoded.
+
+In a time cell, an `i64` of
 `0x7fffffffffffffff` means no value, and time-of-day values count microseconds from 1970 in
 local wall-clock time (`1791734050115000` shows as `15:54:10.115` on a BST day).
 
@@ -53,7 +65,9 @@ status are column 13's style byte and column 14's empty `MinimumLaptime` value a
 
 ## Gap and Diff are in the feed
 
-Orbits sends the gaps its own client displays. Columns 47, 48 and 53 share one encoding: the
+Orbits sends the gaps its own displays show: the track's Orbits Display race sequence
+(`Race - SMART 12a.xseq`) is a table on `lgView_RaceResults` with `lgHeader_Diff` and
+`lgHeader_Gap` beside `TotalTm`, `BestTm` and `LastTm`. Columns 47, 48 and 53 share one encoding: the
 `i64` holds microseconds, and a lap deficit sets `laps << 48` (the low bits may still hold a
 time). The text is `1.475`, `1:23.454` past a minute, `1 Lap` or `2 Laps`; the leader's
 `Diff` and `Gap` are empty. Orbits shows `1 Lap` from a one-lap deficit, where the server's own
