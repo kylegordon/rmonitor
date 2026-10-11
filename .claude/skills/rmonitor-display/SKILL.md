@@ -1,6 +1,6 @@
 ---
 name: rmonitor-display
-description: How the timing page and the server agree on what to show. Use when touching the web page, the WebSocket payload, sort order, the Gap/Diff or time columns, page versioning, or how server/server.py serves the page.
+description: How the timing pages and the server agree on what to show. Use when touching the web pages (`/` and `/tv`), the WebSocket payload, sort order, the Gap/Diff or time columns, page versioning, or how server/server.py serves the page.
 paths:
   - server/server.py
   - "server/templates/**"
@@ -78,3 +78,22 @@ or styled: the host already lists them after the classified cars. Guarded by
 `test_status_is_blank_outside_a_race`, `test_status_is_blank_under_a_purple_flag` and
 `test_conflicting_statuses_leave_the_car_blank` in `tests/test_race_state.py`, and
 `test_the_page_shows_a_status_in_diff_and_retired_in_total` in `tests/test_repo_invariants.py`.
+
+## The /tv page is an unattended broadcast overlay
+
+`server/templates/tv.html` is its own template, served by `handle_tv` with its own ETag. It
+reads the same `/ws` snapshot and draws `entries` in server order, with `sort_mode`,
+`fastest_lap` and `status` as sent. No one is at the broadcast browser, so it ignores
+`page_version` and self-reloads on a `server_instance_id` change; a deploy's brief blank on
+air is accepted. It sets no page background (OBS and vMix key on the alpha), loads nothing
+external, writes feed text through `textContent` only, and moves rows by `transform`. A
+`full` reveals the tower only after a short wait that `no_feed` cancels, since a connect
+during an outage gets a stale `full` first. `Finish` draws a chequered flag bar, and a
+no-time best lap (`00:59:59.999`) is blank.
+Guarded by the `test_tv_*` tests in `tests/test_server.py`, and
+`test_the_tv_page_reloads_on_a_restart_and_never_reads_page_version`,
+`test_the_tv_page_is_transparent_and_self_contained` and
+`test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform`,
+`test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out` and
+`test_the_tv_page_shows_the_finish_flag_as_chequered` in
+`tests/test_repo_invariants.py`. What it draws is checked by eye.

@@ -49,8 +49,8 @@ Layout and configuration: `README.md`. Directory rules: `relay/AGENTS.md`, `serv
 4. Dependencies live only in `requirements*.txt`. `rmonitor-testing`; `tests/test_repo_invariants.py`.
 5. Session boundaries are `$B` edges, never `$I`. `rmonitor-feed`;
    `test_every_opened_session_is_closed_by_a_95_carrying_its_description`.
-6. A long-open tab can run an old page against a new server, so prompt and never self-reload.
-   `rmonitor-display`; `test_an_outdated_page_prompts_rather_than_reloading_itself`.
+6. A long-open tab can run an old page against a new server, so `index.html` prompts and never
+   self-reloads (`/tv`, unattended, reloads on restart). `rmonitor-display`; `test_an_outdated_page_prompts_rather_than_reloading_itself`.
 
 <!-- drift-report:start -->
 <!-- drift-report:end -->
