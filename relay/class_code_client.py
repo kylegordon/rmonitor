@@ -1120,7 +1120,7 @@ class RunRecordParser:
                 name = cur.string()
             except _ShortRecord:
                 continue
-            # One the last read completed was returned then.
+            # A record the last read completed was returned by that read.
             if cur.pos <= seen or not name or not name.isprintable():
                 continue
             (rid,) = struct.unpack("<I", m.group(1))

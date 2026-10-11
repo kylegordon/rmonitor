@@ -923,8 +923,10 @@ class RaceState:
         rename a run while it runs ("Race 18 - 2nd Race - AMENDED GRID" back
         to "Race 18 - 2nd Race"), keeping its id, and the relay resends the
         held start under the new name; so a repeat carrying a start key may
-        also rename the held run, as :meth:`_run` does when the renamed
-        ``$B`` arrives first.  Nothing else about the held run moves.
+        also rename the held run, once the board no longer shows its held
+        name.  Until then the renamed ``$B`` renames it (:meth:`_run`), so
+        the scope never blanks waiting for one.  Nothing else about the held
+        run moves.
         """
         run_id, name = msg.get("run_id"), msg.get("name")
         age = _entry_age(msg.get("age_seconds"))
@@ -971,8 +973,15 @@ class RaceState:
                     held["event"] = event
                     changed = True
                 # A rename needs the start key: without one, a restart under
-                # this id cannot be told from the start held.
-                if name != held["name"] and isinstance(start_key, str) and start_key:
+                # this id cannot be told from the start held.  While the
+                # board still shows the held name, the renamed $B renames it
+                # (see _run), so the scope does not blank in between.
+                if (
+                    name != held["name"]
+                    and held["name"] != self.run_description
+                    and isinstance(start_key, str)
+                    and start_key
+                ):
                     log.info("Timing host renamed run %s to %r", run_id, name)
                     held["name"] = name
                     changed = True

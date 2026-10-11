@@ -3383,20 +3383,39 @@ def test_a_waiting_run_bearing_the_new_name_still_takes_over(state):
     assert state.class_code_run["run_id"] == "0x40002807"
 
 
-def test_the_relay_renaming_the_held_start_renames_the_run(state):
+def test_the_relay_renaming_the_held_start_waits_for_the_renamed_session(state):
     """The relay reads the rename on ``:51738`` and resends the start, same
-    key, under the new name; the renamed ``$B`` may follow it."""
+    key, under the new name, which can arrive before the renamed ``$B``: the
+    board still shows the old name, so the scope must not blank meanwhile."""
     _started_with_event(state)
     _session(state)
+    renamed = "Race 7 - 2nd Race - AMENDED GRID"
+    assert state.process({
+        "type": "class_code_run", "run_id": "0x40002806",
+        "name": renamed, "start_key": "k1", "age_seconds": 0.0,
+    }) is None
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert state.snapshot()["race_name"] == EVENT
+    _session(state, renamed)
+    assert state.class_code_run["name"] == renamed
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_the_relay_renaming_the_held_start_renames_a_run_the_board_no_longer_shows(state):
+    """The renamed ``$B`` came before the run was held, so only the relay's
+    resend under the new name brings the run back into scope."""
+    renamed = "Race 7 - 2nd Race - AMENDED GRID"
+    _session(state)
+    _session(state, renamed)
+    _started_with_event(state)
+    assert state.snapshot()["class_code_scope"] == ""
     revision = state.class_codes_revision
     assert state.process({
         "type": "class_code_run", "run_id": "0x40002806",
-        "name": "Race 7 - 2nd Race - AMENDED GRID", "start_key": "k1", "age_seconds": 0.0,
+        "name": renamed, "start_key": "k1", "age_seconds": 0.0,
     }) == "class_codes"
     assert state.class_codes_revision == revision + 1
-    assert state.class_code_run["name"] == "Race 7 - 2nd Race - AMENDED GRID"
-    assert state.class_code_run["event"] == EVENT
-    _session(state, "Race 7 - 2nd Race - AMENDED GRID")
     assert state.snapshot()["class_code_scope"] == "0x40002806"
     assert state.snapshot()["race_name"] == EVENT
 
