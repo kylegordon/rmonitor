@@ -76,9 +76,9 @@ No rMonitor record carries a per-car status. Each results-view row's middle hold
 `str` followed by ten zero bytes and a time `str` — `Active` (finishers too), DNF, DNS or
 DQ — which `_entry_list_status` in `relay/class_code_client.py` reads; the `str` before the
 row's head holds a position or a status and is not read. The relay sends every row's status in
-`statuses` on the entry-list message, code or none. `RaceState` keeps only DNF/DNS/DQ in
-`run_statuses`, one set per run that each list replaces whole, apart from the class-code records
-because a push overwrites those. Like them it survives `reset()`, expires on
+`statuses` on the entry-list message, code or none. `RaceState` keeps every row in
+`run_statuses` (Active ones make a join ambiguous) and shows only DNF/DNS/DQ — one set per run
+that each list replaces whole, apart from the class-code records because a push overwrites those. Like them it survives `reset()`, expires on
 `_PUSHED_CODE_TTL_SECONDS` and is saved with the class-code store. Guarded by
 `test_results_excerpt_reads_real_statuses` and `test_entry_list_rows_read_each_rows_status` in
 `tests/test_class_code_client.py`, and `test_a_push_does_not_clear_a_status` and

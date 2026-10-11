@@ -52,10 +52,11 @@ Sort order, the `Gap` sign and what the page reads from the payload live in the
 
 ## A car's status is held per run, apart from the class codes
 
-`RaceState.run_statuses` holds each run's DNF/DNS/DQ rows from its entry lists, each list
-replacing the run's set whole. It is not a field on the class-code records, which a later push
+`RaceState.run_statuses` holds every row's status from each run's entry lists, each list
+replacing the run's set whole. Active rows are kept so a namesake makes a join ambiguous; only
+DNF, DNS or DQ is shown. It is not a field on the class-code records, which a later push
 overwrites, and a list without `statuses` (an older relay) leaves it alone. It survives `reset()`,
 expires and is saved with the class codes. `snapshot()` joins it to each entry as `status` only
 in a race, not under the purple flag (`rmonitor-display`). Guarded by
-`test_a_push_does_not_clear_a_status` and `test_entry_list_without_statuses_leaves_them_alone` in
-`tests/test_race_state.py`.
+`test_a_push_does_not_clear_a_status`, `test_entry_list_without_statuses_leaves_them_alone` and
+`test_an_active_namesake_makes_the_number_match_ambiguous` in `tests/test_race_state.py`.

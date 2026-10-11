@@ -3854,7 +3854,6 @@ def test_a_newer_entry_list_withdraws_a_cleared_status(state):
     assert _status_of(state, "7") == "DNF"
     assert _statuses(state, _status_row("7", "Active", "1234567")) == "class_codes"
     assert _status_of(state, "7") == ""
-    assert state.run_statuses[RUN]["rows"] == []
 
 
 def test_status_from_a_row_without_a_code_is_kept(state):
@@ -3873,10 +3872,31 @@ def test_entry_list_without_statuses_leaves_them_alone(state):
     assert _status_of(state, "7") == "DNF"
 
 
-def test_active_and_unknown_statuses_are_not_stored(state):
-    _statuses(state, _status_row("7", "Active"), _status_row("8", "Finished"),
-              _status_row("9", ""), _status_row("10", "DNF"))
-    assert [r["number"] for r in state.run_statuses[RUN]["rows"]] == ["10"]
+def test_active_and_unknown_statuses_are_never_shown(state):
+    _racing(state)
+    for reg, tx in (("7", "1"), ("8", "2"), ("9", "3"), ("10", "4")):
+        _car_in_class(state, reg, tx, "Saloon Cup")
+    _statuses(state, _status_row("7", "Active", "1"), _status_row("8", "Finished", "2"),
+              _status_row("9", "", "3"), _status_row("10", "DNF", "4"))
+    assert [_status_of(state, r) for r in ("7", "8", "9", "10")] == ["", "", "", "DNF"]
+
+
+def test_an_active_namesake_makes_the_number_match_ambiguous(state):
+    """Two entrants share a number and class and only one is DNF: a car whose
+    transponder matches neither must not take the DNF."""
+    _racing(state)
+    _car_in_class(state, "7", "9999999", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567", entrant="e1"),
+              _status_row("7", "Active", "7654321", entrant="e2"))
+    assert _status_of(state, "7") == ""
+
+
+def test_an_active_row_on_the_cars_transponder_wins_over_a_number_dnf(state):
+    _racing(state)
+    _car_in_class(state, "7", "7654321", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567", entrant="e1"),
+              _status_row("70", "Active", "7654321", entrant="e2"))
+    assert _status_of(state, "7") == ""
 
 
 @pytest.mark.parametrize("bad", ["junk", {**_status_row("8", "DNS"), "class_name": ""},
@@ -3929,7 +3949,7 @@ def test_saved_status_rows_are_filtered_on_load(state):
     ]}}})
     held = state.run_statuses["0x4000abcd"]
     assert held["received_at"] <= time.time()
-    assert [r["number"] for r in held["rows"]] == ["7"]
+    assert [r["number"] for r in held["rows"]] == ["7", "8"]
 
 
 def test_statuses_expire_with_the_class_code_ttl(state, monkeypatch):

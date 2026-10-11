@@ -85,8 +85,8 @@ _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "clas
 # Marks a stored class code that came from a run's entry list, which the
 # run's next entry list replaces; see _class_codes.
 _ENTRY_LIST_ORIGIN = "entry list"
-# The entry-list row statuses shown on the page; ``Active`` and anything else
-# are not stored.  See _class_codes and _resolve_statuses.
+# The entry-list row statuses shown on the page.  Every row is stored, as an
+# ``Active`` row can make a join ambiguous; see _resolve_statuses.
 _SHOWN_STATUSES = frozenset({"DNF", "DNS", "DQ"})
 # The fields of one stored status row, all strings.
 _STATUS_FIELDS = ("number", "class_name", "transponder", "status")
@@ -177,7 +177,7 @@ class RaceState:
         # id; see _class_codes.  Kept apart from the rows because a list may
         # have none.  Never cleared by reset(), for the same reason.
         self.class_code_lists: dict[str, float] = {}
-        # Each run's shown entry-list statuses, keyed by lower-cased run id:
+        # Each run's entry-list row statuses, keyed by lower-cased run id:
         # ``{"received_at": float, "rows": [...]}``.  Fed only by entry
         # lists, each replacing the run's whole set; see _class_codes.  Never
         # cleared by reset(), for the same reason.
@@ -660,8 +660,8 @@ class RaceState:
         An entry list's ``statuses`` — every row's status, code or none —
         replace the run's stored statuses in ``run_statuses`` whole, so a
         cleared DNF is withdrawn — but only when every row is a dict with a
-        number and class, so a malformed list withdraws nothing.  Only
-        :data:`_SHOWN_STATUSES` rows are kept.  They are held apart from the codes, as a
+        number and class, so a malformed list withdraws nothing.  Every row is
+        kept, ``Active`` included, for the join.  They are held apart from the codes, as a
         later push for the same entrant overwrites its code record and would
         lose a status stored there.  A batch without ``statuses`` (an older
         relay) leaves them alone.
@@ -712,13 +712,12 @@ class RaceState:
             and len(status_rows) == len(statuses)
             and all(r["number"] and r["class_name"] for r in status_rows)
         ):
-            shown = [r for r in status_rows if r["status"] in _SHOWN_STATUSES]
             held = self.run_statuses.get(run_key)
-            if (held["rows"] if held else []) != shown:
+            if (held["rows"] if held else []) != status_rows:
                 changed = True
             self.run_statuses[run_key] = {
                 "received_at": now - _entry_age(msg.get("age_seconds")),
-                "rows": shown,
+                "rows": status_rows,
             }
         if entry_list:
             stale = [
@@ -1478,7 +1477,10 @@ class RaceState:
         class name equalling ``class_description`` exactly: transponder (not
         ``""`` or ``"0"``) and class, then number and class.  A layer gives a
         status only when its rows hold exactly one distinct status; otherwise
-        the cell stays blank rather than guess.
+        the cell stays blank rather than guess.  Every row takes part,
+        ``Active`` included, and only a :data:`_SHOWN_STATUSES` result is
+        written: a DNF entrant sharing a number and class with an ``Active``
+        one must not lend its DNF to a car whose transponder misses.
         """
         held = self.run_statuses.get(run_id.lower()) if enabled and run_id else None
         by_tx: dict[tuple[str, str], set[str]] = {}
@@ -1498,7 +1500,9 @@ class RaceState:
                     if len(found) == 1:
                         status = next(iter(found))
                         break
-            e["status"] = status
+            # Filtered only now: an Active row sharing the keys makes the
+            # match ambiguous, and must not be dropped before it.
+            e["status"] = status if status in _SHOWN_STATUSES else ""
 
     def _preload_candidate(self, number: str, tx: str, desc: str) -> set[str]:
         """Return the codes layer 3 of :meth:`_resolve_class_codes` may use.
@@ -2094,7 +2098,7 @@ def _restore_run_statuses(value, now: float) -> dict[str, dict]:
     """Return the run statuses saved by :meth:`RaceState.class_codes_to_dict`.
 
     A malformed store degrades to none; a malformed run or row is dropped,
-    as is a row whose status is not shown or that lacks a number or class.  A date is capped at *now*.
+    as is a row whose status is not a string or that lacks a number or class.  A date is capped at *now*.
     Expiry is left to the caller's prune.
     """
     if not isinstance(value, dict):
@@ -2112,9 +2116,7 @@ def _restore_run_statuses(value, now: float) -> dict[str, dict]:
             "rows": [
                 {f: str(r[f]) if r.get(f) is not None else "" for f in _STATUS_FIELDS}
                 for r in rows
-                # A saved list or object would be unhashable in the set test.
                 if isinstance(r, dict) and isinstance(r.get("status"), str)
-                and r["status"] in _SHOWN_STATUSES
                 # The invariant _class_codes holds on ingest.
                 and r.get("number") and r.get("class_name")
             ],
