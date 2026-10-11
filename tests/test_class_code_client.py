@@ -3151,6 +3151,9 @@ def test_entry_list_status_is_blank_when_the_middle_holds_none():
     plain = row[:at] + _s("0") + _s("Active") + bytes(9) + b"\x01" + _s("0.000")
     assert ccc._entry_list_status(plain, 0, len(plain)) == ""
     assert ccc._entry_list_status(row, 0, at + len(middle)) == "Active"
+    # The time missing: the tail's first field after the middle's end is not read.
+    cut = at + len(middle) - len(_s("0.000"))
+    assert ccc._entry_list_status(row[:cut] + _s("Test Car"), 0, cut) == ""
 
 
 def test_entry_list_statuses_keep_rows_without_a_code():

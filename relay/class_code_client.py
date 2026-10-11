@@ -775,10 +775,12 @@ def _entry_list_status(block: bytes, start: int, end: int) -> str:
 
     The first ``str`` of 1-16 ASCII letters that is followed by ten zero
     bytes and a readable ``str`` — the host writes the status, then those
-    zeros, then a time.
+    zeros, then a time.  Every read stays inside the middle, so a status
+    whose time is missing never borrows the tail's first field.
     """
+    middle = block[:end]
     for p in range(start, end):
-        cur = _Cursor(block, p)
+        cur = _Cursor(middle, p)
         try:
             text = cur.printable()
             if not (
