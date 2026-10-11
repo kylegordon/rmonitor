@@ -3825,6 +3825,18 @@ def test_status_is_blank_under_a_purple_flag(state):
     assert _entry_for(snap, "7")["status"] == ""
 
 
+def test_status_is_not_read_through_the_preload_name_fallback(state):
+    """A same-named earlier run the preload's run table names scopes the
+    pushes, but its statuses are another race's, so none is shown."""
+    _session(state)
+    _runs_preload(state, _run_row())
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == RUN
+    assert _entry_for(snap, "7")["status"] == ""
+
+
 def test_status_is_blank_without_a_scoped_run(state):
     """No run bound to the session: no list is known to be this session's."""
     _session(state)

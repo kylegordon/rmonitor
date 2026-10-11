@@ -1197,20 +1197,8 @@ class RaceState:
         desc = self.run_description
         if not desc:
             return None
-        run_id = None
-        run = self.class_code_run
-        if run is None and self._run_number != "95":
-            # No session bound yet — a cold start — so a waiting run may
-            # stand in.  While one is bound, or once the shown session has
-            # closed, a waiting run is the next session's.
-            run = self.class_code_run_next
-        if (
-            run is not None
-            and run["name"] == desc
-            and time.time() - run["received_at"] <= _CLASS_CODE_TTL_SECONDS
-        ):
-            run_id = run["run_id"]
-        else:
+        run_id = self._started_run_id()
+        if run_id is None:
             ids = self.class_code_preload["runs_by_name"].get(desc)
             if ids:
                 run_id = max(ids, key=lambda r: int(r, 16))
@@ -1229,6 +1217,31 @@ class RaceState:
             # Scoping to nothing would blank every pushed code.
             return None
         return run_id, frozenset(tags)
+
+    def _started_run_id(self) -> str | None:
+        """Return the id of the started run shown by the running session, or *None*.
+
+        The first half of :meth:`_class_code_scope`: the run bound to the
+        session — or, with none bound, the one waiting — while its name equals
+        the ``$B`` description exactly and it is within
+        :data:`_CLASS_CODE_TTL_SECONDS`.  A ``$B,95`` close keeps it.
+        """
+        desc = self.run_description
+        if not desc:
+            return None
+        run = self.class_code_run
+        if run is None and self._run_number != "95":
+            # No session bound yet — a cold start — so a waiting run may
+            # stand in.  While one is bound, or once the shown session has
+            # closed, a waiting run is the next session's.
+            run = self.class_code_run_next
+        if (
+            run is not None
+            and run["name"] == desc
+            and time.time() - run["received_at"] <= _CLASS_CODE_TTL_SECONDS
+        ):
+            return run["run_id"]
+        return None
 
     def prune_expired_class_codes(self) -> bool:
         """Drop expired pushed codes, preload and started run; return whether the page changed.
@@ -1458,7 +1471,8 @@ class RaceState:
         """Write ``status`` onto every entry: ``DNF``, ``DNS``, ``DQ`` or ``""``.
 
         Read only from the running run's latest entry list (``run_id``, the
-        push scope's run) and only when *enabled* — a Race session not under
+        started run bound to the session, see :meth:`_started_run_id`) and
+        only when *enabled* — a Race session not under
         the purple-flag sort — so the page shows whatever it is sent.  The
         join follows :meth:`_resolve_class_codes`, each layer gated on the
         class name equalling ``class_description`` exactly: transponder (not
@@ -1617,9 +1631,11 @@ class RaceState:
         class_code_missing, class_codes_available = self._resolve_class_codes(
             entries, scope=scope
         )
-        # Shown only in a race, and not under the purple-flag sort.
+        # Shown only in a race, and not under the purple-flag sort.  Read from
+        # the started run alone, never the scope's name fallback: names repeat,
+        # and a wrong pick there blanks codes but would show another race's DNF.
         self._resolve_statuses(
-            entries, scope_id or None,
+            entries, self._started_run_id(),
             enabled=session_mode == "Race" and sort_mode != "total_time",
         )
         self._apply_intervals(entries, sort_mode=sort_mode)

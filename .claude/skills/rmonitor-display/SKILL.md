@@ -70,7 +70,8 @@ What it draws is checked by eye.
 
 Each snapshot entry carries `status` (DNF, DNS, DQ or `""`), joined from the scoped run's
 entry list as the class codes are and set only in a `Race` session not under the purple-flag
-sort; with no scoped run it is blank. The page shows whatever is set — the status in Diff, and
+sort. It reads only the started run bound to the session, never the scope's name fallback, so
+a same-named earlier race's statuses are never shown; with no such run it is blank. The page shows whatever is set — the status in Diff, and
 RETIRED in Total Time for a DNF — without re-checking the session. Rows are not re-sorted
 or styled: the host already lists them after the classified cars. Guarded by
 `test_status_is_blank_outside_a_race`, `test_status_is_blank_under_a_purple_flag` and
