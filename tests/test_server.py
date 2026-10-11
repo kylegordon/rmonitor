@@ -121,7 +121,7 @@ async def test_tv_returns_html(client):
     resp = await client.get("/tv")
     assert resp.status == 200
     assert "text/html" in resp.content_type
-    assert "SMART Timing TV" in await resp.text()
+    assert "<title>SMART Live Timing TV</title>" in await resp.text()
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_tv_returns_304_to_a_matching_if_none_match(client):
 async def test_tv_returns_200_to_a_stale_if_none_match(client):
     resp = await client.get("/tv", headers={"If-None-Match": '"0000000000"'})
     assert resp.status == 200
-    assert "SMART Timing TV" in await resp.text()
+    assert "<title>SMART Live Timing TV</title>" in await resp.text()
 
 
 @pytest.mark.asyncio

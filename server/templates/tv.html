@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=1920, height=1080">
-  <title>SMART Timing TV</title>
+  <title>SMART Live Timing TV</title>
   <style>
     /* A broadcast overlay, taken in as a 1920x1080 browser source and keyed over the
        circuit feed. The page leaves its backdrop unset, because OBS and vMix keep the
@@ -201,6 +201,8 @@
     const overlayEl = document.getElementById('overlay');
     const flagBarEl = document.getElementById('flag-bar');
     const raceNameEl = document.getElementById('race-name');
+    // The template's <title> stays the one source of the base title.
+    const BASE_TITLE = document.title;
     const lapsOrTimeEl = document.getElementById('laps-or-time');
     const towerEl = document.getElementById('tower');
     towerEl.style.height = (ROWS * ROW_H) + 'px';
@@ -234,6 +236,7 @@
       clearTimeout(revealTimer);
       revealTimer = null;
       overlayEl.classList.add('off-air');
+      document.title = BASE_TITLE;
     }
 
     function goOnAir() {
@@ -374,6 +377,7 @@
       const raceName = data.race_name || '';
       raceNameEl.textContent = raceName;
       raceNameEl.style.display = raceName ? '' : 'none';
+      document.title = raceName ? raceName + ' – ' + BASE_TITLE : BASE_TITLE;
 
       const entries = (data.entries || []).slice(0, ROWS);
       overlayEl.classList.toggle('no-entries', !entries.length);
