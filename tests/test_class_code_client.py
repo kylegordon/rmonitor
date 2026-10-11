@@ -2425,6 +2425,23 @@ async def test_a_run_record_of_another_run_or_under_the_same_name_resends_nothin
 
 
 @pytest.mark.asyncio
+async def test_a_session_renamed_under_its_number_leaves_a_started_run_alone(monkeypatch):
+    """A run held from a real start may be the next same-named run starting
+    early, so only its own pushed record renames it, never the feed's $B."""
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _runs_sent(calls))
+        client.note_session("5", "Race 6 - AMENDED GRID")
+        client.note_session("5", "Race 6")
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert len(_runs_sent(calls)) == 1
+    assert client._ann_name == "Race 6 - AMENDED GRID"
+
+
+@pytest.mark.asyncio
 async def test_run_records_read_before_a_complete_pull_rename_nothing():
     """The pulled model holds run records too, some under an older name."""
     async def on_batch(msg):

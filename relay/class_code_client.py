@@ -1953,10 +1953,16 @@ class ClassCodeClient:
         if number == self._session_number:
             # The same number under a new description is race control
             # renaming the run, as the server's _run reads it: the session
-            # and any pick stand, and a held run takes the new name, so a
-            # later resend of it cannot name the old one.  With none held,
+            # and any pick stand, and a held pick takes the new name, so a
+            # later resend of it cannot name the old one.  A run held from a
+            # real start may be the next same-named run starting early; its
+            # own rename comes as its pushed record (RunRecordParser).  With none held,
             # the new name may match a run where the old one did not.
-            if self._ann_run is not None and self._ann_name == self._session_desc:
+            if (
+                self._ann_run is not None
+                and not self._seen_start
+                and self._ann_name == self._session_desc
+            ):
                 self._rename_run(description)
             self._session_desc = description
             if self._ann_run is None:

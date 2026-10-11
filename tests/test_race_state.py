@@ -3371,6 +3371,21 @@ def test_a_start_under_the_sessions_name_before_its_rename_binds_as_renamed(stat
     assert state.class_code_run["session_number"] == "5"
 
 
+def test_an_early_next_start_under_a_former_name_is_not_renamed(state):
+    """Once the renamed session's run is bound, a start under its old name is
+    the next same-named run starting early, and waits for its own $B."""
+    old, renamed = "Race 18 - 2nd Race - AMENDED GRID", "Race 18 - 2nd Race"
+    _started(state, "0x40002829", old)
+    _session(state, old, number="5")
+    _session(state, renamed, number="5")
+    _started(state, "0x40002830", old)
+    assert state.class_code_run_next["name"] == old
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+    _closing(state, renamed)
+    _session(state, old, number="6")
+    assert state.class_code_run["run_id"] == "0x40002830"
+
+
 def test_a_former_session_name_is_forgotten_at_the_next_session(state):
     _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
     _session(state, "Race 18 - 2nd Race", number="5")

@@ -362,9 +362,9 @@ class RaceState:
           name follow it; so too in the first ``$B`` after a ``$I``, which
           keeps the bound run's number.  A waiting run bearing the new name
           still takes over, as above.  With none bound, a waiting run standing in for
-          the session shown is renamed with it and binds.  A start arriving
-          later under a name the session bore before is taken under its
-          current name (:meth:`_class_code_run`).
+          the session shown is renamed with it and binds.  With none bound,
+          a start arriving later under a name the session bore before is
+          taken under its current name (:meth:`_class_code_run`).
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
           still shows that session, so its run stays in scope until the next
@@ -956,14 +956,16 @@ class RaceState:
         ):
             return None
         if (
-            self._run_number
+            self.class_code_run is None
+            and self._run_number
             and self._run_number == self._former_names[0]
             and name in self._former_names[1]
             and name != self.run_description
         ):
             # A start read under the session's name before race control
             # renamed it — a relay that missed the rename, or read the start
-            # during its pull — is the session renamed.
+            # during its pull — is the session renamed.  Once a run is bound,
+            # one under the old name is the next same-named run starting early.
             log.info("Run %s %r is session %r, renamed", run_id, name, self.run_description)
             name = self.run_description
         # A relay retries a delivery whose answer it lost, so a repeat of a
