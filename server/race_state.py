@@ -907,9 +907,9 @@ class RaceState:
         start it names: the relay sends one when it drops a mid-run pick,
         whose start can still land afterwards, and a same-named later
         session would otherwise bind it and show the old race name.  A plain
-        stop keeps the race name, which still hides at the session's
-        ``$B,95`` (:meth:`_shown_run`); the session description cannot tell
-        the two apart, since ``$B`` and ``$I`` arrive independently.
+        stop keeps the race name until the next session
+        (:meth:`_shown_run`); the session description cannot tell the two
+        apart, since ``$B`` and ``$I`` arrive independently.
         """
         run_id, raw = msg.get("run_id"), msg.get("rows")
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id) or not isinstance(raw, list):
@@ -1047,9 +1047,10 @@ class RaceState:
 
         A new session hides it (:meth:`_run` discards or replaces the bound
         run, or the description no longer names it).  Unless *through_close*
-        — as for the announcements, which race control posts after a stop —
+        — as for the announcements, which race control posts after a stop,
+        and the race name, since the board still names the closed session —
         the session's closing ``$B,95`` (through ``_run_number``) hides it
-        too, whichever comes first; the race name hides there.
+        too, whichever comes first.
         :meth:`reset` is not a boundary, because ``$I`` is emitted
         inconsistently; after it an empty description hides the run until
         ``$B`` repopulates.
@@ -1114,10 +1115,11 @@ class RaceState:
         """Return the race name to show, ``""`` when none is known.
 
         The :meth:`_shown_run`'s Event, under the same gate as the
-        announcements, so it never names a run that is not the session's —
-        except that it hides at the session's ``$B,95``.
+        announcements, so it never names a run that is not the session's:
+        through the session's ``$B,95`` until the next session, since the
+        board still names the closed session.
         """
-        run = self._shown_run()
+        run = self._shown_run(through_close=True)
         return run.get("event", "") if run is not None else ""
 
     def _class_code_scope(self) -> tuple[str, frozenset[str]] | None:

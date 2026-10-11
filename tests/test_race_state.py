@@ -2828,8 +2828,8 @@ def test_a_repeat_of_the_held_run_supplies_its_event(state, bound):
 
 
 def test_a_restart_under_the_held_id_does_not_rename_the_held_start(state):
-    """A stopped start stays bound, keeping its race name until ``$B,95``; a
-    second start of the same id meanwhile must not rename it."""
+    """A stopped start stays bound, keeping its race name until the next
+    session; a second start of the same id meanwhile must not rename it."""
     _started_with_event(state)
     _session(state)
     assert _started_with_event(state, event="Another Event", start_key="k2") is None
@@ -2854,10 +2854,23 @@ def test_race_name_is_shown_for_the_bound_run(state):
     assert state.snapshot()["race_name"] == EVENT
 
 
-def test_race_name_is_blank_after_the_closing_95(state):
+def test_race_name_stays_shown_through_the_closing_95_until_the_next_session(state):
+    """The board still names the closed session, so its race name stays."""
     _started_with_event(state)
     _session(state)
     _closing(state)
+    assert state.snapshot()["race_name"] == EVENT
+    _session(state, "Race 8 - Final", number="28")
+    assert state.snapshot()["race_name"] == ""
+
+
+def test_a_same_named_next_session_does_not_show_the_closed_runs_race_name(state):
+    """Names repeat, so the next session's ``$B`` retiring the closed run is
+    what keeps the old group off it."""
+    _started_with_event(state)
+    _session(state)
+    _closing(state)
+    _session(state, number="28")
     assert state.snapshot()["race_name"] == ""
 
 
@@ -3180,13 +3193,12 @@ def test_announcements_show_while_their_run_is_the_running_session(state):
 
 def test_announcements_stay_shown_through_the_95_close_edge(state):
     """Race control posts the reason for a stop after it, and the board
-    still shows the closed session; the race name still hides there."""
+    still shows the closed session."""
     _started(state)
     _session(state)
     _announce(state, ("Track clear", 100))
     _closing(state)
     assert _shown(state) == ["Track clear"]
-    assert state.snapshot()["race_name"] == ""
 
 
 def test_an_older_relays_stop_clear_still_empties_the_run(state):
@@ -3539,7 +3551,7 @@ def test_a_refresh_supplies_the_event_of_the_held_start_only(state):
     assert state.snapshot()["race_name"] == EVENT
 
 
-def test_a_stop_of_the_bound_run_keeps_its_race_name_until_the_95(state):
+def test_a_stop_of_the_bound_run_keeps_its_race_name_through_the_95(state):
     """Only a waiting start loses its event to a stop; the board still shows
     the session that ran."""
     _started_with_event(state)
@@ -3550,7 +3562,7 @@ def test_a_stop_of_the_bound_run_keeps_its_race_name_until_the_95(state):
     })
     assert state.snapshot()["race_name"] == EVENT
     _closing(state)
-    assert state.snapshot()["race_name"] == ""
+    assert state.snapshot()["race_name"] == EVENT
 
 
 def test_a_stop_of_the_waiting_run_on_show_keeps_its_race_name(state):
