@@ -84,6 +84,14 @@ client shows them, but nothing reads them yet and they refresh only with the rel
 All 87 columns, the frame layout and the cell encoding are in
 [results-view.md](results-view.md).
 
+Planned, not started: take the intervals, and likely best/last laps with their best/better/
+worse styles, positions in class and penalties, from this view instead of deriving them in
+`RaceState`, then delete the derivation (`_apply_intervals`, `_time_behind_leader`, the
+`lap_times` index and its deleted-passing and restore handling). It is blocked on freshness:
+first capture one results view held open through a race to see whether Orbits pushes row
+updates per crossing. Without pushes, gaps would be up to 60 s stale. Look columns up by name
+from the column frame, not by index, in case an Orbits update reorders them.
+
 ## A car's DNF, DNS or DQ is only in the `:51738` results view, read from the row middle
 
 No rMonitor record carries a per-car status. Each results-view row's middle holds it as a
