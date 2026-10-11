@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from server.race_state import RaceState
+from server.race_state import RaceState, _empty_competitor
 
 
 @pytest.fixture
@@ -1302,6 +1302,43 @@ def test_a_store_from_before_per_car_times_keeps_its_index(state):
     """A ``data/state.json`` holding only the old index still restores it."""
     state._load_dict({"leader_time_at_lap": {"13": 873.95}})
     assert state.leader_time_at_lap == pytest.approx({13: 873.95}, abs=1e-3)
+
+
+def test_an_old_store_still_lets_a_deletion_withdraw_its_time(state):
+    """An old index's time is restored under the car whose stamp matches it.
+
+    Otherwise a crossing deleted after an upgrade mid-session would stay the
+    lap's baseline, and the negative interval would return until a reset.
+    """
+    state._load_dict({
+        "competitors": {
+            "91": {**_empty_competitor("91"), "laps": "1",
+                   "timed_lap": 1, "timed_lap_seconds": 1.473},
+        },
+        "leader_time_at_lap": {"1": 1.473},
+    })
+    state.process({
+        "type": "race_info", "position": "11", "reg_number": "91",
+        "laps": "", "total_time": "00:00:00.000",
+    })
+    assert state.leader_time_at_lap == {}
+
+
+def test_an_empty_lap_count_with_a_real_time_is_not_a_deletion(state):
+    """Only an empty count *and* a zero time mark a deleted passing.
+
+    ``examples/2009 Sebring Test ALMS Session 4 - 0800-1000.txt`` sends an
+    empty lap count alongside a real time 69 times.
+    """
+    _feed_capture_sequence(state)
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "64",
+        "laps": "", "total_time": "00:15:27.056",
+    })
+    assert state.competitors["64"]["laps"] == "13"
+    assert state.leader_time_at_lap == pytest.approx(
+        {13: 873.950, 14: 938.661}, abs=1e-3
+    )
 
 
 _INTERVAL_FIELDS = (

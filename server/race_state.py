@@ -458,7 +458,7 @@ class RaceState:
         _update_position(c, msg["position"])
         if msg.get("laps"):
             c["laps"] = msg["laps"]
-        elif c.get("laps"):
+        elif c.get("laps") and _lap_time_seconds(msg.get("total_time", "")) == 0:
             self._delete_passings(reg, c)
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
@@ -524,7 +524,9 @@ class RaceState:
         """Withdraw every crossing of a car whose passings race control deleted.
 
         Orbits sends a deleted passing as a ``$G`` with an empty lap count and
-        a zero time — in ``captures/capture_20261011T113309.log`` for cars that
+        a zero time; both are needed, since an empty count alone also arrives
+        with a real time (69 times in ``examples/2009 Sebring Test ALMS
+        Session 4 - 0800-1000.txt``).  Seen in ``captures/capture_20261011T113309.log`` for cars that
         were behind the timing line at the green flag, whose first crossing
         came seconds into the race.  Kept, the stale count stays in the laps
         column, and the deleted crossing stays the leader's time at that lap,
@@ -1825,7 +1827,8 @@ class RaceState:
         hand-edited or truncated store degrades to an empty index rather than
         failing startup.  A store written before the index was kept per car
         has only ``leader_time_at_lap``; each of its times is restored under
-        an empty ``reg_number``, which no deletion withdraws.  The class-code registry is not part of this dict; see
+        the car whose ``timed_lap`` pair matches it, so a later deletion can
+        still withdraw it, or under an empty ``reg_number`` when none does.  The class-code registry is not part of this dict; see
         :meth:`class_codes_to_dict`.
         """
         self.competitors = data.get("competitors", {})
@@ -1837,10 +1840,14 @@ class RaceState:
                     for lap, times in (data["lap_times"] or {}).items()
                 }
             else:
-                self.lap_times = {
-                    int(k): {"": float(v)}
-                    for k, v in (data.get("leader_time_at_lap") or {}).items()
+                owners = {
+                    (c.get("timed_lap"), c.get("timed_lap_seconds")): reg
+                    for reg, c in self.competitors.items()
                 }
+                self.lap_times = {}
+                for k, v in (data.get("leader_time_at_lap") or {}).items():
+                    lap, secs = int(k), float(v)
+                    self.lap_times[lap] = {owners.get((lap, secs), ""): secs}
         except (AttributeError, TypeError, ValueError):
             self.lap_times = {}
         self.track_name = data.get("track_name", "")
