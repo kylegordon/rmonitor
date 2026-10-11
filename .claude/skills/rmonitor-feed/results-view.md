@@ -42,8 +42,10 @@ order. A cell's layout follows its column's format:
 | 5 | `i64`, `i64`, 4 bytes, `str` | stint and live section times |
 | 9 | `u32` n, 1 byte, n × `u32`, `str` | transponder list |
 
-The `str` is the text the Orbits client displays. The byte between value and text is a display
-style, probably selecting one of the Orbits Display theme's special colours (`overallbest`,
+The `str` is the text the Orbits client displays. The single byte is a display style: after
+the value in formats 0, 1, 2, 4 and 6, after the text in format 3, and after the count in
+format 9. Format 5's four bytes are not decoded and no style byte is known for it. The style
+probably selects one of the Orbits Display theme's special colours (`overallbest`,
 `personalbest`, `better`, `worse`, `inleadlap`, …). Counted over every row:
 
 - `4`: an overall best. `BestTm` carries it only on the session's fastest lap, and `LastTm`
@@ -130,7 +132,7 @@ Groups: 0 General, 1 Competitor, 2 Laptime, 3 Lap, 4 Result, 5 Correction, 6 Pit
 | 48 | `lgHeader_Gap` | 4 | 6 | to the car ahead: `0.757`, `1 Lap` |
 | 49 | `lgHeader_LastTmDiff` | 4 | 6 | `LastTm` − `2ndLastTm`: `26.342`, `-0.147` |
 | 50 | `lgHeader_TimeOfDay` | 4 | 4 | last start/finish crossing, `15:54:10.115` |
-| 51 | `lgHeader_LastPassingTimeline` | 4 | 0 | value a loop id (`2817`), text `Start/Finish`, `Intermediate 2 Speed`, … |
+| 51 | `lgHeader_LastPassingTimeline` | 4 | 0 | value is a loop id (`2817`), text is `Start/Finish`, `Intermediate 2 Speed`, … |
 | 52 | `lgHeader_LastPassingTime` | 4 | 4 | `15:56:04.584` |
 | 53 | `lgHeader_GapBehind` | 4 | 6 | to the car behind: `1.475` |
 | 54 | `lgHeader_NumberBehind` | 4 | 3 | that car's number, `67` |
