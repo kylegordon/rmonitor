@@ -219,8 +219,9 @@ def test_the_instruction_files_pass_their_own_check() -> None:
     assert not findings, "instruction-file problems:\n" + "\n".join(findings)
 
 
-def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
-    """Guards the ``rmonitor-display`` skill: ``index.html`` reads ``sort_mode``, never
+@pytest.mark.parametrize("template", ["index.html", "tv.html"])
+def test_the_page_reads_sort_mode_and_does_not_re_derive_it(template: str) -> None:
+    """Guards the ``rmonitor-display`` skill: each page reads ``sort_mode``, never
     re-derives it.
 
     Which order the rows are in decides what the ``POS`` column means, and the server
@@ -235,11 +236,11 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
     the suppressed arrows — is still unguarded, and closing that needs the template
     smoke test this repository does not yet have.
     """
-    page = ROOT / "server" / "templates" / "index.html"
+    page = ROOT / "server" / "templates" / template
     source = page.read_text(encoding="utf-8")
 
     assert "data.sort_mode" in source, (
-        "index.html no longer reads data.sort_mode; either the payload field was "
+        f"{template} no longer reads data.sort_mode; either the payload field was "
         "dropped or the page went back to deriving the sort itself"
     )
 
@@ -250,7 +251,7 @@ def test_the_page_reads_sort_mode_and_does_not_re_derive_it() -> None:
         if re.search(r"(session_mode|\bmode\b)\s*===?\s*['\"](Practice|Qualifying)", line)
     ]
     assert not offenders, (
-        "index.html derives a sort condition from the session mode instead of reading "
+        f"{template} derives a sort condition from the session mode instead of reading "
         f"data.sort_mode: {offenders}"
     )
 
@@ -364,6 +365,77 @@ def test_the_page_shades_the_fastest_lap_row_from_the_server_flag() -> None:
         "index.html compares best_lap_time itself instead of reading fastest_lap: "
         f"{offenders}"
     )
+
+TV_PAGE = ROOT / "server" / "templates" / "tv.html"
+
+
+def test_the_tv_page_reloads_on_a_restart_and_never_reads_page_version() -> None:
+    """Guards the ``rmonitor-display`` skill: ``/tv`` is unattended, so it reloads itself.
+
+    ``index.html`` prompts on a version mismatch because someone holds the phone.
+    No one is at the broadcast browser to tap a prompt, so ``tv.html`` ignores
+    ``page_version`` and reloads whenever ``server_instance_id`` changes, which every
+    deploy does. The brief blank on air at each deploy is the accepted cost.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+
+    assert "msg.server_instance_id" in source, "tv.html no longer watches for a restart"
+    assert "location.reload" in source, "tv.html no longer reloads itself on a restart"
+    assert "page_version" not in source, (
+        "tv.html reads page_version; the envelope's version is index.html's, so it "
+        "would always mismatch"
+    )
+    assert "{{PAGE_VERSION}}" not in source, "tv.html carries the index page's token"
+    assert "<button" not in source and "addEventListener('click'" not in source, (
+        "tv.html has something to click; no one is there to click it"
+    )
+
+
+def test_the_tv_page_is_transparent_and_self_contained() -> None:
+    """Guards the ``rmonitor-display`` skill: ``tv.html`` keys cleanly and loads nothing.
+
+    OBS and vMix keep the alpha only while the page leaves its ``html``/``body``
+    background unset. A broadcast browser may have no internet, so nothing is fetched
+    from elsewhere.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+    style = re.search(r"<style>(.*?)</style>", source, re.DOTALL)
+    assert style, "tv.html has no <style> block"
+    css = re.sub(r"/\*.*?\*/", "", style.group(1), flags=re.DOTALL)
+
+    offenders = [
+        rule
+        for rule in re.findall(r"(?:html|body)[^{}]*\{[^}]*\}", css)
+        if "background" in rule
+    ]
+    assert not offenders, f"tv.html sets a page background: {offenders}"
+    for external in ("<script src", "<link", "http://", "https://"):
+        assert external not in source, f"tv.html loads something external: {external}"
+
+
+def test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform() -> None:
+    """Guards the ``rmonitor-display`` skill on ``tv.html``: the server decides, the page draws.
+
+    The tower shows ``fastest_lap`` and ``status`` as sent, in server order, and never
+    works out the fastest lap or the order itself. Feed names are free text, so they
+    go in through ``textContent``. Rows move by ``transform`` alone, which animates on
+    the compositor, and reduced motion turns it off.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+
+    assert "!!e.fastest_lap" in source, "tv.html no longer reads the server's fastest_lap"
+    assert "e.status" in source, "tv.html no longer shows the server's status"
+    assert "innerHTML" not in source, "tv.html writes HTML; feed text must use textContent"
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(source.splitlines(), 1)
+        if "best_lap_time" in line and re.search(r"[<>]|Math\.min|sort\(", line)
+    ]
+    assert not offenders, f"tv.html compares best_lap_time itself: {offenders}"
+    assert ".sort(" not in source, "tv.html re-sorts the entries the server ordered"
+    for needle in ("translateY", "transition: transform", "prefers-reduced-motion"):
+        assert needle in source, f"tv.html lost {needle}"
+
 
 def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
     """Line numbers, 1-based and inclusive, of the block opened by *opener*.

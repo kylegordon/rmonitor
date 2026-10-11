@@ -54,6 +54,8 @@ ws_clients_key = web.AppKey("ws_clients", set)
 server_instance_id_key = web.AppKey("server_instance_id", str)
 page_key = web.AppKey("page", str)
 page_version_key = web.AppKey("page_version", str)
+tv_page_key = web.AppKey("tv_page", str)
+tv_page_version_key = web.AppKey("tv_page_version", str)
 relay_secret_key = web.AppKey("relay_secret", str)
 # Mutable feed-state dict; mutate contents rather than reassigning the key.
 # Keys: "last_ingest_at" (float|None), "feed_lost" (bool), "watchdog_task" (Task|None)
@@ -66,8 +68,8 @@ def _feed_state(app) -> dict:
     return app[feed_state_key]
 
 
-def _load_page() -> tuple[str, str]:
-    """Read ``index.html`` once and stamp it with a version taken from its content.
+def _load_page(name: str = "index.html") -> tuple[str, str]:
+    """Read template *name* once and stamp it with a version taken from its content.
 
     The version is a prefix of the SHA-256 of the file *as committed*, i.e. with the
     token still in it, so it changes exactly when the page changes and never when the
@@ -77,11 +79,11 @@ def _load_page() -> tuple[str, str]:
     ETag has to describe the bytes actually served, and re-reading per request would
     let a template edited under a running server go out with the startup version's
     ETag. The cost is that editing the template needs a restart, which a deploy does
-    anyway.
+    anyway. The ``/tv`` page is loaded the same way for its ETag; it carries no token.
 
     :returns: the page with the token substituted, and the version it was given.
     """
-    raw = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+    raw = (TEMPLATES / name).read_text(encoding="utf-8")
     version = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
     return raw.replace(PAGE_VERSION_TOKEN, version), version
 
@@ -126,11 +128,13 @@ def create_app(
     app[ws_clients_key] = set()
     app[server_instance_id_key] = str(uuid.uuid4())
     app[page_key], app[page_version_key] = _load_page()
+    app[tv_page_key], app[tv_page_version_key] = _load_page("tv.html")
     app[relay_secret_key] = relay_secret
     app[feed_state_key] = {"last_ingest_at": None, "feed_lost": restored, "watchdog_task": None}
     app[class_codes_saver_key] = save_class_codes
 
     app.router.add_get("/", handle_index)
+    app.router.add_get("/tv", handle_tv)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/api/state", handle_api_state)
     app.router.add_get("/healthz", handle_healthz)
@@ -150,13 +154,22 @@ async def handle_index(request: web.Request) -> web.Response:
     happens to expire. It does nothing for a tab that is already open — that is what
     the ``page_version`` handshake in the WebSocket payload is for.
     """
-    version = request.app[page_version_key]
+    return _page_response(request, request.app[page_key], request.app[page_version_key])
+
+
+async def handle_tv(request: web.Request) -> web.Response:
+    """Serve the unattended broadcast page: it reloads on a restart and never reads ``page_version``."""
+    return _page_response(
+        request, request.app[tv_page_key], request.app[tv_page_version_key]
+    )
+
+
+def _page_response(request: web.Request, body: str, version: str) -> web.Response:
+    """*body* with ``no-cache`` and a quoted ETag of *version*, or a 304 if the client has it."""
     headers = {"Cache-Control": "no-cache", "ETag": f'"{version}"'}
     if _if_none_match(request, version):
         return web.Response(status=304, headers=headers)
-    return web.Response(
-        text=request.app[page_key], content_type="text/html", headers=headers
-    )
+    return web.Response(text=body, content_type="text/html", headers=headers)
 
 
 async def handle_api_state(request: web.Request) -> web.Response:

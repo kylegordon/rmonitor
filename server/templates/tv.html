@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, height=1080">
+  <title>SMART Timing TV</title>
+  <style>
+    /* A broadcast overlay, taken in as a 1920x1080 browser source and keyed over the
+       circuit feed. The page leaves its backdrop unset, because OBS and vMix keep the
+       alpha only while it is. Everything sits inside the EBU R 95 graphics-safe area
+       (5%: 96 px left, 54 px top). */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      margin: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+    }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: #fff;
+    }
+    #overlay {
+      position: absolute;
+      left: 96px;
+      top: 54px;
+      width: 460px;
+      transition: opacity 0.5s;
+    }
+    #overlay.off-air { opacity: 0; }
+
+    #tv-header {
+      position: relative;
+      height: 64px;
+      margin-bottom: 8px;
+      padding: 14px 16px 0;
+      background: rgba(15, 15, 30, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    #flag-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 8px;
+    }
+    .flag-green { background: #2ecc40; }
+    .flag-yellow { background: #ffdc00; }
+    .flag-red { background: #ff4136; }
+    .flag-purple { background: #9b59b6; }
+    .flag-unknown { background: #777; }
+    #race-name {
+      font-size: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #laps-or-time {
+      font-size: 18px;
+      white-space: nowrap;
+      color: #ddd;
+    }
+
+    #tower { position: relative; }
+    .tv-row {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      background: rgba(15, 15, 30, 0.85);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-weight: 700;
+      font-size: 20px;
+      text-transform: uppercase;
+      transition: transform 0.6s ease-in-out, opacity 0.4s;
+      will-change: transform;
+    }
+    .tv-pos {
+      width: 44px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      color: #15151e;
+    }
+    .tv-class {
+      width: 6px;
+      height: 100%;
+    }
+    .tv-class.hidden { visibility: hidden; }
+    .tv-number {
+      width: 56px;
+      text-align: center;
+      color: #ccc;
+    }
+    .tv-name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tv-fl {
+      width: 14px;
+      height: 14px;
+      margin: 0 10px;
+      border-radius: 50%;
+      visibility: hidden;
+    }
+    .tv-row.fastest-lap .tv-fl {
+      visibility: visible;
+      background: #9b59b6;
+    }
+    .tv-interval {
+      width: 130px;
+      padding-right: 14px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: #eee;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tv-row { transition: none; }
+      #overlay { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay" class="off-air">
+    <div id="tv-header">
+      <div id="flag-bar" class="flag-unknown"></div>
+      <div id="race-name"></div>
+      <div id="laps-or-time"></div>
+    </div>
+    <div id="tower"></div>
+  </div>
+
+  <script>
+    // Unattended: no one is at this browser, so it has no buttons, prompts or
+    // connection indicator. It draws the server's snapshot as sent -- entries in
+    // server order, sort_mode, fastest_lap and status read, never re-derived.
+    const ROW_H = 44;
+    const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+    const ROWS = clamp(parseInt(new URLSearchParams(location.search).get('rows'), 10) || 20, 1, 20);
+
+    const overlayEl = document.getElementById('overlay');
+    const flagBarEl = document.getElementById('flag-bar');
+    const raceNameEl = document.getElementById('race-name');
+    const lapsOrTimeEl = document.getElementById('laps-or-time');
+    const towerEl = document.getElementById('tower');
+    towerEl.style.height = (ROWS * ROW_H) + 'px';
+
+    let rowMap = {};
+    let knownServerInstanceId = null;
+
+    function flagClass(flag) {
+      const f = (flag || '').toLowerCase();
+      if (f.includes('green')) return 'flag-green';
+      if (f.includes('yellow') || f.includes('caution')) return 'flag-yellow';
+      if (f.includes('red')) return 'flag-red';
+      if (f.includes('purple')) return 'flag-purple';
+      return 'flag-unknown';
+    }
+
+    // Same format as index.html's Gap/Diff: a lap deficit wins over a time.
+    function intervalText(seconds, laps) {
+      if (laps != null) return '+' + laps + ' L';
+      if (seconds == null) return '—';
+      const sign = seconds < 0 ? '-' : '+';
+      const abs = Math.abs(seconds);
+      if (abs < 60) return sign + abs.toFixed(3);
+      const mins = Math.floor(abs / 60);
+      const secs = abs - mins * 60;
+      return sign + mins + ':' + secs.toFixed(3).padStart(6, '0');
+    }
+
+    // Laps to go takes priority over time to go, as on index.html; the feed's
+    // 0 and 9999 laps and a zero clock are not meaningful.
+    function lapsOrTime(data) {
+      const ltg = data.laps_to_go;
+      const ttg = data.time_to_go || '';
+      if (ltg && ltg !== '0' && ltg !== '9999') return `${ltg} LAPS TO GO`;
+      if (ttg && ttg !== '0:00:00' && ttg !== '00:00:00') return ttg;
+      return '';
+    }
+
+    const CLASS_PALETTE = [
+      '#e10600', '#00d2be', '#ff8700', '#0090ff',
+      '#ffd700', '#2ecc40', '#ff69b4', '#b0b0b0',
+    ];
+
+    // A fixed colour per class code, the same on every load.
+    function classColour(code) {
+      if (!code) return '';
+      let h = 0;
+      for (let i = 0; i < code.length; i++) h = (h * 31 + code.charCodeAt(i)) >>> 0;
+      return CLASS_PALETTE[h % CLASS_PALETTE.length];
+    }
+
+    function makeRow() {
+      const row = document.createElement('div');
+      row.className = 'tv-row';
+      for (const cls of ['tv-pos', 'tv-class', 'tv-number', 'tv-name', 'tv-fl', 'tv-interval']) {
+        const cell = document.createElement('div');
+        cell.className = cls;
+        row.appendChild(cell);
+      }
+      return row;
+    }
+
+    function cell(row, cls) {
+      return row.querySelector('.' + cls);
+    }
+
+    function render(data) {
+      flagBarEl.className = flagClass(data.flag);
+      lapsOrTimeEl.textContent = lapsOrTime(data);
+      const raceName = data.race_name || '';
+      raceNameEl.textContent = raceName;
+      raceNameEl.style.display = raceName ? '' : 'none';
+
+      const entries = (data.entries || []).slice(0, ROWS);
+      const bestLapSort = data.sort_mode === 'best_lap';
+      const showClass = !!data.class_codes_available;
+      const seen = new Set();
+
+      entries.forEach((e, idx) => {
+        const key = String(e.reg_number);
+        seen.add(key);
+        let row = rowMap[key];
+        const y = `translateY(${idx * ROW_H}px)`;
+        if (!row) {
+          // Placed before it is shown, so a new row fades in where it belongs
+          // rather than sliding down from the top.
+          row = makeRow();
+          row.style.transform = y;
+          row.style.opacity = '0';
+          towerEl.appendChild(row);
+          rowMap[key] = row;
+          requestAnimationFrame(() => { row.style.opacity = '1'; });
+        } else {
+          row.style.transform = y;
+        }
+
+        cell(row, 'tv-pos').textContent = bestLapSort ? String(idx + 1) : (e.position || '');
+        cell(row, 'tv-number').textContent = e.number || e.reg_number;
+        cell(row, 'tv-name').textContent = (e.last_name || e.first_name || '').toUpperCase();
+
+        const strip = cell(row, 'tv-class');
+        const colour = showClass ? classColour(e.class_code) : '';
+        strip.style.background = colour;
+        strip.classList.toggle('hidden', !colour);
+
+        row.classList.toggle('fastest-lap', !!e.fastest_lap);
+
+        let interval;
+        if (e.status) {
+          interval = e.status;
+        } else if (bestLapSort) {
+          interval = e.best_lap_time || '';
+        } else {
+          interval = intervalText(e.gap_ahead_seconds, e.gap_ahead_laps);
+          if (interval === '—') interval = '';
+        }
+        cell(row, 'tv-interval').textContent = interval;
+      });
+
+      for (const key of Object.keys(rowMap)) {
+        if (!seen.has(key)) {
+          rowMap[key].remove();
+          delete rowMap[key];
+        }
+      }
+    }
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+      ws.onclose = () => {
+        overlayEl.classList.add('off-air');
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => ws.close();
+
+      ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+
+        // A restart, deploys included, reloads unconditionally: no one is here to
+        // answer a prompt, and a brief blank on air at each deploy is accepted.
+        if (msg.server_instance_id !== undefined) {
+          if (knownServerInstanceId === null) {
+            knownServerInstanceId = msg.server_instance_id;
+          } else if (msg.server_instance_id !== knownServerInstanceId) {
+            window.location.reload();
+            return;
+          }
+        }
+
+        if (msg.event === 'full' || msg.event === 'update') {
+          overlayEl.classList.remove('off-air');
+          render(msg.data);
+        } else if (msg.event === 'init') {
+          overlayEl.classList.remove('off-air');
+          towerEl.replaceChildren();
+          rowMap = {};
+          render(msg.data);
+        } else if (msg.event === 'no_feed') {
+          overlayEl.classList.add('off-air');
+        }
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>

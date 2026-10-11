@@ -45,6 +45,10 @@ docker compose up
 
 Then open <http://localhost:8080>.
 
+The broadcast overlay is at <http://localhost:8080/tv>: add it as a 1920x1080 browser
+source (OBS, vMix) with a transparent background. `?rows=N` (1–20, default 20) sets the
+number of rows.
+
 This pulls the latest pre-built images from GHCR
 (`ghcr.io/kylegordon/rmonitor-relay` and `ghcr.io/kylegordon/rmonitor-server`).
 Set `IMAGE_VERSION=0.1.18` (in the shell or `.env`) to run a specific release
@@ -280,7 +284,8 @@ server/
 ├── server.py           # aiohttp web server (WebSocket + /api/ingest)
 ├── main.py             # Entry point — starts web server
 └── templates/
-    └── index.html      # Live-updating HTML leaderboard
+    ├── index.html      # Live-updating HTML leaderboard
+    └── tv.html         # Transparent 1920x1080 broadcast timing tower
 ```
 
 ### Future Lambda deployment

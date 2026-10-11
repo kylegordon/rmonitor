@@ -19,6 +19,7 @@ from server.server import (
     create_app,
     feed_state_key,
     page_version_key,
+    tv_page_version_key,
     ws_clients_key,
 )
 
@@ -113,6 +114,53 @@ async def test_the_served_page_carries_its_version_and_no_placeholder(client, ap
     text = await (await client.get("/")).text()
     assert app[page_version_key] in text
     assert PAGE_VERSION_TOKEN not in text
+
+
+@pytest.mark.asyncio
+async def test_tv_returns_html(client):
+    resp = await client.get("/tv")
+    assert resp.status == 200
+    assert "text/html" in resp.content_type
+    assert "SMART Timing TV" in await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_tv_sets_revalidation_headers(client):
+    """The broadcast page is revalidated like ``/``, so a deploy reaches its next load."""
+    resp = await client.get("/tv")
+    assert resp.headers["Cache-Control"] == "no-cache"
+    etag = resp.headers["ETag"]
+    assert etag.startswith('"') and etag.endswith('"')
+    assert etag.strip('"')
+
+
+@pytest.mark.asyncio
+async def test_tv_returns_304_to_a_matching_if_none_match(client):
+    first = await client.get("/tv")
+    etag = first.headers["ETag"]
+
+    resp = await client.get("/tv", headers={"If-None-Match": etag})
+    assert resp.status == 304
+    assert await resp.text() == ""
+
+
+@pytest.mark.asyncio
+async def test_tv_returns_200_to_a_stale_if_none_match(client):
+    resp = await client.get("/tv", headers={"If-None-Match": '"0000000000"'})
+    assert resp.status == 200
+    assert "SMART Timing TV" in await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_tv_and_index_are_versioned_independently(client, app):
+    """Each page's ETag describes its own bytes, so a cached ``/`` never answers ``/tv``."""
+    tv = await client.get("/tv")
+    index = await client.get("/")
+    assert tv.headers["ETag"] == f'"{app[tv_page_version_key]}"'
+    assert tv.headers["ETag"] != index.headers["ETag"]
+
+    resp = await client.get("/tv", headers={"If-None-Match": index.headers["ETag"]})
+    assert resp.status == 200
 
 
 @pytest.mark.asyncio
