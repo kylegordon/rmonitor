@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.26](https://github.com/kylegordon/rmonitor/compare/v0.1.25...v0.1.26) (2026-10-11)
+
+## What's Changed
+* feat(server): animate overtakes on the /tv tower by @kylegordon in https://github.com/kylegordon/rmonitor/pull/136
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.25...v0.1.26
+
+
 ## [0.1.25](https://github.com/kylegordon/rmonitor/compare/v0.1.24...v0.1.25) (2026-10-11)
 
 ## What's Changed
