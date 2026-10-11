@@ -68,7 +68,7 @@ local wall-clock time (`1791734050115000` shows as `15:54:10.115` on a BST day).
 (`CarAdditional0` to `Car_Transponders`) by walking strings; its "ten zero bytes" after the
 status are column 13's style byte and column 14's empty `MinimumLaptime` value and style byte.
 
-## Gap and Diff are in the feed
+## Gap and Diff are in the results view
 
 Orbits sends the gaps its own displays show: the track's Orbits Display race sequence
 (`Race - SMART 12a.xseq`) is a table on `lgView_RaceResults` with `lgHeader_Diff` and
