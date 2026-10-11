@@ -27,7 +27,8 @@
       width: 460px;
       transition: opacity 0.5s;
     }
-    #overlay.off-air { opacity: 0; }
+    /* Off air, or on air with no cars to list: a bare header is not worth keying. */
+    #overlay.off-air, #overlay.no-entries { opacity: 0; }
 
     #tv-header {
       position: relative;
@@ -375,6 +376,7 @@
       raceNameEl.style.display = raceName ? '' : 'none';
 
       const entries = (data.entries || []).slice(0, ROWS);
+      overlayEl.classList.toggle('no-entries', !entries.length);
       const bestLapSort = data.sort_mode === 'best_lap';
       const showClass = !!data.class_codes_available;
       const seen = new Set();

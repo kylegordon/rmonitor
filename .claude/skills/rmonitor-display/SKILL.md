@@ -91,13 +91,14 @@ Position numbers hold still in a fixed column; on a live `update` only (never `f
 `init`, nor across a `sort_mode` change or under `total_time`), a row that gained places rides over the rows it passed with a ▲/▼ marker, from
 its index in the previous snapshot. A
 `full` reveals the tower only after a short wait that `no_feed` cancels, since a connect
-during an outage gets a stale `full` first. `Finish` draws a chequered flag bar, and a
+during an outage gets a stale `full` first, and an empty `entries` fades the whole overlay out. `Finish` draws a chequered flag bar, and a
 no-time best lap (`00:59:59.999`) is blank.
 Guarded by the `test_tv_*` tests in `tests/test_server.py`, and
 `test_the_tv_page_reloads_on_a_restart_and_never_reads_page_version`,
 `test_the_tv_page_is_transparent_and_self_contained` and
 `test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform`,
 `test_the_tv_tower_marks_overtakes_only_on_live_updates`,
-`test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out` and
+`test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out`,
+`test_the_tv_page_hides_itself_when_there_are_no_entries` and
 `test_the_tv_page_shows_the_finish_flag_as_chequered` in
 `tests/test_repo_invariants.py`. What it draws is checked by eye.
