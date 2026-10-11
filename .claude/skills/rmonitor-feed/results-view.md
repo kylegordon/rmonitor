@@ -58,6 +58,13 @@ A manual time correction shows up in three places, and only one of them marks it
 - Usually an announcement row from race control ("Racetime includes 5 second time penalty"),
   typed separately, which can arrive before or after the correction.
 
-So detect a time penalty by `TotalTimeCorrection > 0`, never by `HasPenalties`. What sets
-`HasPenalties` (presumably Orbits' own penalty feature, not a manual correction) has not been
-captured yet.
+So detect a time penalty by `TotalTimeCorrection > 0`, never by `HasPenalties`.
+
+## An added lap
+
+Orbits' add-a-lap penalty, applied for about 5 s before a start, showed in `$G` as the car's
+lap count going up by one and its position recalculated, again with no marker. On `:51738`
+each edit, on and off, raised a "Competitor modified" push with the same fields both times and
+a "Recalculate forced on '<run>'" notice. That notice follows almost every edit to a run, so it
+marks no penalty. The edit fell between two results replies, so whether `HasPenalties` or
+`LapsCorrection` reflects an added lap is still unknown: hold one for over 60 s to see a reply.
