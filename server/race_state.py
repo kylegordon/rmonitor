@@ -229,7 +229,9 @@ class RaceState:
         # for the same reason: the relay pulls it again only when it reconnects.
         self.competitors: dict[str, dict] = {}  # keyed by reg_number
         self.classes: dict[str, str] = {}  # class_number -> description
-        self.leader_time_at_lap: dict[int, float] = {}
+        # lap -> reg_number -> elapsed seconds at that lap; see
+        # _record_leader_time and the leader_time_at_lap property.
+        self.lap_times: dict[int, dict[str, float]] = {}
         self.track_name: str = ""
         self.track_length_miles: float | None = None
         self.run_description: str = ""
@@ -244,6 +246,15 @@ class RaceState:
         self._seen_race_info: bool = False
         self._dirty = True
         self.last_updated: float = time.time()
+
+    @property
+    def leader_time_at_lap(self) -> dict[int, float]:
+        """The earliest elapsed time any competitor has at each lap."""
+        return {
+            lap: min(times.values())
+            for lap, times in self.lap_times.items()
+            if times
+        }
 
     @property
     def dirty(self) -> bool:
@@ -447,11 +458,13 @@ class RaceState:
         _update_position(c, msg["position"])
         if msg.get("laps"):
             c["laps"] = msg["laps"]
+        elif c.get("laps") and _lap_time_seconds(msg.get("total_time", "")) == 0:
+            self._delete_passings(reg, c)
         if msg.get("total_time"):
             c["total_time"] = msg["total_time"]
         lap = _lap_number(msg.get("laps", ""))
         secs = _interval_seconds(msg.get("total_time", ""))
-        self._record_leader_time(lap, secs)
+        self._record_leader_time(reg, lap, secs)
         if lap is not None and secs is not None:
             # .get(): _load_dict restores competitor dicts verbatim, so a store
             # written before this pair existed has neither key.
@@ -507,9 +520,32 @@ class RaceState:
         else:
             competitor["last_lap_speed_mph"] = None
 
-    def _record_leader_time(self, lap: int | None, secs: float | None) -> None:
-        """Record the earliest elapsed time seen at *lap* completed laps.
+    def _delete_passings(self, reg: str, competitor: dict) -> None:
+        """Withdraw every crossing of a car whose passings race control deleted.
 
+        Orbits sends a deleted passing as a ``$G`` with an empty lap count and
+        a zero time; both are needed, since an empty count alone also arrives
+        with a real time (69 times in ``examples/2009 Sebring Test ALMS
+        Session 4 - 0800-1000.txt``).  Seen in ``captures/capture_20261011T113309.log`` for cars that
+        were behind the timing line at the green flag, whose first crossing
+        came seconds into the race.  Kept, the stale count stays in the laps
+        column, and the deleted crossing stays the leader's time at that lap,
+        so every car still stamped there shows a negative interval once the
+        real leader completes it.
+        """
+        competitor["laps"] = ""
+        competitor["timed_lap"] = None
+        competitor["timed_lap_seconds"] = None
+        for times in self.lap_times.values():
+            times.pop(reg, None)
+
+    def _record_leader_time(
+        self, reg: str, lap: int | None, secs: float | None
+    ) -> None:
+        """Record *reg*'s earliest elapsed time seen at *lap* completed laps.
+
+        :param reg: the competitor whose ``$G`` this is, so that
+            :meth:`_delete_passings` can withdraw its times again.
         :param lap: a lap number already validated by :func:`_lap_number`, or
             *None* if the ``$G`` carried no usable one.
         :param secs: the matching elapsed time already validated by
@@ -519,7 +555,8 @@ class RaceState:
 
         The earliest time at which *any* competitor completed a given lap is by
         definition the leader-on-the-road's time at that lap, which is the
-        baseline :meth:`_time_behind_leader` measures every competitor against.
+        baseline :meth:`_time_behind_leader` measures every competitor against;
+        :attr:`leader_time_at_lap` takes that minimum over the cars.
 
         Two things the code cannot show:
 
@@ -537,9 +574,10 @@ class RaceState:
         """
         if lap is None or secs is None:
             return
-        best = self.leader_time_at_lap.get(lap)
+        times = self.lap_times.setdefault(lap, {})
+        best = times.get(reg)
         if best is None or secs < best:
-            self.leader_time_at_lap[lap] = secs
+            times[reg] = secs
 
     def _time_behind_leader(self, competitor: dict) -> float | None:
         """Seconds *competitor* is behind the leader at its own timed lap.
@@ -571,9 +609,10 @@ class RaceState:
         secs = competitor.get("timed_lap_seconds")
         if lap is None or secs is None:
             return None
-        leader_secs = self.leader_time_at_lap.get(lap)
-        if leader_secs is None:
+        times = self.lap_times.get(lap)
+        if not times:
             return None
+        leader_secs = min(times.values())
         return secs - leader_secs
 
     def _passing(self, msg: dict) -> str:
@@ -1762,7 +1801,7 @@ class RaceState:
         return {
             "competitors": self.competitors,
             "classes": self.classes,
-            "leader_time_at_lap": self.leader_time_at_lap,
+            "lap_times": self.lap_times,
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
             "run_description": self.run_description,
@@ -1779,25 +1818,40 @@ class RaceState:
     def _load_dict(self, data: dict) -> None:
         """Restore state from a dict returned by a StateStore.
 
-        ``leader_time_at_lap`` is rebuilt with explicit ``int`` keys because
+        ``lap_times`` is rebuilt with explicit ``int`` keys because
         :class:`~server.state_store.JsonFileStateStore` round-trips through
         ``json``, whose object keys are always strings.  A restored
         ``{"13": 873.95}`` would miss every lookup in
         :meth:`_time_behind_leader`, and both derived columns would go silently
         blank after a restart until the feed re-populated the index.  A
         hand-edited or truncated store degrades to an empty index rather than
-        failing startup.  The class-code registry is not part of this dict; see
+        failing startup.  A store written before the index was kept per car
+        has only ``leader_time_at_lap``; each of its times is restored under
+        every car whose ``timed_lap`` pair matches it, so a later deletion can
+        still withdraw it, or under an empty ``reg_number`` when none does.  The class-code registry is not part of this dict; see
         :meth:`class_codes_to_dict`.
         """
         self.competitors = data.get("competitors", {})
         self.classes = data.get("classes", {})
         try:
-            self.leader_time_at_lap = {
-                int(k): float(v)
-                for k, v in (data.get("leader_time_at_lap") or {}).items()
-            }
+            if "lap_times" in data:
+                self.lap_times = {
+                    int(lap): {str(reg): float(v) for reg, v in times.items()}
+                    for lap, times in (data["lap_times"] or {}).items()
+                }
+            else:
+                owners: dict[tuple, list[str]] = {}
+                for reg, c in self.competitors.items():
+                    pair = (c.get("timed_lap"), c.get("timed_lap_seconds"))
+                    owners.setdefault(pair, []).append(reg)
+                self.lap_times = {}
+                for k, v in (data.get("leader_time_at_lap") or {}).items():
+                    lap, secs = int(k), float(v)
+                    self.lap_times[lap] = {
+                        reg: secs for reg in owners.get((lap, secs), [""])
+                    }
         except (AttributeError, TypeError, ValueError):
-            self.leader_time_at_lap = {}
+            self.lap_times = {}
         self.track_name = data.get("track_name", "")
         self.track_length_miles = data.get("track_length_miles")
         self.run_description = data.get("run_description", "")
