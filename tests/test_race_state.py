@@ -3738,3 +3738,227 @@ def test_the_next_runs_rows_do_not_hide_the_current_runs_before_the_boundary(sta
     assert _shown(state) == ["Current"]
     _session(state)
     assert _shown(state) == ["Next"]
+
+
+# ---------------------------------------------------------------------------
+# DNF / DNS / DQ from the running run's entry list
+# ---------------------------------------------------------------------------
+
+RUN = "0x40002806"
+
+
+def _status_row(number, status, transponder="", class_name="Saloon Cup", entrant=None):
+    return {
+        "entrant_id": f"a{int(number):07d}" if entrant is None else entrant,
+        "number": number, "class_name": class_name, "transponder": transponder,
+        "status": status,
+    }
+
+
+def _statuses(state, *rows, run_id=RUN, entries=(), age_seconds=0.0):
+    return state.process({
+        "type": "class_codes", "run_id": run_id, "entry_list": True,
+        "age_seconds": age_seconds, "entries": list(entries), "statuses": list(rows),
+    })
+
+
+def _racing(state, description="Race 7 - 2nd Race"):
+    """A session bound to the started run RUN, so its entry list is in scope."""
+    _session(state, description)
+    _started(state, RUN, description)
+
+
+def _status_of(state, reg):
+    return _entry_for(state.snapshot(), reg)["status"]
+
+
+def test_entry_list_statuses_join_dnf_to_the_car_in_a_race(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _car_in_class(state, "8", "7654321", "Saloon Cup")
+    _car_in_class(state, "9", "1111111", "Saloon Cup")
+    assert _statuses(
+        state, _status_row("7", "DNF", "1234567"), _status_row("8", "DNS", "7654321"),
+        _status_row("9", "DQ", "1111111"),
+    ) == "class_codes"
+    assert [_status_of(state, r) for r in ("7", "8", "9")] == ["DNF", "DNS", "DQ"]
+
+
+def test_status_joins_by_number_and_class_when_transponder_misses(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "9999999"))
+    assert _status_of(state, "7") == "DNF"
+
+
+def test_status_needs_the_exact_class(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567", class_name="Saloon Cup A"))
+    assert _status_of(state, "7") == ""
+
+
+def test_conflicting_statuses_leave_the_car_blank(state):
+    _racing(state)
+    _car_in_class(state, "7", "", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", entrant="e1"), _status_row("7", "DNS", entrant="e2"))
+    assert _status_of(state, "7") == ""
+
+
+@pytest.mark.parametrize("description", ["Practice 1", "Qualifying 1"])
+def test_status_is_blank_outside_a_race(state, description):
+    _racing(state, description)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    snap = state.snapshot()
+    assert snap["session_mode"] != "Race"
+    assert _entry_for(snap, "7")["status"] == ""
+
+
+def test_status_is_blank_under_a_purple_flag(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    _set_purple_flag(state)
+    snap = state.snapshot()
+    assert snap["sort_mode"] == "total_time"
+    assert _entry_for(snap, "7")["status"] == ""
+
+
+def test_status_is_not_read_through_the_preload_name_fallback(state):
+    """A same-named earlier run the preload's run table names scopes the
+    pushes, but its statuses are another race's, so none is shown."""
+    _session(state)
+    _runs_preload(state, _run_row())
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == RUN
+    assert _entry_for(snap, "7")["status"] == ""
+
+
+def test_status_is_blank_without_a_scoped_run(state):
+    """No run bound to the session: no list is known to be this session's."""
+    _session(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == ""
+    assert _entry_for(snap, "7")["status"] == ""
+
+
+def test_a_newer_entry_list_withdraws_a_cleared_status(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    assert _status_of(state, "7") == "DNF"
+    assert _statuses(state, _status_row("7", "Active", "1234567")) == "class_codes"
+    assert _status_of(state, "7") == ""
+
+
+def test_status_from_a_row_without_a_code_is_kept(state):
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNS", "1234567", entrant=""))
+    assert _status_of(state, "7") == "DNS"
+
+
+def test_entry_list_without_statuses_leaves_them_alone(state):
+    """An older relay sends no ``statuses``; its lists must not clear them."""
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    _entry_list(state, RUN, _code_entry("a0000007", "7", "Saloon Cup", "SC", "1234567"))
+    assert _status_of(state, "7") == "DNF"
+
+
+def test_active_and_unknown_statuses_are_never_shown(state):
+    _racing(state)
+    for reg, tx in (("7", "1"), ("8", "2"), ("9", "3"), ("10", "4")):
+        _car_in_class(state, reg, tx, "Saloon Cup")
+    _statuses(state, _status_row("7", "Active", "1"), _status_row("8", "Finished", "2"),
+              _status_row("9", "", "3"), _status_row("10", "DNF", "4"))
+    assert [_status_of(state, r) for r in ("7", "8", "9", "10")] == ["", "", "", "DNF"]
+
+
+def test_an_active_namesake_makes_the_number_match_ambiguous(state):
+    """Two entrants share a number and class and only one is DNF: a car whose
+    transponder matches neither must not take the DNF."""
+    _racing(state)
+    _car_in_class(state, "7", "9999999", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567", entrant="e1"),
+              _status_row("7", "Active", "7654321", entrant="e2"))
+    assert _status_of(state, "7") == ""
+
+
+def test_an_active_row_on_the_cars_transponder_wins_over_a_number_dnf(state):
+    _racing(state)
+    _car_in_class(state, "7", "7654321", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567", entrant="e1"),
+              _status_row("70", "Active", "7654321", entrant="e2"))
+    assert _status_of(state, "7") == ""
+
+
+@pytest.mark.parametrize("bad", ["junk", {**_status_row("8", "DNS"), "class_name": ""},
+                                 {**_status_row("8", "DNS"), "number": None}])
+def test_a_malformed_status_list_withdraws_nothing(state, bad):
+    """Only a whole list replaces the run's statuses, as with the entry list."""
+    _statuses(state, _status_row("7", "DNF"))
+    _statuses(state, _status_row("7", "Active"), bad)
+    assert [r["number"] for r in state.run_statuses[RUN]["rows"]] == ["7"]
+
+
+def test_a_push_does_not_clear_a_status(state):
+    """A status stored on the code record would be lost to the next push."""
+    _racing(state)
+    _car_in_class(state, "7", "1234567", "Saloon Cup")
+    _statuses(state, _status_row("7", "DNF", "1234567"))
+    _codes(state, RUN, _code_entry("a0000007", "7", "Saloon Cup", "SC", "1234567"))
+    snap = state.snapshot()
+    assert _entry_for(snap, "7")["status"] == "DNF"
+    assert _entry_for(snap, "7")["class_code"] == "SC"
+
+
+def test_statuses_survive_a_class_code_store_round_trip(state):
+    import json
+
+    _statuses(state, _status_row("7", "DNF", "1234567"), run_id="0x4000ABCD")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored.run_statuses == state.run_statuses
+    assert list(restored.run_statuses) == ["0x4000abcd"]
+
+
+@pytest.mark.parametrize("saved", [
+    None, "junk", {"0x40002806": "junk"}, {"0x40002806": {"received_at": "nan", "rows": []}},
+    {"0x40002806": {"received_at": float("inf"), "rows": []}},
+    {"0x40002806": {"received_at": 1.0e9, "rows": "junk"}},
+])
+def test_malformed_saved_statuses_load_empty(state, saved):
+    state.load_class_codes({"run_statuses": saved})
+    assert state.run_statuses == {}
+
+
+def test_saved_status_rows_are_filtered_on_load(state):
+    now = time.time()
+    state.load_class_codes({"run_statuses": {"0x4000ABCD": {"received_at": now + 600, "rows": [
+        _status_row("7", "DNF"), _status_row("8", "Active"), "junk",
+        {**_status_row("9", "DNS"), "number": ""},
+        {**_status_row("10", "DNF"), "status": ["DNF"]},
+        {**_status_row("11", "DNF"), "status": {"DNF": 1}},
+    ]}}})
+    held = state.run_statuses["0x4000abcd"]
+    assert held["received_at"] <= time.time()
+    assert [r["number"] for r in held["rows"]] == ["7", "8"]
+
+
+def test_statuses_expire_with_the_class_code_ttl(state, monkeypatch):
+    import server.race_state as race_state
+
+    _statuses(state, _status_row("7", "DNF"),
+              age_seconds=race_state._PUSHED_CODE_TTL_SECONDS - 60)
+    assert RUN in state.run_statuses
+    later = time.time() + 120
+    monkeypatch.setattr(race_state.time, "time", lambda: later)
+    assert state.prune_expired_class_codes() is True
+    assert state.run_statuses == {}

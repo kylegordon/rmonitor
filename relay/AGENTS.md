@@ -69,10 +69,10 @@ derived from a class name, filling codes no push carried. It is subscribed only 
 `:51738` connection, an unanswered subscription retried on that socket, as every connect raises an
 operator notice. Each reply is taken and the view closed, as an open one streams the whole table
 each second, and subscribed again every `entry_list_refresh_interval` (60 s) for mid-run edits. A
-reply whose rows disagree with its count is withheld. Each list is the run's whole entry list, so
-it safely replaces the run's earlier one, withdrawing a cleared code, and the running run's latest
-list supersedes older in-scope pushes and the registry. Guarded by
-`test_the_entry_list_is_refreshed_after_its_interval`,
+reply whose rows disagree with its count is withheld. Each list is the run's whole entry list, with
+every row's status in `statuses` (`rmonitor-feed`), so it replaces the run's earlier one, withdrawing
+a cleared code or status; the running run's newest beats older in-scope pushes and the registry.
+Guarded by `test_the_entry_list_is_refreshed_after_its_interval`,
 `test_an_unanswered_entry_list_subscription_is_retried_on_the_same_connection` and
 `test_entry_list_parser_withholds_a_reply_whose_row_count_disagrees` in
 `tests/test_class_code_client.py`, and `test_an_entry_list_withdraws_a_code_its_runs_earlier_list_gave`

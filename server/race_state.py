@@ -85,6 +85,11 @@ _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "clas
 # Marks a stored class code that came from a run's entry list, which the
 # run's next entry list replaces; see _class_codes.
 _ENTRY_LIST_ORIGIN = "entry list"
+# The entry-list row statuses shown on the page.  Every row is stored, as an
+# ``Active`` row can make a join ambiguous; see _resolve_statuses.
+_SHOWN_STATUSES = frozenset({"DNF", "DNS", "DQ"})
+# The fields of one stored status row, all strings.
+_STATUS_FIELDS = ("number", "class_name", "transponder", "status")
 
 # The fields a ``class_code_preload`` entry carries, all strings.
 _PRELOAD_FIELDS = ("transponder", "class_name", "class_code")
@@ -172,6 +177,11 @@ class RaceState:
         # id; see _class_codes.  Kept apart from the rows because a list may
         # have none.  Never cleared by reset(), for the same reason.
         self.class_code_lists: dict[str, float] = {}
+        # Each run's entry-list row statuses, keyed by lower-cased run id:
+        # ``{"received_at": float, "rows": [...]}``.  Fed only by entry
+        # lists, each replacing the run's whole set; see _class_codes.  Never
+        # cleared by reset(), for the same reason.
+        self.run_statuses: dict[str, dict] = {}
         # The last registry preload; see _class_code_preload.  Never cleared
         # by reset(), for the same reason.
         self.class_code_preload: dict = _preload_store([], None)
@@ -646,6 +656,15 @@ class RaceState:
         older records by.  It is its newest row's date or, with no row, the
         batch's own ``age_seconds``, so a retried empty list is not dated
         fresh.
+
+        An entry list's ``statuses`` — every row's status, code or none —
+        replace the run's stored statuses in ``run_statuses`` whole, so a
+        cleared DNF is withdrawn — but only when every row is a dict with a
+        number and class, so a malformed list withdraws nothing.  Every row is
+        kept, ``Active`` included, for the join.  They are held apart from the codes, as a
+        later push for the same entrant overwrites its code record and would
+        lose a status stored there.  A batch without ``statuses`` (an older
+        relay) leaves them alone.
         """
         entries = msg.get("entries")
         run_id = msg.get("run_id") or ""
@@ -678,6 +697,28 @@ class RaceState:
             # either could never be joined.
             and all(e["number"] and e["class_name"] for e, _ in rows)
         )
+        statuses = msg.get("statuses")
+        status_rows = [
+            {k: str(item[k]) if item.get(k) is not None else "" for k in _STATUS_FIELDS}
+            for item in statuses if isinstance(item, dict)
+        ] if isinstance(statuses, list) else []
+        # Like the entry list, only a list whose every row is whole replaces
+        # the run's statuses — the relay reads a number and class for every
+        # row — so a malformed one never withdraws a status already stored.
+        if (
+            msg.get("entry_list") == "True"
+            and run_id
+            and isinstance(statuses, list)
+            and len(status_rows) == len(statuses)
+            and all(r["number"] and r["class_name"] for r in status_rows)
+        ):
+            held = self.run_statuses.get(run_key)
+            if (held["rows"] if held else []) != status_rows:
+                changed = True
+            self.run_statuses[run_key] = {
+                "received_at": now - _entry_age(msg.get("age_seconds")),
+                "rows": status_rows,
+            }
         if entry_list:
             stale = [
                 k for k, v in self.class_codes.items()
@@ -1155,20 +1196,8 @@ class RaceState:
         desc = self.run_description
         if not desc:
             return None
-        run_id = None
-        run = self.class_code_run
-        if run is None and self._run_number != "95":
-            # No session bound yet — a cold start — so a waiting run may
-            # stand in.  While one is bound, or once the shown session has
-            # closed, a waiting run is the next session's.
-            run = self.class_code_run_next
-        if (
-            run is not None
-            and run["name"] == desc
-            and time.time() - run["received_at"] <= _CLASS_CODE_TTL_SECONDS
-        ):
-            run_id = run["run_id"]
-        else:
+        run_id = self._started_run_id()
+        if run_id is None:
             ids = self.class_code_preload["runs_by_name"].get(desc)
             if ids:
                 run_id = max(ids, key=lambda r: int(r, 16))
@@ -1187,6 +1216,31 @@ class RaceState:
             # Scoping to nothing would blank every pushed code.
             return None
         return run_id, frozenset(tags)
+
+    def _started_run_id(self) -> str | None:
+        """Return the id of the started run shown by the running session, or *None*.
+
+        The first half of :meth:`_class_code_scope`: the run bound to the
+        session — or, with none bound, the one waiting — while its name equals
+        the ``$B`` description exactly and it is within
+        :data:`_CLASS_CODE_TTL_SECONDS`.  A ``$B,95`` close keeps it.
+        """
+        desc = self.run_description
+        if not desc:
+            return None
+        run = self.class_code_run
+        if run is None and self._run_number != "95":
+            # No session bound yet — a cold start — so a waiting run may
+            # stand in.  While one is bound, or once the shown session has
+            # closed, a waiting run is the next session's.
+            run = self.class_code_run_next
+        if (
+            run is not None
+            and run["name"] == desc
+            and time.time() - run["received_at"] <= _CLASS_CODE_TTL_SECONDS
+        ):
+            return run["run_id"]
+        return None
 
     def prune_expired_class_codes(self) -> bool:
         """Drop expired pushed codes, preload and started run; return whether the page changed.
@@ -1249,7 +1303,8 @@ class RaceState:
         return True
 
     def _prune_class_codes(self, now: float) -> bool:
-        """Drop records and list dates past their TTL; return whether any went."""
+        """Drop records, list dates and run statuses past their TTL; return
+        whether any went."""
         expired = [
             k for k, v in self.class_codes.items()
             if now - v["received_at"] > _PUSHED_CODE_TTL_SECONDS
@@ -1262,7 +1317,13 @@ class RaceState:
         ]
         for k in lists:
             del self.class_code_lists[k]
-        return bool(expired or lists)
+        statuses = [
+            k for k, v in self.run_statuses.items()
+            if now - v["received_at"] > _PUSHED_CODE_TTL_SECONDS
+        ]
+        for k in statuses:
+            del self.run_statuses[k]
+        return bool(expired or lists or statuses)
 
     def _resolve_class_codes(
         self, entries: list[dict], *, scope: tuple[str, frozenset[str]] | None = None
@@ -1403,6 +1464,46 @@ class RaceState:
         available = bool(pushed_class) or (list_at is None and pre["has_codes"])
         return missing, available
 
+    def _resolve_statuses(
+        self, entries: list[dict], run_id: str | None, *, enabled: bool
+    ) -> None:
+        """Write ``status`` onto every entry: ``DNF``, ``DNS``, ``DQ`` or ``""``.
+
+        Read only from the running run's latest entry list (``run_id``, the
+        started run bound to the session, see :meth:`_started_run_id`) and
+        only when *enabled* — a Race session not under
+        the purple-flag sort — so the page shows whatever it is sent.  The
+        join follows :meth:`_resolve_class_codes`, each layer gated on the
+        class name equalling ``class_description`` exactly: transponder (not
+        ``""`` or ``"0"``) and class, then number and class.  A layer gives a
+        status only when its rows hold exactly one distinct status; otherwise
+        the cell stays blank rather than guess.  Every row takes part,
+        ``Active`` included, and only a :data:`_SHOWN_STATUSES` result is
+        written: a DNF entrant sharing a number and class with an ``Active``
+        one must not lend its DNF to a car whose transponder misses.
+        """
+        held = self.run_statuses.get(run_id.lower()) if enabled and run_id else None
+        by_tx: dict[tuple[str, str], set[str]] = {}
+        by_nc: dict[tuple[str, str], set[str]] = {}
+        for row in held["rows"] if held else []:
+            if row["transponder"] not in ("", "0"):
+                by_tx.setdefault((row["transponder"], row["class_name"]), set()).add(row["status"])
+            by_nc.setdefault((row["number"], row["class_name"]), set()).add(row["status"])
+        for e in entries:
+            status = ""
+            desc = e.get("class_description", "")
+            if desc and held:
+                for found in (
+                    by_tx.get((e.get("transponder", ""), desc), set()),
+                    by_nc.get((e.get("number", ""), desc), set()),
+                ):
+                    if len(found) == 1:
+                        status = next(iter(found))
+                        break
+            # Filtered only now: an Active row sharing the keys makes the
+            # match ambiguous, and must not be dropped before it.
+            e["status"] = status if status in _SHOWN_STATUSES else ""
+
     def _preload_candidate(self, number: str, tx: str, desc: str) -> set[str]:
         """Return the codes layer 3 of :meth:`_resolve_class_codes` may use.
 
@@ -1502,7 +1603,8 @@ class RaceState:
         makes that one choice, and ``"sort_mode"`` in the returned dict is the
         payload's single source of truth for which order the page is being
         shown: ``index.html`` reads it rather than re-deriving the condition
-        from ``session_mode`` and ``flag``.
+        from ``session_mode`` and ``flag``.  Each entry's ``status`` is likewise
+        set only when the page should show it (:meth:`_resolve_statuses`).
         """
         session_mode = self._derive_session_mode()
         sort_mode = self._sort_mode(session_mode)
@@ -1532,6 +1634,13 @@ class RaceState:
             self._logged_scope = scope_id
         class_code_missing, class_codes_available = self._resolve_class_codes(
             entries, scope=scope
+        )
+        # Shown only in a race, and not under the purple-flag sort.  Read from
+        # the started run alone, never the scope's name fallback: names repeat,
+        # and a wrong pick there blanks codes but would show another race's DNF.
+        self._resolve_statuses(
+            entries, self._started_run_id(),
+            enabled=session_mode == "Race" and sort_mode != "total_time",
         )
         self._apply_intervals(entries, sort_mode=sort_mode)
         _apply_fastest_lap(entries)
@@ -1718,11 +1827,14 @@ class RaceState:
         ``"retired_runs"``, so a late resend of one is still ignored after a
         restart; and each run's
         latest entry-list date under ``"class_code_lists"``, so a restart
-        cannot readmit what a list superseded.
+        cannot readmit what a list superseded; and each run's shown statuses
+        under ``"run_statuses"``, as the relay resends them only on its next
+        entry-list refresh.
         """
         return {
             "class_codes": self.class_codes,
             "class_code_lists": self.class_code_lists,
+            "run_statuses": self.run_statuses,
             "preload": {
                 "received_at": self.class_code_preload["received_at"],
                 "entries": self.class_code_preload["entries"],
@@ -1743,8 +1855,8 @@ class RaceState:
         ``"preload"`` leaves it empty without touching the pushed registry.  A
         preload saved before registration ids and runs were carried loads
         with them empty, and one saved before its run table had a date of its
-        own dates it by its records'.  The started run and the entry-list
-        dates are restored likewise.
+        own dates it by its records'.  The started run, the entry-list
+        dates and the run statuses are restored likewise.
         """
         # A timestamp must be finite — json accepts NaN and Infinity, and
         # neither is ever pruned — and one in the future is capped at now, so
@@ -1788,6 +1900,9 @@ class RaceState:
                     self.class_code_lists[run] = max(
                         rec["received_at"], self.class_code_lists.get(run, 0.0)
                     )
+        self.run_statuses = _restore_run_statuses(
+            data.get("run_statuses") if isinstance(data, dict) else None, now
+        )
         self._prune_class_codes(now)
         self.class_code_preload = _preload_store([], None)
         try:
@@ -1976,6 +2091,36 @@ def _restore_list_dates(value, now: float) -> dict[str, float]:
         stamp = _finite_stamp(stamp)
         if isinstance(key, str) and key and stamp is not None:
             out[key.lower()] = min(stamp, now)
+    return out
+
+
+def _restore_run_statuses(value, now: float) -> dict[str, dict]:
+    """Return the run statuses saved by :meth:`RaceState.class_codes_to_dict`.
+
+    A malformed store degrades to none; a malformed run or row is dropped,
+    as is a row whose status is not a string or that lacks a number or class.  A date is capped at *now*.
+    Expiry is left to the caller's prune.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, held in value.items():
+        if not (isinstance(key, str) and key and isinstance(held, dict)):
+            continue
+        stamp = _finite_stamp(held.get("received_at"))
+        rows = held.get("rows")
+        if stamp is None or not isinstance(rows, list):
+            continue
+        out[key.lower()] = {
+            "received_at": min(stamp, now),
+            "rows": [
+                {f: str(r[f]) if r.get(f) is not None else "" for f in _STATUS_FIELDS}
+                for r in rows
+                if isinstance(r, dict) and isinstance(r.get("status"), str)
+                # The invariant _class_codes holds on ingest.
+                and r.get("number") and r.get("class_name")
+            ],
+        }
     return out
 
 

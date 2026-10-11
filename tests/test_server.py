@@ -282,6 +282,33 @@ async def test_ingested_class_codes_reach_the_snapshot(client, app):
     assert snap["class_codes_available"] is True
 
 
+@pytest.mark.asyncio
+async def test_page_shows_status_in_diff_and_retired_in_total(client):
+    """A DNF from the running run's entry list reaches a client over the
+    real ingest path; the page's half is guarded in test_repo_invariants."""
+    headers = {"Authorization": "Bearer test-secret"}
+    for msg in (
+        {"type": "run", "unique_number": "27", "description": "Race 6"},
+        {"type": "class_code_run", "run_id": "0x40002805", "name": "Race 6",
+         "start_key": "k1", "age_seconds": 0},
+        {"type": "class_info", "unique_number": "1", "description": "Saloon Cup"},
+        {"type": "competitor", "reg_number": "7", "number": "7", "transponder": "1234567",
+         "first_name": "Ann", "last_name": "Example", "nationality": "", "class_number": "1"},
+        {"type": "class_codes", "run_id": "0x40002805", "entry_list": True,
+         "age_seconds": 0, "entries": [], "statuses": [
+             {"entrant_id": "a0000007", "number": "7", "class_name": "Saloon Cup",
+              "transponder": "1234567", "status": "DNF"},
+         ]},
+    ):
+        resp = await client.post("/api/ingest", json=msg, headers=headers)
+        assert resp.status == 200
+    async with client.ws_connect("/ws") as ws:
+        msg = await ws.receive_json()
+    car = next(e for e in msg["data"]["entries"] if e["reg_number"] == "7")
+    assert msg["data"]["session_mode"] == "Race"
+    assert car["status"] == "DNF"
+
+
 _RUN_START = {
     "type": "class_code_run", "run_id": "0x40002805", "name": "Race 6",
     "start_key": "k1", "age_seconds": 0,

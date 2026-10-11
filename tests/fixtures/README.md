@@ -59,3 +59,39 @@ anchor required `u32 1`, so it missed the three `zeros` records (#108).
 
 `0x400035E8` is the run from #108, a qualifying session that the old anchor missed. The
 three `zeros` records are each the first run of their group in this excerpt.
+
+## `results_view_excerpt.bin`
+
+One scrubbed results-view reply captured from the timing host's `:51738` on 2026-10-11:
+the reply to a `lgView_RaceResults` subscription for a finished race, view id 2, whole and
+unchanged in length. The frame's 63-byte header starts at `0x0000` (opcode `24 80`), the
+view id at `0x003F`, the row count (14) at `0x006F`. The guard tests are in
+`tests/test_class_code_client.py` (`test_results_excerpt_*`).
+
+Each row's status is the `str` in its middle followed by ten zero bytes and a time `str`.
+*Head* is the offset of the row's number `str`, *Status* that of its status `str`.
+
+| Head     | Status   | Number | Class                  | Status |
+|----------|----------|--------|------------------------|--------|
+| `0x009F` | `0x0118` | 64     | SMRC Classic S/S (E)   | Active |
+| `0x05BF` | `0x0639` | 60     | SMRC Classic S/S (I)   | Active |
+| `0x0AEF` | `0x0B68` | 63     | SMRC Classic S/S (E)   | Active |
+| `0x1021` | `0x109E` | 51     | SMRC Classic S/S (E)   | Active |
+| `0x1557` | `0x15D6` | 311    | SMRC Classic S/S (I)   | Active |
+| `0x1A98` | `0x1B14` | 73     | SMRC Classic S/S (I)   | Active |
+| `0x1FD4` | `0x204B` | 21     | SMRC Classic S/S (G)   | Active |
+| `0x250E` | `0x258F` | 32     | SMRC Classic S/S (B)   | Active |
+| `0x2A52` | `0x2AD4` | 13     | SMRC Classic S/S (A)   | Active |
+| `0x2F89` | `0x3007` | 11     | SMRC Classic S/S (A)   | Active |
+| `0x34D4` | `0x354C` | 77     | SMRC Classic S/S (C)   | Active |
+| `0x3A0E` | `0x3A91` | 89     | SMRC Classic S/S (I)   | Active |
+| `0x3F4F` | `0x3FC7` | 71     | SMRC Classic S/S (A)   | DNF    |
+| `0x445E` | `0x44D3` | 45     | SMRC Classic S/S (A)   | DNS    |
+
+Every string was overwritten in place with a placeholder of the same length. Names, car
+models and initials became `TextNNN` (padded with `.`) or `x`s; car and driver registrations
+became `aaaa` and digits; transponders became `10000NN` or `1000NN`, in their text field and
+in the u32 before it. Car numbers, class names, class codes, statuses, times and the host's
+labels (`Not classified`, `Start/Finish`, `Intermediate N`, `RETIRED`, `1 Lap`) were kept.
+Re-scrub any replacement the same way: `test_results_excerpt_holds_only_placeholder_text`
+fails on any other length-prefixed text.

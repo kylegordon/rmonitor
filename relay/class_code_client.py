@@ -211,6 +211,10 @@ _ENT_MIN_BLOCK = 24
 # CarAdditional0-9 in a row's tail; the code is CarAdditional2.
 _ENT_EXTRA_FIELDS = 10
 _ENT_CODE_FIELD = 2
+# A row's status is a str of letters followed by this many zero bytes and a
+# time str; the longest seen is "Active".
+_ENT_STATUS_GAP = bytes(10)
+_ENT_STATUS_MAX = 16
 
 # The run-state notice the host announces on the live stream; see RunStateParser.
 _RUN_STATE_MARKER = b"\x0e\x00\x00\x00runstatechange"
@@ -635,12 +639,14 @@ class EntryListParser:
     taken only with opcode ``24 80`` (the reply — the view's pushes and its
     ``21 80`` column frame are skipped), two equal titles and a plausible
     length.  Each row is a head and a tail, with status columns between
-    them and the lap, time and correction columns after the tail — longer
-    in a finished race, and not read (they are mapped in the
-    ``rmonitor-feed`` skill's ``results-view.md``)::
+    them — the row's status among them — and the lap, time and correction
+    columns after the tail, longer in a finished race and not read (they are
+    mapped in the ``rmonitor-feed`` skill's ``results-view.md``)::
 
         head: str number, 1 byte (not 0),
               str first name, 00, str last name, 00, str name, 00, str class, 00
+        middle: …, str status, 00 x 10, str time, …
+                                        status: Active, DNF, DNS or DQ
         tail: (str, separator) x 10     CarAdditional0-9: model, capacity, code, …
               str car reg, 00, str driver reg, 00
               u32 n, 1 byte, n x u32    the numeric transponders
@@ -659,6 +665,12 @@ class EntryListParser:
     transponders included.  A reply whose rows found disagree with its row count
     is withheld (*rows* None) rather than forwarded in part.  A transponder
     field holding two, comma-joined, is kept raw.
+
+    The status is the middle's first ``str`` of letters followed by ten zero
+    bytes and another ``str`` (:func:`_entry_list_status`); a row with none
+    reads ``""``.  ``Active`` is the normal state, finishers included.  The
+    bytes before the head (a ``str`` holding the position or the status,
+    then undecoded flags) are not read.
     """
 
     def __init__(self, view_id: int) -> None:
@@ -758,6 +770,33 @@ def _entry_list_tail(block: bytes, pos: int) -> tuple[list[str], str, str, int] 
     return extra, regs[0], transponder, cur.pos
 
 
+def _entry_list_status(block: bytes, start: int, end: int) -> str:
+    """Return the status in a row's middle, ``block[start:end]``, or ``""``.
+
+    The first ``str`` of 1-16 ASCII letters that is followed by ten zero
+    bytes and a readable ``str`` — the host writes the status, then those
+    zeros, then a time.  Every read stays inside the middle, so a status
+    whose time is missing never borrows the tail's first field.
+    """
+    middle = block[:end]
+    for p in range(start, end):
+        cur = _Cursor(middle, p)
+        try:
+            text = cur.printable()
+            if not (
+                0 < len(text) <= _ENT_STATUS_MAX and text.isascii() and text.isalpha()
+            ):
+                continue
+            if block[cur.pos:cur.pos + len(_ENT_STATUS_GAP)] != _ENT_STATUS_GAP:
+                continue
+            cur.skip(len(_ENT_STATUS_GAP))
+            cur.printable()
+        except _ShortRecord:
+            continue
+        return text
+    return ""
+
+
 def _entry_list_rows(block: bytes, view_id: int, pos: int) -> list[dict] | None:
     """Return the rows of one reply, *block* starting at its view id and its
     rows at *pos*."""
@@ -769,6 +808,7 @@ def _entry_list_rows(block: bytes, view_id: int, pos: int) -> list[dict] | None:
             pos += 1
             continue
         fields, q = head
+        head_end = q
         while q < len(block) and (tail := _entry_list_tail(block, q)) is None:
             q += 1
         if q >= len(block):
@@ -780,6 +820,7 @@ def _entry_list_rows(block: bytes, view_id: int, pos: int) -> list[dict] | None:
             "class_name": fields[4],
             "transponder": transponder,
             "class_code": extra[_ENT_CODE_FIELD],
+            "status": _entry_list_status(block, head_end, q),
         })
     if len(rows) != count:
         # A reply runs to ~23 KB, so its bytes are logged only at debug.
@@ -845,6 +886,25 @@ def entry_list_entries(rows: list[dict]) -> list[dict]:
         }
         for r in rows
         if r["entrant_id"] and r["class_code"]
+    ]
+
+
+def entry_list_statuses(rows: list[dict]) -> list[dict]:
+    """Return every entry-list row's join fields and status.
+
+    Unlike :func:`entry_list_entries` no row is dropped: a status is carried
+    whether or not the row has a code, and the server decides which
+    statuses it shows.
+    """
+    return [
+        {
+            "entrant_id": r["entrant_id"],
+            "number": r["number"],
+            "class_name": r["class_name"],
+            "transponder": r["transponder"],
+            "status": r["status"],
+        }
+        for r in rows
     ]
 
 
@@ -1952,7 +2012,8 @@ class ClassCodeClient:
         """Take an entry-list reply once and close its view.
 
         The view would otherwise stream the whole results table about once a
-        second; the next start, pick or refresh subscribes again.
+        second; the next start, pick or refresh subscribes again.  Every
+        row's status is held beside the coded entries.
         """
         if self._ent_pending is None:
             return
@@ -1973,7 +2034,9 @@ class ClassCodeClient:
         # The newest replaces any of the run's not yet delivered.
         self._entry_lists.pop(run_id.lower(), None)
         self._entry_lists[run_id.lower()] = {
-            "run_id": run_id, "entries": entries, "_observed": time.monotonic(),
+            "run_id": run_id, "entries": entries,
+            "statuses": entry_list_statuses(reply.rows),
+            "_observed": time.monotonic(),
         }
 
     async def _flush(self) -> None:
@@ -2178,6 +2241,8 @@ class ClassCodeClient:
         server takes as the run's whole entry list: it replaces the entries
         of the run's earlier lists, so a code cleared on the host, or an
         entrant removed, is withdrawn rather than kept until it expires.
+        ``statuses`` carries every row's status, code or none, and replaces
+        the run's earlier statuses the same way.
         """
         age = time.monotonic() - held["_observed"]
         if age > MAX_ENTRY_AGE:
@@ -2197,6 +2262,7 @@ class ClassCodeClient:
                 # The list's own age too, as a list with no rows has none.
                 "age_seconds": round(age, 3),
                 "entries": [e | {"age_seconds": round(age, 3)} for e in entries],
+                "statuses": held["statuses"],
             })
         except Exception:
             log.exception("Could not forward the entry list for run %s", held["run_id"])
