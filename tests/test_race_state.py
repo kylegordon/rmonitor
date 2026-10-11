@@ -3165,7 +3165,7 @@ def test_a_session_change_discards_the_started_run_it_does_not_name(state):
     _started(state)
     _session(state)  # $B repeats within a session
     assert state.class_code_run is not None
-    _session(state, "Race 8")
+    _session(state, "Race 8", number="28")
     assert state.class_code_run is None
     _session(state)
     assert state.snapshot()["class_code_scope"] == ""
@@ -3303,6 +3303,90 @@ def test_a_repeated_class_code_run_keeps_its_session_binding(state):
     assert state.class_code_run_next is None
     _session(state, number="28")
     assert state.snapshot()["class_code_scope"] == ""
+
+
+def _renamed_session(state, run_id="0x40002829"):
+    """Race 18 as captured on 2026-10-11: started as "... - AMENDED GRID",
+    then renamed mid-race under the same id and ``$B`` number."""
+    _started(state, run_id, "Race 18 - 2nd Race - AMENDED GRID")
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _session(state, "Race 18 - 2nd Race", number="5")
+
+
+def test_a_run_renamed_mid_session_stays_bound_and_keeps_its_codes(state):
+    """Captured: once the name changed, the old run's binding was dropped
+    and the run table's same-named run from another meeting scoped the
+    codes, blanking every car only the running run's entry list coded."""
+    _runs_preload(state, _run_row("0x40002703", name="Race 18 - 2nd Race"))
+    state.process({"type": "class_info", "unique_number": "1", "description": "Saloon Cup"})
+    _add_car(state, "8", transponder="30")
+    _entry_list(state, "0x40002829", _code_entry("a0000008", "8", "Saloon Cup", "SC", "30"))
+    _renamed_session(state)
+    snap = state.snapshot()
+    assert snap["class_code_scope"] == "0x40002829"
+    assert _entry_for(snap, "8")["class_code"] == "SC"
+    assert state.class_code_run["name"] == "Race 18 - 2nd Race"
+    assert state.class_code_run["session_number"] == "5"
+
+
+def test_a_renamed_run_is_closed_by_the_95_carrying_its_new_name(state):
+    _renamed_session(state)
+    _closing(state, "Race 18 - 2nd Race")
+    assert state.class_code_run["closed"]
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+
+
+def test_a_renamed_run_keeps_its_race_name(state):
+    state.process({
+        "type": "class_code_run", "run_id": "0x40002829",
+        "name": "Race 18 - 2nd Race - AMENDED GRID", "start_key": "k1",
+        "event": EVENT, "age_seconds": 0.0,
+    })
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _session(state, "Race 18 - 2nd Race", number="5")
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_a_new_name_after_a_95_is_a_new_session_even_under_the_same_number(state):
+    _session(state)
+    _started(state)
+    _session(state)
+    _closing(state)
+    _session(state, "Race 8")
+    assert state.class_code_run is None
+
+
+def test_a_waiting_run_bearing_the_new_name_still_takes_over(state):
+    _started(state)
+    _session(state)
+    _started(state, "0x40002807", "Race 8")
+    _session(state, "Race 8")
+    assert state.class_code_run["run_id"] == "0x40002807"
+
+
+def test_the_relay_renaming_the_held_start_renames_the_run(state):
+    """The relay reads the rename on ``:51738`` and resends the start, same
+    key, under the new name; the renamed ``$B`` may follow it."""
+    _started_with_event(state)
+    _session(state)
+    revision = state.class_codes_revision
+    assert state.process({
+        "type": "class_code_run", "run_id": "0x40002806",
+        "name": "Race 7 - 2nd Race - AMENDED GRID", "start_key": "k1", "age_seconds": 0.0,
+    }) == "class_codes"
+    assert state.class_codes_revision == revision + 1
+    assert state.class_code_run["name"] == "Race 7 - 2nd Race - AMENDED GRID"
+    assert state.class_code_run["event"] == EVENT
+    _session(state, "Race 7 - 2nd Race - AMENDED GRID")
+    assert state.snapshot()["class_code_scope"] == "0x40002806"
+    assert state.snapshot()["race_name"] == EVENT
+
+
+def test_a_repeat_without_a_start_key_does_not_rename_the_held_run(state):
+    _started(state)
+    _session(state)
+    assert _started(state, name="Race 7 - 2nd Race - AMENDED GRID") is None
+    assert state.class_code_run["name"] == "Race 7 - 2nd Race"
 
 
 def test_a_closed_run_announced_again_is_a_restart(state):

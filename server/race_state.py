@@ -351,6 +351,11 @@ class RaceState:
           current run not yet bound.  A waiting run is discarded once the
           number changes to a session it does not name; it survives ``$B``
           repeats, a 95, and the first ``$B`` after a restart.
+        - A new description under the bound run's own number, with no 95
+          between, is race control renaming the run, not a new session: the
+          run stays bound and takes the new name, so the scope and the race
+          name follow it.  A waiting run bearing the new name still takes
+          over, as above.
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
           still shows that session, so its run stays in scope until the next
@@ -376,7 +381,22 @@ class RaceState:
                 self._previous_boundary = (number, desc)
             self._retire_run(nxt)
             self.class_code_run_next = nxt = None
-        if number == "95":
+        # The number names the session, and no capture reuses one for another
+        # session, so a new description under the bound run's own number,
+        # with no 95 between, is race control renaming that run.
+        renamed = (
+            cur is not None
+            and not cur.get("closed")
+            and number not in ("", "95")
+            and number == self._run_number
+            and cur.get("session_number") == number
+            and cur["name"] != desc
+            and (nxt is None or nxt["name"] != desc)
+        )
+        if renamed:
+            log.info("Session %s renamed from %r to %r", number, cur["name"], desc)
+            cur["name"] = desc
+        elif number == "95":
             # With no run bound, a waiting run stands in for the session shown.
             shown = cur if cur is not None else nxt
             if (
@@ -887,8 +907,12 @@ class RaceState:
         :meth:`_shown_race_name` shows; an older relay omits it.  The relay
         can pick a run by name before its start notice arrives, then resend
         it with the notice's event, so a repeat of the same start — run id
-        and start key — may supply or correct its event, and changes nothing
-        else.
+        and start key — may supply or correct its event.  Race control can
+        rename a run while it runs ("Race 18 - 2nd Race - AMENDED GRID" back
+        to "Race 18 - 2nd Race"), keeping its id, and the relay resends the
+        held start under the new name; so a repeat carrying a start key may
+        also rename the held run, as :meth:`_run` does when the renamed
+        ``$B`` arrives first.  Nothing else about the held run moves.
         """
         run_id, name = msg.get("run_id"), msg.get("name")
         age = _entry_age(msg.get("age_seconds"))
@@ -902,9 +926,9 @@ class RaceState:
         ):
             return None
         # A relay retries a delivery whose answer it lost, so a repeat of a
-        # run already held changes nothing but its event; one that closed is
-        # a restart unless it repeats the closed start's own key.  A
-        # start a session boundary retired is never taken back, or its old
+        # run already held changes nothing but its event and name; one that
+        # closed is a restart unless it repeats the closed start's own key.
+        # A start a session boundary retired is never taken back, or its old
         # rows would show again for a same-named next session.
         if _start_id(run_id, msg.get("start_key")) in self._retired_runs:
             return None
@@ -928,14 +952,20 @@ class RaceState:
             if held is not None and held["run_id"] == run_id and not held.get("closed"):
                 # Only the same start's: a restart under this id must not
                 # rename the start the board still shows.
-                if (
-                    not event
-                    or held.get("event") == event
-                    or _start_id(run_id, held.get("start_key"))
-                    != _start_id(run_id, msg.get("start_key"))
-                ):
+                if _start_id(run_id, held.get("start_key")) != _start_id(run_id, start_key):
                     return None
-                held["event"] = event
+                changed = False
+                if event and held.get("event") != event:
+                    held["event"] = event
+                    changed = True
+                # A rename needs the start key: without one, a restart under
+                # this id cannot be told from the start held.
+                if name != held["name"] and isinstance(start_key, str) and start_key:
+                    log.info("Timing host renamed run %s to %r", run_id, name)
+                    held["name"] = name
+                    changed = True
+                if not changed:
+                    return None
                 self.class_codes_revision += 1
                 self._dirty = True
                 return "class_codes"
