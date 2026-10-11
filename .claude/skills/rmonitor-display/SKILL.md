@@ -86,9 +86,13 @@ reads the same `/ws` snapshot and draws `entries` in server order, with `sort_mo
 `fastest_lap` and `status` as sent. No one is at the broadcast browser, so it ignores
 `page_version` and self-reloads on a `server_instance_id` change; a deploy's brief blank on
 air is accepted. It sets no page background (OBS and vMix key on the alpha), loads nothing
-external, writes feed text through `textContent` only, and moves rows by `transform`.
+external, writes feed text through `textContent` only, and moves rows by `transform`. A
+`full` reveals the tower only after a short wait that `no_feed` cancels, since a connect
+during an outage gets a stale `full` first. `Finish` draws a chequered flag bar.
 Guarded by the `test_tv_*` tests in `tests/test_server.py`, and
 `test_the_tv_page_reloads_on_a_restart_and_never_reads_page_version`,
 `test_the_tv_page_is_transparent_and_self_contained` and
-`test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform` in
+`test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform`,
+`test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out` and
+`test_the_tv_page_shows_the_finish_flag_as_chequered` in
 `tests/test_repo_invariants.py`. What it draws is checked by eye.

@@ -53,6 +53,9 @@
     .flag-yellow { background: #ffdc00; }
     .flag-red { background: #ff4136; }
     .flag-purple { background: #9b59b6; }
+    .flag-finish {
+      background: repeating-conic-gradient(#fff 0 25%, #111 0 50%) 0 0 / 8px 8px;
+    }
     .flag-unknown { background: #777; }
     #race-name {
       font-size: 18px;
@@ -160,6 +163,23 @@
 
     let rowMap = {};
     let knownServerInstanceId = null;
+    let revealTimer = null;
+
+    // A connect during an outage gets a stale `full` and then `no_feed`, so a
+    // `full` reveals only after a short wait that `no_feed` or a close cancels.
+    const REVEAL_DELAY_MS = 750;
+
+    function goOffAir() {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+      overlayEl.classList.add('off-air');
+    }
+
+    function goOnAir() {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+      overlayEl.classList.remove('off-air');
+    }
 
     function flagClass(flag) {
       const f = (flag || '').toLowerCase();
@@ -167,6 +187,7 @@
       if (f.includes('yellow') || f.includes('caution')) return 'flag-yellow';
       if (f.includes('red')) return 'flag-red';
       if (f.includes('purple')) return 'flag-purple';
+      if (f.includes('finish')) return 'flag-finish';
       return 'flag-unknown';
     }
 
@@ -286,7 +307,7 @@
       const ws = new WebSocket(`${proto}//${location.host}/ws`);
 
       ws.onclose = () => {
-        overlayEl.classList.add('off-air');
+        goOffAir();
         setTimeout(connect, 2000);
       };
 
@@ -306,16 +327,21 @@
           }
         }
 
-        if (msg.event === 'full' || msg.event === 'update') {
-          overlayEl.classList.remove('off-air');
+        if (msg.event === 'full') {
+          render(msg.data);
+          if (overlayEl.classList.contains('off-air') && revealTimer === null) {
+            revealTimer = setTimeout(goOnAir, REVEAL_DELAY_MS);
+          }
+        } else if (msg.event === 'update') {
+          goOnAir();
           render(msg.data);
         } else if (msg.event === 'init') {
-          overlayEl.classList.remove('off-air');
+          goOnAir();
           towerEl.replaceChildren();
           rowMap = {};
           render(msg.data);
         } else if (msg.event === 'no_feed') {
-          overlayEl.classList.add('off-air');
+          goOffAir();
         }
       };
     }

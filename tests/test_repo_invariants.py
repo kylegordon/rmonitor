@@ -437,6 +437,36 @@ def test_the_tv_tower_draws_server_values_as_text_and_moves_rows_by_transform() 
         assert needle in source, f"tv.html lost {needle}"
 
 
+def test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out() -> None:
+    """Guards the ``rmonitor-display`` skill: ``/tv`` never flashes stale timing on air.
+
+    A connect during an outage gets a stale ``full`` and then ``no_feed``
+    (``handle_ws``). ``index.html`` covers that with a modal; on air, revealing on
+    the ``full`` would put the stale tower out for a moment. So a ``full`` only arms
+    a delayed reveal, and ``no_feed`` or a close cancels it.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+    lines = source.splitlines()
+
+    assert "revealTimer = setTimeout(goOnAir" in source, "tv.html reveals a full at once"
+    start, end = _js_block(lines, "function goOffAir()")
+    assert any("clearTimeout(revealTimer)" in line for line in lines[start - 1:end]), (
+        "tv.html's off-air path no longer cancels a pending reveal"
+    )
+    full = next(n for n, line in enumerate(lines) if "msg.event === 'full'" in line)
+    branch = lines[full + 1:full + 5]
+    assert not any("goOnAir()" in line for line in branch), (
+        "tv.html's full branch reveals the tower before no_feed is ruled out"
+    )
+
+
+def test_the_tv_page_shows_the_finish_flag_as_chequered() -> None:
+    """Guards the ``rmonitor-display`` skill: ``Finish`` is a real ``$F`` value, so the
+    TV flag bar gives it its own chequered state rather than the unknown grey."""
+    source = TV_PAGE.read_text(encoding="utf-8")
+    assert "return 'flag-finish'" in source and ".flag-finish" in source
+
+
 def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
     """Line numbers, 1-based and inclusive, of the block opened by *opener*.
 
