@@ -231,7 +231,8 @@ class RaceState:
         self._session_names: tuple[str, str, frozenset[str]] = ("", "", frozenset())
         # The description of the session the timing host opened as a $B,95;
         # see _opens_at_95.  Not in reset(), as a $I does not end the
-        # session, and not saved: a restored run keeps its session number.
+        # session.  Saved with the started runs, as a start waiting to bind
+        # across a restart has no session number of its own to say so.
         self._opened_at_95 = ""
         self.reset()
 
@@ -2005,7 +2006,8 @@ class RaceState:
         the started runs under ``"run"`` and ``"run_next"``, because the host
         announces each once; the runs a session boundary retired under
         ``"retired_runs"``, so a late resend of one is still ignored after a
-        restart; and each run's
+        restart; the session a ``$B,95`` opened under ``"opened_at_95"``, so
+        a start waiting to bind to it is not closed by its next 95; and each run's
         latest entry-list date under ``"class_code_lists"``, so a restart
         cannot readmit what a list superseded; and each run's shown statuses
         under ``"run_statuses"``, as the relay resends them only on its next
@@ -2024,6 +2026,7 @@ class RaceState:
             "run": self.class_code_run,
             "run_next": self.class_code_run_next,
             "retired_runs": self._retired_runs,
+            "opened_at_95": self._opened_at_95,
         }
 
     def load_class_codes(self, data: dict) -> None:
@@ -2123,6 +2126,8 @@ class RaceState:
         self.class_code_run = _restore_run(runs.get("run"), now)
         self.class_code_run_next = _restore_run(runs.get("run_next"), now)
         self._retired_runs = _restore_retired_runs(runs.get("retired_runs"), now)
+        opened = runs.get("opened_at_95")
+        self._opened_at_95 = opened if isinstance(opened, str) else ""
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.

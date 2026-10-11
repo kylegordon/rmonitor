@@ -4356,3 +4356,21 @@ def test_a_95_opened_session_ends_at_the_next_numbered_session(state):
     _session(state, "Race 21 - Final", number="88")
     assert state.class_code_run is None
     assert state.snapshot()["race_name"] == ""
+
+
+def test_a_95_opened_session_binds_its_start_after_a_restart(state):
+    """A restart between the start and the next ``$B,95`` repeat must still
+    bind it open, not close it."""
+    _race_19_closed(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _race_20_start(state)
+    import json
+
+    restored = RaceState()
+    restored._load_dict(json.loads(json.dumps(state._to_dict())))
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    _closing(restored, "Race 20 - 3rd Race")
+    assert restored.class_code_run["run_id"] == "0x4000281F"
+    assert not restored.class_code_run.get("closed")
+    _announce(restored, ("Track clear", 100), run_id="0x4000281F")
+    assert _shown(restored) == ["Track clear"]
