@@ -362,9 +362,9 @@ class RaceState:
           run stays bound and takes the new name, so the scope and the race
           name follow it; so too in the first ``$B`` after a ``$I``, which
           keeps the bound run's number.  A waiting run bearing the new name
-          still takes over, as above.  With none bound, a waiting run standing in for
-          the session shown is renamed with it and binds.  With none bound,
-          a start arriving later under a name the session bore before is
+          still takes over, as above.  With none bound, a waiting run
+          standing in for the session shown is renamed with it and binds,
+          and a start arriving later under a name the session bore before is
           taken under its current name (:meth:`_class_code_run`).
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
@@ -400,11 +400,9 @@ class RaceState:
         shown_number, shown_desc, former = self._session_names
         if number == "95":
             self._session_names = ("", "", frozenset())
-        elif not same_session:
-            pass
-        elif number != shown_number:
+        elif same_session and number != shown_number:
             self._session_names = (number, desc, frozenset())
-        elif desc != shown_desc:
+        elif same_session and desc != shown_desc:
             self._session_names = (number, desc, former | {shown_desc})
         if (
             same_session
