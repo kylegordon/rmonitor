@@ -3863,9 +3863,17 @@ def test_entry_list_without_statuses_leaves_them_alone(state):
 
 def test_active_and_unknown_statuses_are_not_stored(state):
     _statuses(state, _status_row("7", "Active"), _status_row("8", "Finished"),
-              _status_row("9", ""), _status_row("10", "DNF"),
-              {**_status_row("11", "DNF"), "class_name": ""}, "junk")
+              _status_row("9", ""), _status_row("10", "DNF"))
     assert [r["number"] for r in state.run_statuses[RUN]["rows"]] == ["10"]
+
+
+@pytest.mark.parametrize("bad", ["junk", {**_status_row("8", "DNS"), "class_name": ""},
+                                 {**_status_row("8", "DNS"), "number": None}])
+def test_a_malformed_status_list_withdraws_nothing(state, bad):
+    """Only a whole list replaces the run's statuses, as with the entry list."""
+    _statuses(state, _status_row("7", "DNF"))
+    _statuses(state, _status_row("7", "Active"), bad)
+    assert [r["number"] for r in state.run_statuses[RUN]["rows"]] == ["7"]
 
 
 def test_a_push_does_not_clear_a_status(state):

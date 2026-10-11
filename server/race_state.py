@@ -659,8 +659,9 @@ class RaceState:
 
         An entry list's ``statuses`` — every row's status, code or none —
         replace the run's stored statuses in ``run_statuses`` whole, so a
-        cleared DNF is withdrawn.  Only :data:`_SHOWN_STATUSES` rows with a
-        number and class are kept.  They are held apart from the codes, as a
+        cleared DNF is withdrawn — but only when every row is a dict with a
+        number and class, so a malformed list withdraws nothing.  Only
+        :data:`_SHOWN_STATUSES` rows are kept.  They are held apart from the codes, as a
         later push for the same entrant overwrites its code record and would
         lose a status stored there.  A batch without ``statuses`` (an older
         relay) leaves them alone.
@@ -697,17 +698,21 @@ class RaceState:
             and all(e["number"] and e["class_name"] for e, _ in rows)
         )
         statuses = msg.get("statuses")
-        if msg.get("entry_list") == "True" and run_id and isinstance(statuses, list):
-            shown = []
-            for item in statuses:
-                if not isinstance(item, dict):
-                    continue
-                row = {
-                    k: str(item[k]) if item.get(k) is not None else ""
-                    for k in _STATUS_FIELDS
-                }
-                if row["status"] in _SHOWN_STATUSES and row["number"] and row["class_name"]:
-                    shown.append(row)
+        status_rows = [
+            {k: str(item[k]) if item.get(k) is not None else "" for k in _STATUS_FIELDS}
+            for item in statuses if isinstance(item, dict)
+        ] if isinstance(statuses, list) else []
+        # Like the entry list, only a list whose every row is whole replaces
+        # the run's statuses — the relay reads a number and class for every
+        # row — so a malformed one never withdraws a status already stored.
+        if (
+            msg.get("entry_list") == "True"
+            and run_id
+            and isinstance(statuses, list)
+            and len(status_rows) == len(statuses)
+            and all(r["number"] and r["class_name"] for r in status_rows)
+        ):
+            shown = [r for r in status_rows if r["status"] in _SHOWN_STATUSES]
             held = self.run_statuses.get(run_key)
             if (held["rows"] if held else []) != shown:
                 changed = True
