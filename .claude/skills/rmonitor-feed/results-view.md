@@ -49,11 +49,14 @@ style, probably selecting one of the Orbits Display theme's special colours (`ov
 - `4`: an overall best. `BestTm` carries it only on the session's fastest lap, and `LastTm`
   when the last lap is that lap.
 - `3`: a personal best. `LastTm` carries it only when the last lap equals the car's `BestTm`.
-- `5` and `6`: better and worse. `LastTm` is `5` when quicker than `2ndLastTm` and `16` when
-  slower. On `Gap`, `5` came with a gap smaller than the previous reply's in 340 of 401 cases
-  and `6` with a larger one in 515 of 585; the reference is likely the previous lap, not the
-  previous 60 s poll.
-- `0`, `15`, `16`, `20` are not decoded.
+- `5` and `6`: better and worse. `6` appears only on `Diff`, `Gap` and `GapBehind`. On `Gap`,
+  `5` came with a gap smaller than the previous reply's in 340 of 401 cases and `6` with a
+  larger one in 515 of 585; the reference is likely the previous lap, not the previous 60 s
+  poll.
+- `16`: `LastTm` is `5` when quicker than `2ndLastTm` and `16` when slower (937 of 937), never
+  `6`. `16` also fills `Laps`, `No` and the section columns, so it is likely a plain style
+  rather than "worse".
+- `0`, `15`, `20` are not decoded.
 
 In a time cell, an `i64` of
 `0x7fffffffffffffff` means no value, and time-of-day values count microseconds from 1970 in
