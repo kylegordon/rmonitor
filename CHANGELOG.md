@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.27](https://github.com/kylegordon/rmonitor/compare/v0.1.26...v0.1.27) (2026-10-11)
+
+## What's Changed
+* fix(server): fade the /tv overlay out when there are no entries by @kylegordon in https://github.com/kylegordon/rmonitor/pull/139
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.26...v0.1.27
+
+
 ## [0.1.26](https://github.com/kylegordon/rmonitor/compare/v0.1.25...v0.1.26) (2026-10-11)
 
 ## What's Changed
