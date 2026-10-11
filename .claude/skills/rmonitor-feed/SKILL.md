@@ -1,6 +1,6 @@
 ---
 name: rmonitor-feed
-description: Traps in the rMonitor feed and the race state built from it. Use when touching rMonitor parsing, RaceState, session mode, session boundaries, competitor keying or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py or their tests.
+description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py or their tests.
 paths:
   - server/race_state.py
   - relay/rmonitor_client.py
@@ -60,3 +60,10 @@ current. Both recur, an active record up to 264 times, so a boundary is `unique_
 `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`, and
 `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for
 the broadcast-per-init over the real ingest path.
+
+## A time penalty is `TotalTimeCorrection`, not `HasPenalties`
+
+An operator's manual time correction is added into the `$G` race time with no marker on
+`:50000`. On `:51738` it shows in the results view as `TotalTimeCorrection` above zero on the
+car's row, while `HasPenalties` stays 0. Nothing reads that column yet; its framing, the cell
+encoding and columns 57–67 are in [results-view.md](results-view.md).
