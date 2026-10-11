@@ -1858,6 +1858,7 @@ class ClassCodeClient:
                 # subscription stand, and refreshes keep naming its start.
                 self._correct_event(run.event)
                 self._ann_name = run.name
+                self._ann_stopped = False
                 continue
             self._take_run(run.run_id, run.name, run.event)
         if self._rec_parser is not None:

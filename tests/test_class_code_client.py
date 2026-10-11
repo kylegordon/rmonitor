@@ -2602,6 +2602,24 @@ async def test_a_session_renamed_to_a_run_tables_name_picks_it(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_stopped_pick_that_starts_again_takes_a_rename(monkeypatch):
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    picked = int(PICKED_ID, 16)
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_opens(writer) and _runs_sent(calls))
+        host.queue.append(_run_state(PICK_NAME, picked, state="stopped"))
+        host.queue.append(_run_state(PICK_NAME, picked))
+        host.queue.append(bytes(16) + _run_record(picked, name=PICK_NAME + " - AMENDED GRID"))
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+    finally:
+        await _finish(task)
+    renamed = _runs_sent(calls)[-1]
+    assert (renamed["run_id"], renamed["name"]) == (PICKED_ID, PICK_NAME + " - AMENDED GRID")
+
+
+@pytest.mark.asyncio
 async def test_a_session_known_before_the_pull_is_picked_when_the_run_table_arrives(
     monkeypatch,
 ):
