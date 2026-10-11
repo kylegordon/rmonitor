@@ -1082,6 +1082,45 @@ class _ModelTooLarge(Exception):
     """The model outgrew :data:`MODEL_BUFFER_CAP` before the stream idled."""
 
 
+def _tap(on_raw, direction: str, data: bytes) -> None:
+    try:
+        on_raw(direction, bytes(data))
+    except Exception:
+        log.exception("Class-code raw-bytes callback failed")
+
+
+class _TapReader:
+    """A stream reader that passes every chunk it reads to *on_raw* as ``"in"``."""
+
+    def __init__(self, reader, on_raw) -> None:
+        self._reader = reader
+        self._on_raw = on_raw
+
+    async def read(self, n: int = -1) -> bytes:
+        data = await self._reader.read(n)
+        if data:
+            _tap(self._on_raw, "in", data)
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._reader, name)
+
+
+class _TapWriter:
+    """A stream writer that passes every write to *on_raw* as ``"out"``."""
+
+    def __init__(self, writer, on_raw) -> None:
+        self._writer = writer
+        self._on_raw = on_raw
+
+    def write(self, data: bytes) -> None:
+        self._writer.write(data)
+        _tap(self._on_raw, "out", data)
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+
 class ClassCodeStatus(NamedTuple):
     """What the class-code client is doing, for a status display.
 
@@ -1183,6 +1222,10 @@ class ClassCodeClient:
     connect attempt, completed handshake, connection failure, delivery and
     failed delivery; an exception it raises is logged and ignored.
 
+    *on_raw*, if given, is called with ``"in"`` or ``"out"`` and the bytes of
+    every read from and write to the timing host, for a diagnostic capture
+    (``rmonitor_capture.py``); an exception it raises is logged and ignored.
+
     Delivery runs as a task of its own, never inline in the hold loop:
     *on_batch* may spend minutes retrying an HTTP error, and a hold loop
     waiting on it would send no keepalive, so the timing host would drop the
@@ -1196,6 +1239,7 @@ class ClassCodeClient:
         on_batch,
         *,
         on_status=None,
+        on_raw=None,
         port: int = PORT,
         keepalive_interval: float = 8.0,
         flush_quiet: float = 0.5,
@@ -1218,6 +1262,7 @@ class ClassCodeClient:
         self.port = port
         self.on_batch = on_batch
         self.on_status = on_status if on_status is not None else lambda status: None
+        self.on_raw = on_raw
         self.keepalive_interval = keepalive_interval
         self.flush_quiet = flush_quiet
         self.reconnect_initial = reconnect_initial
@@ -1302,6 +1347,8 @@ class ClassCodeClient:
                 log.info("Connecting to class codes at %s:%s", self.host, self.port)
                 self._status("connecting")
                 reader, writer = await asyncio.open_connection(self.host, self.port)
+                if self.on_raw is not None:
+                    reader, writer = _TapReader(reader, self.on_raw), _TapWriter(writer, self.on_raw)
                 await self._handshake(reader, writer)
                 self._connected = True
                 self._status("connected")

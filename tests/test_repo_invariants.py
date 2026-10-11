@@ -31,7 +31,7 @@ DECLARED_REQUIREMENTS = (
 )
 
 #: Top-level packages that are this repository rather than a dependency.
-FIRST_PARTY = frozenset({"relay", "server", "tests"})
+FIRST_PARTY = frozenset({"relay", "server", "tests", "rmonitor_capture"})
 
 #: Source trees whose imports must be declared.
 SOURCE_TREES = ("relay", "server", "tests")

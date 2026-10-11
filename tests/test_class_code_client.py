@@ -3538,3 +3538,39 @@ async def test_a_push_kept_from_before_an_entry_list_is_dropped_once_the_list_is
     await client._flush()
     assert [(c.get("entry_list", False), [e["entrant_id"] for e in c["entries"]])
             for c in calls] == [(True, ["a0000007"]), (False, ["a0000009"])]
+
+
+@pytest.mark.asyncio
+async def test_on_raw_sees_every_byte_read_and_written(monkeypatch):
+    writer = FakeWriter()
+    _harness(monkeypatch, [(ChunkReader([IDENT_FRAME]), writer)])
+    raw = []
+    client = ccc.ClassCodeClient(
+        "timing-host", _collect([]), on_raw=lambda d, b: raw.append((d, b)), **FAST
+    )
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(writer.writes) >= 5)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    assert [b for d, b in raw if d == "out"] == writer.writes
+    assert b"".join(b for d, b in raw if d == "in") == IDENT_FRAME
+
+
+@pytest.mark.asyncio
+async def test_a_raising_on_raw_does_not_stop_the_client(monkeypatch):
+    writer = FakeWriter()
+    opened, _ = _harness(monkeypatch, [(ChunkReader([IDENT_FRAME]), writer)])
+
+    def on_raw(direction, data):
+        raise RuntimeError("capture disk full")
+
+    client = ccc.ClassCodeClient("timing-host", _collect([]), on_raw=on_raw, **FAST)
+    task = asyncio.ensure_future(client.run())
+    try:
+        await _until(lambda: len(writer.writes) >= 5)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    assert len(opened) == 1
