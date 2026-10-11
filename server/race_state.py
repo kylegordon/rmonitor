@@ -461,11 +461,17 @@ class RaceState:
         position and ``_is_qualifying`` are touched only while
         ``_seen_race_info`` is still False — otherwise qualifying positions would
         overwrite the ``$G`` race order.  Best-lap fields update either way.
+
+        The position field is Orbits' best-lap rank, so it is always kept as
+        ``best_lap_rank``, which :meth:`snapshot` reads for the fastest-lap
+        marker.
         """
         reg = msg["reg_number"]
         c = self.competitors.setdefault(reg, _empty_competitor(reg))
         if not self._seen_race_info and msg.get("position"):
             c["position"] = msg["position"]
+        if msg.get("position"):
+            c["best_lap_rank"] = msg["position"]
         if msg.get("best_lap_time"):
             c["best_lap_time"] = msg["best_lap_time"]
         if msg.get("best_lap"):
@@ -1528,6 +1534,7 @@ class RaceState:
             entries, scope=scope
         )
         self._apply_intervals(entries, sort_mode=sort_mode)
+        _apply_fastest_lap(entries)
         return {
             "track_name": self.track_name,
             "track_length_miles": self.track_length_miles,
@@ -2091,6 +2098,9 @@ def _empty_competitor(reg: str) -> dict:
         "last_lap_speed_mph": None,
         "best_lap_time": "",
         "best_lap": "",
+        "best_lap_rank": "",
+        # Derived in RaceState.snapshot() from best_lap_rank and best_lap_time.
+        "fastest_lap": False,
         # Derived in RaceState._apply_intervals during snapshot(); each field
         # names its own reference because this change ships two kinds of gap.
         "gap_ahead_seconds": None,
@@ -2104,6 +2114,28 @@ def _empty_competitor(reg: str) -> dict:
         "timed_lap": None,
         "timed_lap_seconds": None,
     }
+
+
+def _apply_fastest_lap(entries: list[dict]) -> None:
+    """Set ``fastest_lap`` on every entry from Orbits' best-lap rank.
+
+    Orbits is the authority: only a rank-1 claimant can hold the fastest lap.
+    The time only breaks the handover double claim (old and new holder both
+    briefly at rank 1) and rejects the no-time ``00:00:00.000`` rank-1 rows.
+    Exact ties among claimants are all flagged.  Every entry is assigned, so
+    a flag is never left stale, and ``.get`` keeps state saved before these
+    fields existed loadable.
+    """
+    claims = []
+    for e in entries:
+        if e.get("best_lap_rank") == "1":
+            secs = _interval_seconds(e.get("best_lap_time", ""))
+            if secs is not None:
+                claims.append((e, secs))
+    fastest = min((secs for _, secs in claims), default=None)
+    holders = {id(e) for e, secs in claims if secs == fastest}
+    for e in entries:
+        e["fastest_lap"] = id(e) in holders
 
 
 def _sort_key(c: dict):

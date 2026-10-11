@@ -273,6 +273,9 @@
       transition: background 0.3s;
     }
     tbody tr:hover { background: rgba(255,255,255,0.05); }
+    /* Server-derived (entries[].fastest_lap); the page never compares times. */
+    tbody tr.fastest-lap { background: rgba(155,89,182,0.35); }
+    tbody tr.fastest-lap td:nth-child(9) { font-weight: 700; }
     tbody tr.updated { background: rgba(233,69,96,0.15); }
     td {
       padding: 0.5rem 0.8rem;
@@ -802,6 +805,7 @@
             tr.appendChild(td);
           });
         }
+        tr.classList.toggle('fastest-lap', !!e.fastest_lap);
         newRowMap[e.reg_number] = tr;
 
         // Ensure correct position in DOM

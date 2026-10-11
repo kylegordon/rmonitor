@@ -54,3 +54,13 @@ field, never re-deriving it from `session_mode` and `flag`, and so do its time c
 `test_the_page_reads_sort_mode_and_does_not_re_derive_it` and
 `test_the_time_columns_follow_sort_mode_not_session_mode`. What the page *draws* — row
 index, tooltip, arrows, which time column shows — is **unguarded**; check it by eye.
+
+## The fastest-lap row is the server's call
+
+`snapshot()` sets each entry's `fastest_lap` from Orbits' `$H` best-lap rank, kept as
+`best_lap_rank` even in a race (where `position` must not move); the lowest valid best lap
+only breaks the handover double claim and drops no-time rank-1 rows. The page just toggles
+`tr.fastest-lap` (purple row, bold Best Lap where shown) and never compares times. Guarded
+by `test_fastest_lap_handover_double_claim_flags_only_the_faster_car` and its siblings in
+`tests/test_race_state.py`, and `test_the_page_shades_the_fastest_lap_row_from_the_server_flag`.
+The shade itself is checked by eye.

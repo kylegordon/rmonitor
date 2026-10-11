@@ -317,6 +317,37 @@ def test_the_time_columns_follow_sort_mode_not_session_mode() -> None:
     )
 
 
+def test_the_page_shades_the_fastest_lap_row_from_the_server_flag() -> None:
+    """Guards the ``rmonitor-display`` skill: the fastest-lap row is the server's call.
+
+    ``RaceState.snapshot()`` sets ``entries[].fastest_lap`` from Orbits' ``$H``
+    best-lap rank; the page only toggles ``tr.fastest-lap`` from it. The toggle runs
+    on every render so the class leaves the old holder's row on a handover, since the
+    in-place update path never removes a row class. The page must not work out the
+    holder itself by comparing ``best_lap_time`` values.
+
+    Like its siblings above, this guard is textual. What the page then *draws* -- the
+    purple shade and the bold Best Lap -- stays unguarded and is checked by eye.
+    """
+    page = ROOT / "server" / "templates" / "index.html"
+    source = page.read_text(encoding="utf-8")
+
+    assert "tr.classList.toggle('fastest-lap', !!e.fastest_lap)" in source, (
+        "index.html no longer toggles the fastest-lap row from the server's flag"
+    )
+    assert "tbody tr.fastest-lap" in source, (
+        "index.html has no style for the fastest-lap row"
+    )
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(source.splitlines(), 1)
+        if "best_lap_time" in line and re.search(r"[<>]|Math\.min|sort\(", line)
+    ]
+    assert not offenders, (
+        "index.html compares best_lap_time itself instead of reading fastest_lap: "
+        f"{offenders}"
+    )
+
 def _js_block(lines: list[str], opener: str) -> tuple[int, int]:
     """Line numbers, 1-based and inclusive, of the block opened by *opener*.
 

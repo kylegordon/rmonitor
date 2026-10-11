@@ -266,6 +266,66 @@ def test_qual_info_during_a_race_does_not_overwrite_race_positions(state):
     assert state.competitors["A"]["best_lap_time"] == "00:01:45.000"
 
 
+def test_qual_info_during_a_race_keeps_the_best_lap_rank_without_touching_position(state):
+    """The $H position is Orbits' best-lap rank; in a race it must be kept as
+    ``best_lap_rank`` for the fastest-lap marker while ``position`` keeps the
+    $G race order (``rmonitor-feed`` session-mode trap)."""
+    state.process({"type": "race_info", "position": "3", "reg_number": "A", "laps": "5", "total_time": "00:10:00.000"})
+    state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "4", "best_lap_time": "00:01:02.535"})
+    assert state.competitors["A"]["position"] == "3"
+    assert state.competitors["A"]["best_lap_rank"] == "1"
+
+
+def _fastest(state) -> set[str]:
+    return {e["reg_number"] for e in state.snapshot()["entries"] if e["fastest_lap"]}
+
+
+def test_snapshot_flags_the_rank_one_car_as_fastest_lap_in_a_race(state):
+    state.process({"type": "race_info", "position": "1", "reg_number": "65", "laps": "5", "total_time": "00:05:20.000"})
+    state.process({"type": "race_info", "position": "2", "reg_number": "7", "laps": "5", "total_time": "00:05:22.000"})
+    state.process({"type": "qual_info", "position": "1", "reg_number": "65", "best_lap": "4", "best_lap_time": "00:01:02.535"})
+    state.process({"type": "qual_info", "position": "2", "reg_number": "7", "best_lap": "3", "best_lap_time": "00:01:03.100"})
+    entries = {e["reg_number"]: e for e in state.snapshot()["entries"]}
+    assert entries["65"]["fastest_lap"] is True
+    assert entries["7"]["fastest_lap"] is False
+
+
+def test_fastest_lap_handover_double_claim_flags_only_the_faster_car(state):
+    """From capture_20260912T141003.log:4257-4264: during a handover Orbits briefly
+    sends rank 1 for both the new and the old holder; the lower time wins."""
+    state.process({"type": "qual_info", "position": "1", "reg_number": "94", "best_lap": "8", "best_lap_time": "00:00:58.713"})
+    state.process({"type": "qual_info", "position": "1", "reg_number": "85", "best_lap": "7", "best_lap_time": "00:00:58.850"})
+    assert _fastest(state) == {"94"}
+    state.process({"type": "qual_info", "position": "2", "reg_number": "85", "best_lap": "7", "best_lap_time": "00:00:58.850"})
+    assert _fastest(state) == {"94"}
+
+
+def test_rank_one_with_no_time_is_not_flagged_as_fastest_lap(state):
+    state.process({"type": "qual_info", "position": "1", "reg_number": "1", "best_lap": "0", "best_lap_time": "00:00:00.000"})
+    assert _fastest(state) == set()
+
+
+def test_snapshot_with_no_entries_or_no_rank_flags_nothing(state):
+    assert state.snapshot()["entries"] == []
+    state.process({"type": "race_info", "position": "1", "reg_number": "A", "laps": "5", "total_time": "00:10:00.000"})
+    assert state.snapshot()["entries"][0]["fastest_lap"] is False
+
+
+def test_fastest_lap_survives_a_state_restored_without_the_rank_field():
+    """State saved before ``best_lap_rank``/``fastest_lap`` existed lacks both keys;
+    ``_load_dict`` restores competitors wholesale, so snapshot() must cope."""
+    restored = RaceState()
+    restored._load_dict({"competitors": {"A": {
+        "reg_number": "A", "number": "A", "first_name": "", "last_name": "",
+        "nationality": "", "transponder": "", "additional_data": "",
+        "class_number": "", "position": "1", "prev_position": "",
+        "position_change": "", "laps": "5", "total_time": "00:10:00.000",
+        "last_lap_time": "", "last_lap_speed_mph": None,
+        "best_lap_time": "00:01:45.000", "best_lap": "3",
+    }}})
+    assert restored.snapshot()["entries"][0]["fastest_lap"] is False
+
+
 def test_is_qualifying_cleared_by_race_info(state):
     state.process({"type": "qual_info", "position": "1", "reg_number": "A", "best_lap": "1", "best_lap_time": "00:01:45.000"})
     assert state.is_qualifying is True
