@@ -389,13 +389,14 @@ class RaceState:
         desc = msg["description"]
         number = msg.get("unique_number") or ""
         cur, nxt = self.class_code_run, self.class_code_run_next
+        # The marker is saved with the runs, so its change alone must save.
+        before = (cur, nxt, cur and dict(cur), self._opened_at_95)
         if number == "95":
             self._opened_at_95 = desc if self._opens_at_95(desc, cur) else ""
             if self._opened_at_95:
                 number = _OPENED_AT_95 + desc
         else:
             self._opened_at_95 = ""
-        before = (cur, nxt, cur and dict(cur))
         if (
             nxt is not None
             and number not in ("95", self._run_number)
@@ -478,7 +479,7 @@ class RaceState:
         elif "session_number" not in cur:
             cur["session_number"] = number
         cur = self.class_code_run
-        if (cur, self.class_code_run_next, cur and dict(cur)) != before:
+        if (cur, self.class_code_run_next, cur and dict(cur), self._opened_at_95) != before:
             self.class_codes_revision += 1
         self._run_number = number
         self.run_description = desc
@@ -2007,7 +2008,8 @@ class RaceState:
         announces each once; the runs a session boundary retired under
         ``"retired_runs"``, so a late resend of one is still ignored after a
         restart; the session a ``$B,95`` opened under ``"opened_at_95"``, so
-        a start waiting to bind to it is not closed by its next 95; and each run's
+        a start waiting to bind to it is not closed by its next 95 — restored
+        only beside that waiting start; and each run's
         latest entry-list date under ``"class_code_lists"``, so a restart
         cannot readmit what a list superseded; and each run's shown statuses
         under ``"run_statuses"``, as the relay resends them only on its next
@@ -2126,8 +2128,14 @@ class RaceState:
         self.class_code_run = _restore_run(runs.get("run"), now)
         self.class_code_run_next = _restore_run(runs.get("run_next"), now)
         self._retired_runs = _restore_retired_runs(runs.get("retired_runs"), now)
+        # Only a waiting start of its name needs it, and that start expires
+        # on its own TTL; without one, a stale marker would misread a later
+        # same-named close.
         opened = runs.get("opened_at_95")
-        self._opened_at_95 = opened if isinstance(opened, str) else ""
+        nxt = self.class_code_run_next
+        self._opened_at_95 = (
+            opened if isinstance(opened, str) and nxt is not None and nxt["name"] == opened else ""
+        )
 
     def _derive_session_mode(self) -> str:
         """Derive a short session mode label from the run description.

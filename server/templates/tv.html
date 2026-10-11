@@ -243,6 +243,14 @@
       clearTimeout(revealTimer);
       revealTimer = null;
       overlayEl.classList.remove('off-air');
+      showTitle();
+    }
+
+    // The race name titles the tab only on air, as a stale `full` renders
+    // before its reveal.
+    let raceTitle = '';
+    function showTitle() {
+      document.title = raceTitle ? raceTitle + ' – ' + BASE_TITLE : BASE_TITLE;
     }
 
     function flagClass(flag) {
@@ -377,7 +385,8 @@
       const raceName = data.race_name || '';
       raceNameEl.textContent = raceName;
       raceNameEl.style.display = raceName ? '' : 'none';
-      document.title = raceName ? raceName + ' – ' + BASE_TITLE : BASE_TITLE;
+      raceTitle = raceName;
+      if (!overlayEl.classList.contains('off-air')) showTitle();
 
       const entries = (data.entries || []).slice(0, ROWS);
       overlayEl.classList.toggle('no-entries', !entries.length);

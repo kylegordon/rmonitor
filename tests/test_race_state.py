@@ -4374,3 +4374,23 @@ def test_a_95_opened_session_binds_its_start_after_a_restart(state):
     assert not restored.class_code_run.get("closed")
     _announce(restored, ("Track clear", 100), run_id="0x4000281F")
     assert _shown(restored) == ["Track clear"]
+
+
+def test_a_saved_95_opening_without_its_start_is_not_restored(state):
+    """Only a waiting start of its name needs the marker, and runs expire, so
+    an uncorroborated one would misread a later same-named close."""
+    import json
+
+    _race_19_closed(state)
+    _closing(state, "Race 20 - 3rd Race")
+    restored = RaceState()
+    restored.load_class_codes(json.loads(json.dumps(state.class_codes_to_dict())))
+    assert restored._opened_at_95 == ""
+
+
+def test_a_95_opening_alone_marks_the_class_code_store_for_saving(state):
+    _closing(state, "Race 19 - Final 16")
+    _session(state, "Race 19 - Final 16", number="87")
+    revision = state.class_codes_revision
+    _closing(state, "Race 20 - 3rd Race")
+    assert state.class_codes_revision > revision
