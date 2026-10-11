@@ -3359,6 +3359,28 @@ def test_a_run_renamed_in_the_first_session_record_after_an_init_stays_bound(sta
     assert state.snapshot()["class_code_scope"] == "0x40002829"
 
 
+def test_a_start_under_the_sessions_name_before_its_rename_binds_as_renamed(state):
+    """A relay that read the start during its pull, or missed the rename,
+    delivers the start under the old name after the renamed $B."""
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _session(state, "Race 18 - 2nd Race", number="5")
+    _started(state, "0x40002829", "Race 18 - 2nd Race - AMENDED GRID")
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+    _session(state, "Race 18 - 2nd Race", number="5")
+    assert state.class_code_run["name"] == "Race 18 - 2nd Race"
+    assert state.class_code_run["session_number"] == "5"
+
+
+def test_a_former_session_name_is_forgotten_at_the_next_session(state):
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _session(state, "Race 18 - 2nd Race", number="5")
+    _closing(state, "Race 18 - 2nd Race")
+    _session(state, "Race 19", number="5")
+    _started(state, "0x40002829", "Race 18 - 2nd Race - AMENDED GRID")
+    assert state.class_code_run_next["name"] == "Race 18 - 2nd Race - AMENDED GRID"
+    assert state.snapshot()["class_code_scope"] == ""
+
+
 def test_a_renamed_run_is_closed_by_the_95_carrying_its_new_name(state):
     _renamed_session(state)
     _closing(state, "Race 18 - 2nd Race")
@@ -3414,10 +3436,10 @@ def test_the_relay_renaming_the_held_start_waits_for_the_renamed_session(state):
 
 
 def test_the_relay_renaming_the_held_start_renames_a_run_the_board_no_longer_shows(state):
-    """The renamed ``$B`` came before the run was held, so only the relay's
-    resend under the new name brings the run back into scope."""
+    """The server never saw the session under the run's old name — it
+    restarted after the rename — so only the relay's resend under the new
+    name brings the run into scope."""
     renamed = "Race 7 - 2nd Race - AMENDED GRID"
-    _session(state)
     _session(state, renamed)
     _started_with_event(state)
     assert state.snapshot()["class_code_scope"] == ""

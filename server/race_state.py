@@ -219,6 +219,11 @@ class RaceState:
         # saved, as the announcements are not.
         self._previous_run: dict | None = None
         self._previous_boundary: tuple[str, str] | None = None
+        # The $B number shown and the descriptions it bore before race control
+        # renamed it; see _run.  A start under one of those names arriving
+        # after the rename is that session's.  Not in reset(), as a $I does
+        # not end the session, and not saved.
+        self._former_names: tuple[str, frozenset[str]] = ("", frozenset())
         self.reset()
 
     def reset(self):
@@ -354,9 +359,12 @@ class RaceState:
         - A new description under the bound run's own number, with no 95
           between, is race control renaming the run, not a new session: the
           run stays bound and takes the new name, so the scope and the race
-          name follow it.  A waiting run bearing the new name still takes
-          over, as above.  With none bound, a waiting run standing in for
-          the session shown is renamed with it and binds.
+          name follow it; so too in the first ``$B`` after a ``$I``, which
+          keeps the bound run's number.  A waiting run bearing the new name
+          still takes over, as above.  With none bound, a waiting run standing in for
+          the session shown is renamed with it and binds.  A start arriving
+          later under a name the session bore before is taken under its
+          current name (:meth:`_class_code_run`).
         - The number changing *into* 95 while the description names the
           current run marks it closed, and changes nothing else: the board
           still shows that session, so its run stays in scope until the next
@@ -388,6 +396,10 @@ class RaceState:
         # the last number but keeps the bound run's, so the first $B after
         # it renames that run too.
         same_session = bool(desc) and number not in ("", "95")
+        if number != self._former_names[0] or not same_session:
+            self._former_names = (number if same_session else "", frozenset())
+        elif number == self._run_number and self.run_description not in ("", desc):
+            self._former_names = (number, self._former_names[1] | {self.run_description})
         if (
             same_session
             and number == self._run_number
@@ -943,6 +955,17 @@ class RaceState:
             or age > _CLASS_CODE_TTL_SECONDS
         ):
             return None
+        if (
+            self._run_number
+            and self._run_number == self._former_names[0]
+            and name in self._former_names[1]
+            and name != self.run_description
+        ):
+            # A start read under the session's name before race control
+            # renamed it — a relay that missed the rename, or read the start
+            # during its pull — is the session renamed.
+            log.info("Run %s %r is session %r, renamed", run_id, name, self.run_description)
+            name = self.run_description
         # A relay retries a delivery whose answer it lost, so a repeat of a
         # run already held changes nothing but its event and name; one that
         # closed is a restart unless it repeats the closed start's own key.

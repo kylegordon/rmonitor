@@ -65,8 +65,9 @@ the broadcast-per-init over the real ingest path.
 
 A new description under the same number, with no 95 between, is race control renaming the
 running run (its `:51738` id stays), not a boundary: the bound run keeps its binding and
-takes the name. The relay also reads the run's record pushed under the new name and resends
-the start, same key. Guarded by `test_a_run_renamed_mid_session_stays_bound_and_keeps_its_codes`
+takes the name, and a start arriving later under the old name is taken under the new one.
+The relay also reads the run's record pushed under the new name and resends the start, same
+key. Guarded by `test_a_run_renamed_mid_session_stays_bound_and_keeps_its_codes`
 in `tests/test_race_state.py` and
 `test_a_run_record_under_a_new_name_resends_the_held_run_with_its_start_key` in
 `tests/test_class_code_client.py`.
