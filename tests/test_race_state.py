@@ -1215,6 +1215,95 @@ def test_init_clears_leader_time_at_lap(state):
     assert state.leader_time_at_lap == {}
 
 
+def _feed_deleted_start_passings(state):
+    """Feed a race start whose early crossings race control deleted.
+
+    Verbatim from ``captures/capture_20261011T113309.log`` (Race 16): cars
+    91 and 21 were behind the timing line at the green flag, so their first
+    crossing came 1.473 s and 2.678 s in.  Race control deleted both, and
+    Orbits re-sent each with an empty lap count and a zero time, before 9 and
+    27 completed lap 1 for real.
+    """
+    for pos, reg, total in (
+        ("1", "91", "00:00:01.473"),
+        ("2", "21", "00:00:02.678"),
+    ):
+        state.process({
+            "type": "race_info", "position": pos, "reg_number": reg,
+            "laps": "1", "total_time": total,
+        })
+    for pos, reg in (("11", "91"), ("12", "21")):
+        state.process({
+            "type": "race_info", "position": pos, "reg_number": reg,
+            "laps": "", "total_time": "00:00:00.000",
+        })
+    for pos, reg, total in (
+        ("1", "9", "00:00:56.802"),
+        ("2", "27", "00:00:59.081"),
+    ):
+        state.process({
+            "type": "race_info", "position": pos, "reg_number": reg,
+            "laps": "1", "total_time": total,
+        })
+
+
+def test_a_deleted_passing_clears_the_cars_lap_count(state):
+    """A ``$G`` with an empty lap count withdraws the laps it replaces.
+
+    That is how Orbits sends a deleted passing; keeping the earlier count
+    left an orphaned ``1`` in the laps column of every deleted car.
+    """
+    _feed_deleted_start_passings(state)
+    entries = _by_reg(state.snapshot())
+    assert entries["91"]["laps"] == ""
+    assert entries["21"]["laps"] == ""
+    assert entries["9"]["laps"] == "1"
+
+
+def test_a_deleted_passing_leaves_no_negative_interval(state):
+    """A deleted crossing no longer sets the leader's time at that lap.
+
+    Left in the index, 91's deleted 1.473 s stayed the lap-1 baseline, and
+    the deleted cars, still stamped at lap 1, showed a negative ``Gap`` and
+    ``Diff`` from the moment 9 completed lap 1 until each crossed again.
+    """
+    _feed_deleted_start_passings(state)
+    assert state.leader_time_at_lap == pytest.approx({1: 56.802}, abs=1e-3)
+    entries = _by_reg(state.snapshot())
+    assert entries["27"]["diff_leader_seconds"] == pytest.approx(2.279, abs=1e-3)
+    assert entries["27"]["gap_ahead_seconds"] == pytest.approx(2.279, abs=1e-3)
+    for reg in ("91", "21"):
+        for field in (
+            "gap_ahead_seconds", "gap_ahead_laps",
+            "diff_leader_seconds", "diff_leader_laps",
+        ):
+            assert entries[reg][field] is None, f"{reg}.{field}"
+
+
+def test_a_deleted_passing_is_remembered_across_a_restart(state):
+    """A restored index still knows which car set each lap's time."""
+    import json
+
+    _feed_deleted_start_passings(state)
+    state.process({
+        "type": "race_info", "position": "3", "reg_number": "21",
+        "laps": "1", "total_time": "00:00:55.000",
+    })
+    restored = RaceState()
+    restored._load_dict(json.loads(json.dumps(state._to_dict())))
+    restored.process({
+        "type": "race_info", "position": "12", "reg_number": "21",
+        "laps": "", "total_time": "00:00:00.000",
+    })
+    assert restored.leader_time_at_lap == pytest.approx({1: 56.802}, abs=1e-3)
+
+
+def test_a_store_from_before_per_car_times_keeps_its_index(state):
+    """A ``data/state.json`` holding only the old index still restores it."""
+    state._load_dict({"leader_time_at_lap": {"13": 873.95}})
+    assert state.leader_time_at_lap == pytest.approx({13: 873.95}, abs=1e-3)
+
+
 _INTERVAL_FIELDS = (
     "gap_ahead_seconds",
     "gap_ahead_laps",

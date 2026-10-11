@@ -1,6 +1,6 @@
 ---
 name: rmonitor-feed
-description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py, relay/class_code_client.py or their tests.
+description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) or a deleted passing in server/race_state.py, relay/rmonitor_client.py, relay/class_code_client.py or their tests.
 paths:
   - server/race_state.py
   - relay/rmonitor_client.py
@@ -62,6 +62,13 @@ current. Both recur, an active record up to 264 times, so a boundary is `unique_
 `test_repeated_init_then_repopulate_leaves_state_correct` in `tests/test_race_state.py`, and
 `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for
 the broadcast-per-init over the real ingest path.
+
+## A deleted passing is a `$G` with an empty lap count
+
+When race control deletes a crossing, Orbits re-sends the car's `$G` with no lap count and
+`00:00:00.000`. `RaceState` then clears the car's laps and withdraws its times from
+`lap_times`, which is kept per car for that reason. Guarded by
+`test_a_deleted_passing_leaves_no_negative_interval` in `tests/test_race_state.py`.
 
 ## A time penalty is `TotalTimeCorrection`, not `HasPenalties`
 
