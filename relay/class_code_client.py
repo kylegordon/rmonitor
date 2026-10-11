@@ -634,9 +634,10 @@ class EntryListParser:
     frame is found by ``view id, 1, 0`` for the awaited view instead; it is
     taken only with opcode ``24 80`` (the reply — the view's pushes and its
     ``21 80`` column frame are skipped), two equal titles and a plausible
-    length.  Each row is a head and a tail, with a middle between them
-    holding position, laps, times and status — longer in a finished race,
-    and not read::
+    length.  Each row is a head and a tail, with status columns between
+    them and the lap, time and correction columns after the tail — longer
+    in a finished race, and not read (they are mapped in the
+    ``rmonitor-feed`` skill's ``results-view.md``)::
 
         head: str number, 1 byte (not 0),
               str first name, 00, str last name, 00, str name, 00, str class, 00
