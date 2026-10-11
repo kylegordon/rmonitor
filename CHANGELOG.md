@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.23](https://github.com/kylegordon/rmonitor/compare/v0.1.22...v0.1.23) (2026-10-11)
+
+## What's Changed
+* test(relay): free the GUI tests' Tk objects on the main thread by @kylegordon in https://github.com/kylegordon/rmonitor/pull/118
+* chore(agents): git-ignore bmad-output planning workspace by @kylegordon in https://github.com/kylegordon/rmonitor/pull/119
+* fix: save a run start before acknowledging it; pick by name only at relay start by @kylegordon in https://github.com/kylegordon/rmonitor/pull/121
+* fix(server): keep the race name shown through the session's closing 95 by @kylegordon in https://github.com/kylegordon/rmonitor/pull/125
+* feat(server): show the data heartbeat as three dots by @kylegordon in https://github.com/kylegordon/rmonitor/pull/126
+* fix(server): scroll long announcements in step by @kylegordon in https://github.com/kylegordon/rmonitor/pull/123
+
+
+**Full Changelog**: https://github.com/kylegordon/rmonitor/compare/v0.1.22...v0.1.23
+
+
 ## [0.1.22](https://github.com/kylegordon/rmonitor/compare/v0.1.21...v0.1.22) (2026-10-04)
 
 ## What's Changed
