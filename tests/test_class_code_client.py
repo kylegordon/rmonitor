@@ -2462,6 +2462,55 @@ async def test_a_run_record_under_a_new_name_after_the_run_stopped_resends_nothi
 
 
 @pytest.mark.asyncio
+async def test_a_run_record_read_before_the_start_in_one_read_renames_nothing(
+    monkeypatch,
+):
+    """Notices and records are applied in stream order, so a record ahead of
+    the start in the same read is not taken as its rename."""
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        await _until(lambda: client._rec_parser is not None)
+        host.queue.append(_run_record(0x40002805, name="Race 6") + bytes(16) + _run_state())
+        await _until(lambda: _runs_sent(calls))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    (run,) = _runs_sent(calls)
+    assert run["name"] == "Race 6 - AMENDED GRID"
+    assert client._ann_name == "Race 6 - AMENDED GRID"
+
+
+@pytest.mark.asyncio
+async def test_a_run_record_read_after_the_start_in_one_read_renames_it(monkeypatch):
+    """The rename supersedes the start not yet delivered, under its key."""
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        await _until(lambda: client._rec_parser is not None)
+        host.queue.append(_run_state() + bytes(16) + _run_record(0x40002805, name="Race 6"))
+        await _until(lambda: _runs_sent(calls))
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    sent = _runs_sent(calls)
+    assert sent[-1]["name"] == "Race 6"
+    assert {r["start_key"] for r in sent} == {client._ann_start_key}
+
+
+def test_parsers_report_stream_offsets_across_reads():
+    notice = _run_state()
+    record = _run_record(0x40002805, name="Race 6")
+    data = bytes(5) + notice + bytes(3) + record
+    states, records = ccc.RunStateParser(), ccc.RunRecordParser()
+    ends = [e for e, _ in states.feed_with_ends(data[:9])]
+    ends += [e for e, _ in states.feed_with_ends(data[9:])]
+    rec_ends = [e for e, *_ in records.feed_with_ends(data[:30])]
+    rec_ends += [e for e, *_ in records.feed_with_ends(data[30:])]
+    assert ends == [5 + len(notice) - 5]  # the notice's trailing id is not read
+    assert rec_ends == [len(data) - 8]  # the record's invented settings follow
+    assert states.fed == len(data)
+
+
+@pytest.mark.asyncio
 async def test_run_records_read_before_a_complete_pull_rename_nothing():
     """The pulled model holds run records too, some under an older name."""
     async def on_batch(msg):
