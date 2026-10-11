@@ -63,6 +63,12 @@ current. Both recur, an active record up to 264 times, so a boundary is `unique_
 `test_repeated_init_wipes_reach_clients_before_repopulation` in `tests/test_server.py` for
 the broadcast-per-init over the real ingest path.
 
+The timing host can also *open* a session as `$B,95`: on 2026-10-11 Race 20 came as
+`$B,95,"Race 20 - 3rd Race"` straight after Race 19's close and stayed 95 throughout. So a
+95 naming neither the bound run nor the session shown opens that session, and the server
+numbers it `95:` plus its description (`RaceState._opens_at_95`). Guarded by the
+`test_a_95_open*` tests in `tests/test_race_state.py`.
+
 A new description under the same number, with no 95 between, is race control renaming the
 running run (its `:51738` id stays), not a boundary: the bound run keeps its binding and
 takes the name, and with no run bound a start arriving later under the old name is taken

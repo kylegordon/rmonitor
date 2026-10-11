@@ -1104,3 +1104,23 @@ def test_the_announcement_layout_follows_a_reduced_motion_change() -> None:
     page = (ROOT / "server" / "templates" / "index.html").read_text(encoding="utf-8")
     assert "matchMedia('(prefers-reduced-motion: reduce)')" in page
     assert "addEventListener('change', onMotionChange)" in page
+
+
+def test_the_tv_page_names_the_race_in_its_title_like_the_main_page() -> None:
+    """Guards the ``rmonitor-display`` skill: ``/tv``'s tab title reads
+    "<race name> – SMART Live Timing TV", as ``/`` does, and drops the race
+    name off air."""
+    source = TV_PAGE.read_text(encoding="utf-8")
+
+    assert "document.title = raceTitle ? raceTitle + ' – ' + BASE_TITLE : BASE_TITLE;" in source, (
+        "tv.html no longer puts the race name in its title"
+    )
+    assert re.search(r"function goOffAir\(\) \{[^}]*document\.title = BASE_TITLE", source), (
+        "tv.html keeps a race name in its title off air"
+    )
+    assert re.search(r"function goOnAir\(\) \{[^}]*showTitle\(\)", source), (
+        "tv.html does not title the race when it goes on air"
+    )
+    assert "if (!overlayEl.classList.contains('off-air')) showTitle();" in source, (
+        "tv.html titles the race while still off air"
+    )
