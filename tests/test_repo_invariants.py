@@ -463,6 +463,22 @@ def test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out() -> Non
     )
 
 
+def test_the_tv_page_hides_itself_when_there_are_no_entries() -> None:
+    """Guards the ``rmonitor-display`` skill: ``/tv`` keys nothing without cars to list.
+
+    On air with an empty ``entries`` list the overlay would show a bare header bar
+    over the circuit feed, so the whole overlay fades out until a car appears.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+
+    assert "overlayEl.classList.toggle('no-entries', !entries.length)" in source, (
+        "tv.html no longer hides the overlay when there are no entries"
+    )
+    assert re.search(r"#overlay\.no-entries[^{]*\{[^}]*opacity:\s*0", source), (
+        "tv.html's no-entries overlay is not transparent"
+    )
+
+
 def test_the_tv_tower_marks_overtakes_only_on_live_updates() -> None:
     """Guards the ``rmonitor-display`` skill: ``/tv`` animates a change of places.
 
