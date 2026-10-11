@@ -79,6 +79,10 @@ _RUN_RENEW_SECONDS = 3600
 # run (see RaceState._carried_run), the current and the waiting one, and one
 # spare.
 _MAX_ANNOUNCED_RUNS = 4
+# The session number _run gives a session the timing host opened as a ``$B,95``
+# (see RaceState._opens_at_95), followed by its description: one per name, so
+# a second 95-opened session is a boundary, never a rename.
+_OPENED_AT_95 = "95:"
 
 # The registry fields a ``class_codes`` entry carries, all strings.
 _CLASS_CODE_FIELDS = ("entrant_id", "number", "class_name", "transponder", "class_code")
@@ -225,6 +229,10 @@ class RaceState:
         # session's.  Not in reset(), as a $I does not end the session, so a
         # rename in the first $B after one still finds a waiting run; not saved.
         self._session_names: tuple[str, str, frozenset[str]] = ("", "", frozenset())
+        # The description of the session the timing host opened as a $B,95;
+        # see _opens_at_95.  Not in reset(), as a $I does not end the
+        # session, and not saved: a restored run keeps its session number.
+        self._opened_at_95 = ""
         self.reset()
 
     def reset(self):
@@ -373,10 +381,19 @@ class RaceState:
           stands in for it, as it does for the scope, and becomes the
           current run, closed.  95 repeats between sessions, so only the
           change counts.
+        - A 95 naming a session other than the one shown opens it
+          (:meth:`_opens_at_95`), under the number ``95:`` plus its
+          description, as any other number would.
         """
         desc = msg["description"]
         number = msg.get("unique_number") or ""
         cur, nxt = self.class_code_run, self.class_code_run_next
+        if number == "95":
+            self._opened_at_95 = desc if self._opens_at_95(desc, cur) else ""
+            if self._opened_at_95:
+                number = _OPENED_AT_95 + desc
+        else:
+            self._opened_at_95 = ""
         before = (cur, nxt, cur and dict(cur))
         if (
             nxt is not None
@@ -466,6 +483,31 @@ class RaceState:
         self.run_description = desc
         self._dirty = True
         return "run"
+
+    def _opens_at_95(self, desc: str, cur: dict | None) -> bool:
+        """Return whether a ``$B,95`` bearing *desc* opens a session.
+
+        A 95 carries the closing session's description, but the timing host
+        can also open a session as one — on 2026-10-11 Race 20 came as
+        ``$B,95`` straight after Race 19's close and stayed 95 throughout.
+        Read as a close, the closed run stayed bound, so the race name
+        blanked and the scope fell back to another meeting's run.
+
+        It opens one when it names neither the bound run nor the session
+        shown, or repeats the session a 95 opened — across a ``$I``, which
+        clears the description shown, and a restart, which keeps the bound
+        run's number.  With no run bound and no description shown, a cold
+        start or a ``$I``, a 95 is read as a close, as before.
+        """
+        if not desc:
+            return False
+        if cur is not None and cur["name"] == desc:
+            return cur.get("session_number") == _OPENED_AT_95 + desc
+        return (
+            desc == self._opened_at_95
+            or cur is not None
+            or self.run_description not in ("", desc)
+        )
 
     def _class_info(self, msg: dict) -> str:
         self.classes[msg["unique_number"]] = msg["description"]

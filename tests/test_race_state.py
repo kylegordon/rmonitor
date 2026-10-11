@@ -4285,3 +4285,74 @@ def test_statuses_expire_with_the_class_code_ttl(state, monkeypatch):
     monkeypatch.setattr(race_state.time, "time", lambda: later)
     assert state.prune_expired_class_codes() is True
     assert state.run_statuses == {}
+
+
+# On 2026-10-11 the timing host opened Race 20 as ``$B,95,"Race 20 - 3rd Race"``
+# straight after Race 19's ``$B,95`` close, and kept sending 95 for the whole
+# session: no real number ever came.  Read as a close, it left closed Race 19
+# bound, so the race name blanked and the scope fell back to an older
+# meeting's same-named run.
+
+
+def _race_19_closed(state):
+    _started_with_event(state, event="Scottish Legends Cars Championship", run_id="0x40002817")
+    _session(state, number="87")
+    _closing(state)
+
+
+def _race_20_start(state):
+    return state.process({
+        "type": "class_code_run", "run_id": "0x4000281F", "name": "Race 20 - 3rd Race",
+        "start_key": "k20", "event": "Scottish Mini Cooper Cup", "age_seconds": 0.0,
+    })
+
+
+def test_a_95_opens_the_session_it_names_when_another_is_shown(state):
+    _race_19_closed(state)
+    state.process({"type": "init"})
+    _closing(state, "Race 20 - 3rd Race")
+    _race_20_start(state)
+    _closing(state, "Race 20 - 3rd Race")
+    assert state.class_code_run["run_id"] == "0x4000281F"
+    assert not state.class_code_run.get("closed")
+    snap = state.snapshot()
+    assert snap["race_name"] == "Scottish Mini Cooper Cup"
+    assert snap["class_code_scope"] == "0x4000281F"
+
+
+def test_a_95_opened_session_binds_a_start_already_waiting(state):
+    _race_19_closed(state)
+    _race_20_start(state)
+    _closing(state, "Race 20 - 3rd Race")
+    assert state.class_code_run["run_id"] == "0x4000281F"
+    assert state.snapshot()["race_name"] == "Scottish Mini Cooper Cup"
+
+
+def test_a_95_opened_session_shows_its_announcements(state):
+    _race_19_closed(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _race_20_start(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _announce(state, ("Track clear", 100), run_id="0x4000281F")
+    assert _shown(state) == ["Track clear"]
+
+
+def test_a_95_opened_session_stays_open_across_a_mid_session_init(state):
+    _race_19_closed(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _race_20_start(state)
+    _closing(state, "Race 20 - 3rd Race")
+    state.process({"type": "init"})
+    _closing(state, "Race 20 - 3rd Race")
+    assert not state.class_code_run.get("closed")
+    assert state.snapshot()["race_name"] == "Scottish Mini Cooper Cup"
+
+
+def test_a_95_opened_session_ends_at_the_next_numbered_session(state):
+    _race_19_closed(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _race_20_start(state)
+    _closing(state, "Race 20 - 3rd Race")
+    _session(state, "Race 21 - Final", number="88")
+    assert state.class_code_run is None
+    assert state.snapshot()["race_name"] == ""
