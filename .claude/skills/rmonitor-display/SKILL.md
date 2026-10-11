@@ -88,7 +88,7 @@ reads the same `/ws` snapshot and draws `entries` in server order, with `sort_mo
 air is accepted. It sets no page background (OBS and vMix key on the alpha), loads nothing
 external, writes feed text through `textContent` only, and moves rows by `transform`.
 Position numbers hold still in a fixed column; on a live `update` only (never `full` or
-`init`), a row that gained places rides over the rows it passed with a ▲/▼ marker, from
+`init`, nor across a `sort_mode` change or under `total_time`), a row that gained places rides over the rows it passed with a ▲/▼ marker, from
 its index in the previous snapshot. A
 `full` reveals the tower only after a short wait that `no_feed` cancels, since a connect
 during an outage gets a stale `full` first. `Finish` draws a chequered flag bar, and a

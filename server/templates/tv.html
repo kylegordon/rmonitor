@@ -219,6 +219,7 @@
     // Each row's index in the last snapshot drawn, and its pending move timers.
     let lastIdx = {};
     let moveTimers = {};
+    let lastSortMode = null;
     const LIFT_MS = 900;
     const MARKER_MS = 3000;
     let knownServerInstanceId = null;
@@ -330,6 +331,8 @@
         row.classList.remove('pass');
         void row.offsetWidth;  // restarts the nudge when a row gains again mid-move
         row.classList.add('pass', 'lift');
+      } else {
+        row.classList.remove('pass', 'lift');
       }
       clearMoveTimers(key);
       moveTimers[key] = {
@@ -350,7 +353,13 @@
 
     // Moves are marked only on a live `update`; a `full` resyncs after an outage
     // and `init` starts a session, so neither is a change of places on track.
+    // Within an update, a change of sort_mode reorders the whole tower, and the
+    // purple flag's total_time order is crossing order, so neither is marked
+    // either. A best_lap climb is a real improvement in qualifying, so it is.
     function render(data, markMoves) {
+      const sortMode = data.sort_mode;
+      markMoves = markMoves && sortMode === lastSortMode && sortMode !== 'total_time';
+      lastSortMode = sortMode;
       flagBarEl.className = flagClass(data.flag);
       lapsOrTimeEl.textContent = lapsOrTime(data);
       const raceName = data.race_name || '';

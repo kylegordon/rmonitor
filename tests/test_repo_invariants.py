@@ -470,7 +470,9 @@ def test_the_tv_tower_marks_overtakes_only_on_live_updates() -> None:
     over the rows it passed with a gain/loss marker, worked out from the row's index
     in the previous snapshot. Only a live ``update`` is a change of places on track:
     a ``full`` resyncs after an outage and ``init`` starts a session, so marking
-    either would flash a burst of false overtakes on air. Reduced motion stops the nudge.
+    either would flash a burst of false overtakes on air. So would a ``sort_mode``
+    change or the purple flag's ``total_time`` crossing order. Reduced motion stops
+    the nudge.
     """
     source = TV_PAGE.read_text(encoding="utf-8")
     lines = source.splitlines()
@@ -486,6 +488,9 @@ def test_the_tv_tower_marks_overtakes_only_on_live_updates() -> None:
         assert f"render(msg.data, {marks})" in branch, (
             f"tv.html's {event} branch should render with markMoves={marks}"
         )
+    assert "sortMode === lastSortMode && sortMode !== 'total_time'" in source, (
+        "tv.html marks the reorder of a sort_mode change or of purple-flag crossing order"
+    )
     start, end = _js_block(lines, "@media (prefers-reduced-motion: reduce)")
     assert any("animation: none" in line for line in lines[start - 1:end]), (
         "reduced motion no longer stops the overtaking nudge"
