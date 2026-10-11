@@ -1827,7 +1827,7 @@ class RaceState:
         hand-edited or truncated store degrades to an empty index rather than
         failing startup.  A store written before the index was kept per car
         has only ``leader_time_at_lap``; each of its times is restored under
-        the car whose ``timed_lap`` pair matches it, so a later deletion can
+        every car whose ``timed_lap`` pair matches it, so a later deletion can
         still withdraw it, or under an empty ``reg_number`` when none does.  The class-code registry is not part of this dict; see
         :meth:`class_codes_to_dict`.
         """
@@ -1840,14 +1840,16 @@ class RaceState:
                     for lap, times in (data["lap_times"] or {}).items()
                 }
             else:
-                owners = {
-                    (c.get("timed_lap"), c.get("timed_lap_seconds")): reg
-                    for reg, c in self.competitors.items()
-                }
+                owners: dict[tuple, list[str]] = {}
+                for reg, c in self.competitors.items():
+                    pair = (c.get("timed_lap"), c.get("timed_lap_seconds"))
+                    owners.setdefault(pair, []).append(reg)
                 self.lap_times = {}
                 for k, v in (data.get("leader_time_at_lap") or {}).items():
                     lap, secs = int(k), float(v)
-                    self.lap_times[lap] = {owners.get((lap, secs), ""): secs}
+                    self.lap_times[lap] = {
+                        reg: secs for reg in owners.get((lap, secs), [""])
+                    }
         except (AttributeError, TypeError, ValueError):
             self.lap_times = {}
         self.track_name = data.get("track_name", "")

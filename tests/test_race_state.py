@@ -1324,6 +1324,23 @@ def test_an_old_store_still_lets_a_deletion_withdraw_its_time(state):
     assert state.leader_time_at_lap == {}
 
 
+def test_an_old_store_keeps_a_tied_time_for_the_other_car(state):
+    """A time two cars share survives the deletion of one of them."""
+    stamp = {"laps": "1", "timed_lap": 1, "timed_lap_seconds": 56.802}
+    state._load_dict({
+        "competitors": {
+            "9": {**_empty_competitor("9"), **stamp},
+            "27": {**_empty_competitor("27"), **stamp},
+        },
+        "leader_time_at_lap": {"1": 56.802},
+    })
+    state.process({
+        "type": "race_info", "position": "2", "reg_number": "27",
+        "laps": "", "total_time": "00:00:00.000",
+    })
+    assert state.leader_time_at_lap == pytest.approx({1: 56.802}, abs=1e-3)
+
+
 def test_an_empty_lap_count_with_a_real_time_is_not_a_deletion(state):
     """Only an empty count *and* a zero time mark a deleted passing.
 
