@@ -1532,6 +1532,20 @@ def test_run_state_parser_ignores_other_text():
     assert ccc.RunStateParser().feed(data) == []
 
 
+def test_run_record_parser_returns_a_record_split_across_reads_once():
+    data = bytes(8) + _run_record(0x40002829, name="Race 18 - 2nd Race") + bytes(8)
+    parser = ccc.RunRecordParser()
+    out = parser.feed(data[:20]) + parser.feed(data[20:40]) + parser.feed(data[40:])
+    # The tail still holds the record; reading on must not return it again.
+    out += parser.feed(bytes(8)) + parser.feed(bytes(400))
+    assert out == [("0x40002829", "Race 18 - 2nd Race")]
+
+
+def test_run_record_parser_skips_nameless_and_unprintable_records():
+    parser = ccc.RunRecordParser()
+    assert parser.feed(_run_record(name="") + _run_record(name="\x07\x01")) == []
+
+
 def _recording():
     """Record what *on_batch* is handed, except the announcements clear every stop sends."""
     calls = []
@@ -2369,6 +2383,62 @@ async def test_an_earlier_runs_empty_reply_is_retried_only_marked_superseded(mon
 
 
 # ---------------------------------------------------------------------------
+# A run renamed while it runs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_run_record_under_a_new_name_resends_the_held_run_with_its_start_key(
+    monkeypatch,
+):
+    """Captured 2026-10-11: race control renamed the running run, keeping its
+    id; the host pushed its record under the new name and no notice."""
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(bytes(16) + _run_record(0x40002805, name="Race 6"))
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+    finally:
+        await _finish(task)
+    first, renamed = _runs_sent(calls)
+    assert (renamed["run_id"], renamed["name"]) == ("0x40002805", "Race 6")
+    assert renamed["start_key"] == first["start_key"]
+    assert renamed["event"] == "Test Meeting"
+    assert client._ann_name == "Race 6"
+
+
+@pytest.mark.asyncio
+async def test_a_run_record_of_another_run_or_under_the_same_name_resends_nothing(
+    monkeypatch,
+):
+    task, host, writer, calls, client = await _running(monkeypatch)
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _runs_sent(calls))
+        host.queue.append(_run_record(0x40002806, name="Race 7"))
+        host.queue.append(_run_record(0x40002805, name="Race 6 - AMENDED GRID"))
+        await _until(lambda: not host.queue)
+        await asyncio.sleep(0.1)
+    finally:
+        await _finish(task)
+    assert len(_runs_sent(calls)) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_records_read_before_a_complete_pull_rename_nothing():
+    """The pulled model holds run records too, some under an older name."""
+    async def on_batch(msg):
+        pass
+
+    client = ccc.ClassCodeClient("timing-host", on_batch, **FAST)
+    client._take_run("0x40002805", "Race 6 - AMENDED GRID")
+    client._run = None
+    client._absorb(bytes(16) + _run_record(0x40002805, name="Race 6"))
+    assert client._run is None
+    assert client._ann_name == "Race 6 - AMENDED GRID"
+
+
+# ---------------------------------------------------------------------------
 # Announcements: a run picked by name when no start was seen
 # ---------------------------------------------------------------------------
 
@@ -2452,6 +2522,29 @@ async def test_a_relay_that_saw_no_start_picks_the_newest_run_named_as_the_sessi
     assert run["run_id"] == PICKED_ID
     assert run["name"] == PICK_NAME
     assert isinstance(run["start_key"], str) and len(run["start_key"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_a_session_renamed_under_its_number_keeps_and_renames_the_pick(monkeypatch):
+    """A new description under the same ``$B`` number is the run renamed, as
+    the server reads it, not a later session that would drop the pick."""
+    task, host, writer, calls, client = await _picking(monkeypatch)
+    renamed_desc = PICK_NAME + " - AMENDED GRID"
+    try:
+        await _until(lambda: client._runs is not None)
+        client.note_session("5", PICK_NAME)
+        await _until(lambda: _view_opens(writer) and _runs_sent(calls))
+        client.note_session("5", renamed_desc)
+        await _until(lambda: len(_runs_sent(calls)) >= 2)
+        await asyncio.sleep(0.05)
+    finally:
+        await _finish(task)
+    first, renamed = _runs_sent(calls)
+    assert (renamed["run_id"], renamed["name"]) == (PICKED_ID, renamed_desc)
+    assert renamed["start_key"] == first["start_key"]
+    assert _view_opens(writer) == [(1, PICKED_DECIMAL)]
+    assert not [c for c in calls if c.get("dropped")]
+    assert client._ann_run == PICKED_ID
 
 
 @pytest.mark.asyncio

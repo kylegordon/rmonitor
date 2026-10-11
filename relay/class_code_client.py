@@ -1088,6 +1088,46 @@ def parse_runs(buf: bytes) -> list[dict]:
     return [named.get(run_id) or nameless[run_id] for run_id in order]
 
 
+class RunRecordParser:
+    """Incrementally find run records, as :func:`parse_runs` reads them, in the live stream.
+
+    The host pushes a run's record when the run is saved, so a rename shows
+    up as the record under the new name — "Race 18 - 2nd Race - AMENDED
+    GRID" saved back as "Race 18 - 2nd Race", say, while the run is running;
+    no run-state notice follows.  Only named records are returned, as
+    ``(run id, name)`` pairs in stream order, each once: a record is
+    returned from the read that completes it, and a short tail is kept for
+    one straddling two reads.  The model a pull returns holds the same
+    records, some under an older name, so this reads only the stream after
+    a complete pull.
+    """
+
+    # A record's anchor, length and the longest name a record may carry.
+    _TAIL = 12 + 4 + _MAX_REGISTRY_STR
+
+    def __init__(self) -> None:
+        self._tail = b""
+
+    def feed(self, data: bytes) -> list[tuple[str, str]]:
+        """Absorb *data* and return every run record it completes."""
+        buf = self._tail + data
+        seen = len(self._tail)
+        self._tail = buf[-self._TAIL:]
+        out: list[tuple[str, str]] = []
+        for m in _RUN_ANCHOR.finditer(buf):
+            cur = _Cursor(buf, m.start() + 12)
+            try:
+                name = cur.string()
+            except _ShortRecord:
+                continue
+            # One the last read completed was returned then.
+            if cur.pos <= seen or not name or not name.isprintable():
+                continue
+            (rid,) = struct.unpack("<I", m.group(1))
+            out.append((f"0x{rid:08X}", name))
+        return out
+
+
 def parse_groups(buf: bytes) -> dict[str, str]:
     """Return ``{group id: name}`` for the group records found in *buf*.
 
@@ -1238,6 +1278,9 @@ class ClassCodeClient:
     *on_batch* as a ``class_code_run`` message, after any preload and before
     the pushes of the same burst, and retried like them; the server uses it
     to keep only the running run's pushes.  A stopped run is not forwarded.
+    Race control can rename the run while it runs, keeping its id: the host
+    then pushes the run's record under the new name (:class:`RunRecordParser`),
+    and the run is sent again, same start key, under that name.
 
     The client also subscribes to the started run's announcements view
     (:func:`build_view_open`, :class:`AnnouncementParser`) and hands its rows
@@ -1349,6 +1392,8 @@ class ClassCodeClient:
         self._delivery: asyncio.Task | None = None
         self._parser = PushParser()
         self._run_parser = RunStateParser()
+        # Set once a connection's pull completes; see RunRecordParser.
+        self._rec_parser: RunRecordParser | None = None
         self._pending: dict[str, dict[str, dict]] = {}
         # The last run announced as started and not yet delivered, and the
         # one whose delivery is in flight.
@@ -1403,6 +1448,7 @@ class ClassCodeClient:
             reason = "connection closed by the timing host"
             self._parser = PushParser()
             self._run_parser = RunStateParser()
+            self._rec_parser = None
             self._reset_announcement_views()
             try:
                 log.info("Connecting to class codes at %s:%s", self.host, self.port)
@@ -1559,6 +1605,10 @@ class ClassCodeClient:
             log.warning("Class-code registry pull incomplete – not forwarding a preload")
             return
         pulled_at = time.monotonic()
+        # The model has drained, so run records read from here on are live.
+        # After a pull cut short its tail could still follow, so renames are
+        # left to the server's reading of $B until the next connection.
+        self._rec_parser = RunRecordParser()
         entries, runs, groups = await asyncio.to_thread(_parse_model, bytes(model))
         # The run table holds even when the preload is withheld below.
         self._runs = runs
@@ -1805,8 +1855,30 @@ class ClassCodeClient:
                 self._ann_name = run.name
                 continue
             self._take_run(run.run_id, run.name, run.event)
+        if self._rec_parser is not None:
+            for run_id, name in self._rec_parser.feed(data):
+                if self._ann_run is not None and run_id.lower() == self._ann_run.lower():
+                    self._rename_run(name)
         for frame in self._ann_parser.feed(data):
             self._absorb_announcement(frame)
+
+    def _rename_run(self, name: str) -> None:
+        """Resend the subscribed run under *name* if that is a new one.
+
+        Race control can rename a run while it runs, keeping its id; the
+        server takes a repeat of the start it holds, under the same start
+        key, as that rename.  The pick's or start's key and subscription
+        stand, and announcements name the run by its new name from now on.
+        """
+        if name == self._ann_name:
+            return
+        log.info("Timing host renamed run %s %r", self._ann_run, name)
+        self._ann_name = name
+        self._run = {
+            "run_id": self._ann_run, "name": name,
+            "start_key": self._ann_start_key, "event": self._ann_event,
+            "_observed": time.monotonic(),
+        }
 
     def _take_run(self, run_id: str, name: str, event: str = "") -> None:
         """Treat *run_id* as the started run: forward it and subscribe.
@@ -1855,8 +1927,9 @@ class ClassCodeClient:
         session keeps it, because a same-named real start cannot be told
         from the next run starting early.
 
-        Picking is edge-triggered: only a new session — the number or the
-        description changing, as the server's ``_run`` reads it — or a newly
+        Picking is edge-triggered: only a new session — the number changing,
+        as the server's ``_run`` reads it, since a new description under the
+        same number is the run being renamed (:meth:`_rename_run`) — or a newly
         pulled run table picks, and only while the first session is open,
         never after its ``$B,95``.  A stop notice ends any other run at
         once, but leaves the pick subscribed until the boundary.  Nothing is
@@ -1876,6 +1949,15 @@ class ClassCodeClient:
         if not description or (number, description) == (
             self._session_number, self._session_desc
         ):
+            return
+        if number == self._session_number:
+            # The same number under a new description is race control
+            # renaming the run, as the server's _run reads it: the session
+            # and any pick stand, and a held run takes the new name, so a
+            # later resend of it cannot name the old one.
+            if self._ann_run is not None and self._ann_name == self._session_desc:
+                self._rename_run(description)
+            self._session_desc = description
             return
         if self._session_number not in ("", "95"):
             self._end_session()
