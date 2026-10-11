@@ -491,6 +491,9 @@ def test_the_tv_tower_marks_overtakes_only_on_live_updates() -> None:
     assert "sortMode === lastSortMode && sortMode !== 'total_time'" in source, (
         "tv.html marks the reorder of a sort_mode change or of purple-flag crossing order"
     )
+    assert "if (!markMoves) Object.keys(moveTimers).forEach(clearMove)" in source, (
+        "an unmarked reorder can still show the last update's overtake"
+    )
     start, end = _js_block(lines, "@media (prefers-reduced-motion: reduce)")
     assert any("animation: none" in line for line in lines[start - 1:end]), (
         "reduced motion no longer stops the overtaking nudge"

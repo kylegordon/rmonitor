@@ -317,6 +317,14 @@
       delete moveTimers[key];
     }
 
+    // Ends a row's marked move at once: no lift, nudge or marker left on it.
+    function clearMove(key) {
+      clearMoveTimers(key);
+      const row = rowMap[key];
+      row.classList.remove('gaining', 'losing', 'pass', 'lift');
+      cell(row, 'tv-delta').classList.remove('show');
+    }
+
     // Marks a row that changed places since the last snapshot: a gainer lifts,
     // nudges right and draws over the rows it passed; either way a green or red
     // marker shows the places gained or lost for a few seconds.
@@ -337,10 +345,7 @@
       clearMoveTimers(key);
       moveTimers[key] = {
         lift: setTimeout(() => row.classList.remove('lift'), LIFT_MS),
-        marker: setTimeout(() => {
-          marker.classList.remove('show');
-          row.classList.remove('gaining', 'losing', 'pass');
-        }, MARKER_MS),
+        marker: setTimeout(() => clearMove(key), MARKER_MS),
       };
     }
 
@@ -360,6 +365,9 @@
       const sortMode = data.sort_mode;
       markMoves = markMoves && sortMode === lastSortMode && sortMode !== 'total_time';
       lastSortMode = sortMode;
+      // A reorder that is not marked must not show a move left over from the
+      // last update either.
+      if (!markMoves) Object.keys(moveTimers).forEach(clearMove);
       flagBarEl.className = flagClass(data.flag);
       lapsOrTimeEl.textContent = lapsOrTime(data);
       const raceName = data.race_name || '';
