@@ -3396,6 +3396,16 @@ def test_a_former_session_name_is_forgotten_at_the_next_session(state):
     assert state.snapshot()["class_code_scope"] == ""
 
 
+def test_a_waiting_run_renamed_in_the_first_session_record_after_an_init_binds(state):
+    _session(state, "Race 18 - 2nd Race - AMENDED GRID", number="5")
+    _started(state, "0x40002829", "Race 18 - 2nd Race - AMENDED GRID")
+    state.process({"type": "init"})
+    _session(state, "Race 18 - 2nd Race", number="5")
+    assert state.class_code_run["name"] == "Race 18 - 2nd Race"
+    assert state.class_code_run["session_number"] == "5"
+    assert state.snapshot()["class_code_scope"] == "0x40002829"
+
+
 def test_a_renamed_run_is_closed_by_the_95_carrying_its_new_name(state):
     _renamed_session(state)
     _closing(state, "Race 18 - 2nd Race")

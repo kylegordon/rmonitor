@@ -219,11 +219,12 @@ class RaceState:
         # saved, as the announcements are not.
         self._previous_run: dict | None = None
         self._previous_boundary: tuple[str, str] | None = None
-        # The $B number shown and the descriptions it bore before race control
-        # renamed it; see _run.  A start under one of those names arriving
-        # after the rename is that session's.  Not in reset(), as a $I does
-        # not end the session, and not saved.
-        self._former_names: tuple[str, frozenset[str]] = ("", frozenset())
+        # The session last shown — its $B number and description — and the
+        # descriptions it bore before race control renamed it; see _run.  A
+        # start under one of those names arriving after the rename is that
+        # session's.  Not in reset(), as a $I does not end the session, so a
+        # rename in the first $B after one still finds a waiting run; not saved.
+        self._session_names: tuple[str, str, frozenset[str]] = ("", "", frozenset())
         self.reset()
 
     def reset(self):
@@ -393,20 +394,25 @@ class RaceState:
         # The number names the session, and no capture reuses one for another
         # session, so a new description under the bound run's own number,
         # with no 95 between, is race control renaming that run.  A $I clears
-        # the last number but keeps the bound run's, so the first $B after
-        # it renames that run too.
+        # the last number but keeps the bound run's, and _session_names, so
+        # the first $B after it renames that run, or a waiting one, too.
         same_session = bool(desc) and number not in ("", "95")
-        if number != self._former_names[0] or not same_session:
-            self._former_names = (number if same_session else "", frozenset())
-        elif number == self._run_number and self.run_description not in ("", desc):
-            self._former_names = (number, self._former_names[1] | {self.run_description})
+        shown_number, shown_desc, former = self._session_names
+        if number == "95":
+            self._session_names = ("", "", frozenset())
+        elif not same_session:
+            pass
+        elif number != shown_number:
+            self._session_names = (number, desc, frozenset())
+        elif desc != shown_desc:
+            self._session_names = (number, desc, former | {shown_desc})
         if (
             same_session
-            and number == self._run_number
+            and number == shown_number
             and cur is None
             and nxt is not None
             and not nxt.get("closed")
-            and nxt["name"] == self.run_description != desc
+            and nxt["name"] == shown_desc != desc
         ):
             # A waiting run standing in for the session shown is renamed
             # with it, and then binds below as one bearing the name would.
@@ -958,8 +964,8 @@ class RaceState:
         if (
             self.class_code_run is None
             and self._run_number
-            and self._run_number == self._former_names[0]
-            and name in self._former_names[1]
+            and self._run_number == self._session_names[0]
+            and name in self._session_names[2]
             and name != self.run_description
         ):
             # A start read under the session's name before race control
