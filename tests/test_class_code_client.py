@@ -2972,9 +2972,11 @@ def _results_row(row) -> bytes:
     """One results row in the layout ``EntryListParser`` documents.
 
     *row* holds ``number, first, last, class_name, code, reg, transponder``,
-    and optionally ``sep`` (default ``0x0f``) and ``finished`` (default
-    False).  A finished row's middle holds a decoy: a u32 whose value, read
-    as a length, runs through the model field's length prefix to its end.
+    and optionally ``sep`` (default ``0x0f``), ``finished`` (default False)
+    and ``status`` (default ``"Active"``).  The status sits in the middle as
+    the host lays it out: ``str "0", str status, 10 zero bytes, str "0.000"``.
+    A finished row's middle also holds a decoy before it: a u32 whose value,
+    read as a length, runs through the model field's length prefix to its end.
     """
     sep = bytes([row.get("sep", 0x0f)])
     model = row.get("model", "Test Car")
@@ -2982,11 +2984,12 @@ def _results_row(row) -> bytes:
         _s(row["number"]) + b"\x01" + _s(row["first"]) + b"\x00" + _s(row["last"]) + b"\x00"
         + _s(f"{row['first']} {row['last']}") + b"\x00" + _s(row["class_name"]) + b"\x00"
     )
+    status = _s("0") + _s(row.get("status", "Active")) + bytes(10) + _s("0.000")
     if row.get("finished"):
-        rest = b"\x01" + _s("1:02.345") + _s("Finished") + b"\x02"
+        rest = b"\x01" + _s("1:02.345") + _s("Finished") + b"\x02" + status
         middle = _s("1") + b"\x00" + struct.pack("<I", len(rest) + 4 + len(model)) + rest
     else:
-        middle = bytes(4) + b"\x01" + _s("DNS") + b"\x00"
+        middle = status
     extra = [model, "1000", row["code"]] + [""] * 7
     tail = b"".join(_s(v) + sep for v in extra)
     tail += _s(row["reg"]) + b"\x00" + _s("d" + row["reg"][1:]) + b"\x00"
@@ -3016,11 +3019,12 @@ def _entrant(number="7", code="TC", *, reg=None, transponder="1234567", **extra)
     }
 
 
-def _row(number="7", code="TC", *, reg=None, transponder="1234567"):
+def _row(number="7", code="TC", *, reg=None, transponder="1234567", status="Active"):
     """The row ``EntryListParser`` reads from ``_entrant`` with the same arguments."""
     return {
         "entrant_id": f"a{int(number):07d}" if reg is None else reg, "number": number,
         "class_name": "Test Cup", "transponder": transponder, "class_code": code,
+        "status": status,
     }
 
 
@@ -3033,8 +3037,8 @@ def test_results_frame_helper_matches_a_captured_row_shape():
         # head: number, 01, first, 00, last, 00, name, 00, class, 00
         "0100000037" "01" "03000000416e6e" "00" "070000004558414d504c45" "00"
         "0b000000416e6e204558414d504c45" "00" "080000005465737420437570" "00"
-        # middle, not read
-        "00000000" "01" "03000000444e53" "00"
+        # middle: "0", the status, ten zero bytes, "0.000"
+        "0100000030" "06000000416374697665" + "00" * 10 + "05000000302e303030" +
         # model, capacity and code, then seven empties, each with its separator
         "03000000436172" "0f" "0400000031303030" "0f" "020000005443" "0f"
         + "000000000f" * 7 +
@@ -3122,6 +3126,87 @@ def test_entry_list_entries_skip_codeless_rows_and_carry_their_kind():
     assert set(ccc.entry_list_entries(rows)[0]) == set(ccc.record_entry(
         ccc.PushRecord("added", RUN_ID, _fields())
     ))
+
+
+def test_entry_list_rows_read_each_rows_status():
+    """The status is the middle's str followed by ten zero bytes and a time,
+    as in the host's DNF, DNS and DQ rows — read in a finished row too, past
+    its decoy length."""
+    rows = [
+        _entrant("7"), _entrant("8", status="DNF"), _entrant("9", status="DNS"),
+        _entrant("10", status="DQ"), _entrant("11", finished=True, status="DNF"),
+    ]
+    (reply,) = ccc.EntryListParser(6).feed(_results_frame(b"\x24\x80", 6, rows))
+    assert [(r["number"], r["status"]) for r in reply.rows] == [
+        ("7", "Active"), ("8", "DNF"), ("9", "DNS"), ("10", "DQ"), ("11", "DNF"),
+    ]
+
+
+def test_entry_list_status_is_blank_when_the_middle_holds_none():
+    row = _results_row(_entrant("7"))
+    middle = _s("0") + _s("Active") + bytes(10) + _s("0.000")
+    at = row.index(middle)
+    # The zero run cut short by one byte: no status.
+    plain = row[:at] + _s("0") + _s("Active") + bytes(9) + b"\x01" + _s("0.000")
+    assert ccc._entry_list_status(plain, 0, len(plain)) == ""
+    assert ccc._entry_list_status(row, 0, at + len(middle)) == "Active"
+
+
+def test_entry_list_statuses_keep_rows_without_a_code():
+    rows = [_row("7"), _row("8", "", status="DNS"), {**_row("9", status="DNF"), "entrant_id": ""}]
+    assert ccc.entry_list_statuses(rows) == [
+        {"entrant_id": "a0000007", "number": "7", "class_name": "Test Cup",
+         "transponder": "1234567", "status": "Active"},
+        {"entrant_id": "a0000008", "number": "8", "class_name": "Test Cup",
+         "transponder": "1234567", "status": "DNS"},
+        {"entrant_id": "", "number": "9", "class_name": "Test Cup",
+         "transponder": "1234567", "status": "DNF"},
+    ]
+
+
+RESULTS_EXCERPT = Path(__file__).resolve().parent / "fixtures" / "results_view_excerpt.bin"
+
+# The text a results excerpt may hold, as tests/fixtures/README.md describes:
+# placeholders, then what was kept.
+_RESULTS_KEPT = re.compile(
+    r"Text\d{3}\.*|x+|aaaa\d+|\d+"
+    r"|Not classified|Active|DNF|DNS|DQ|RETIRED|Start/Finish|Intermediate \d( Speed)?"
+    r"|\d+ Laps?|SMRC Classic S/S \([A-Z]\)|C[A-Z]|-|-?[\d:.]+"
+)
+
+
+def test_results_excerpt_reads_real_statuses():
+    """The host's own row layout, not the synthetic one: a DNF and a DNS
+    among twelve classified rows, which stay ``Active`` after the finish."""
+    (reply,) = ccc.EntryListParser(2).feed(RESULTS_EXCERPT.read_bytes())
+    assert len(reply.rows) == 14
+    statuses = {r["number"]: r["status"] for r in reply.rows}
+    assert statuses.pop("71") == "DNF"
+    assert statuses.pop("45") == "DNS"
+    assert set(statuses.values()) == {"Active"}
+    assert len(statuses) == 12
+
+
+def test_results_excerpt_holds_only_placeholder_text():
+    """A re-scrubbed excerpt must not bring captured text back with it.
+
+    Walks every length-prefixed printable ``str``; the doubles between them
+    read as short printable runs, so a raw scan would only find binary.
+    """
+    buf = RESULTS_EXCERPT.read_bytes()
+    left = []
+    p = 0
+    while p + 4 <= len(buf):
+        (n,) = struct.unpack_from("<I", buf, p)
+        text = buf[p + 4:p + 4 + n]
+        if 0 < n <= 255 and len(text) == n and all(0x20 <= b < 0x7f for b in text):
+            if not _RESULTS_KEPT.fullmatch(text.decode()):
+                left.append(text)
+            p += 4 + n
+            continue
+        p += 1
+    assert left == []
+    assert re.findall(rb"(?:[\x20-\x7e]\x00){3,}", buf) == []  # no UTF-16 text either
 
 
 # ---------------------------------------------------------------------------
@@ -3254,12 +3339,31 @@ async def test_a_started_run_subscribes_its_entry_list_and_forwards_the_rows(mon
     assert msg == {
         "type": "class_codes", "run_id": RUN_ID, "entry_list": True,
         "entries": [_listed("7"), _listed("8", "TD")],
+        "statuses": ccc.entry_list_statuses([_row("7"), _row("8", "TD")]),
     }
     types = [c["type"] for c in calls]
     assert types.index("class_code_run") < types.index("class_codes")
     ((view_id, _),) = _entry_list_opens(writer)
     assert _view_closes(writer).count(view_id) == 1
     assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_delivered_entry_list_carries_statuses(monkeypatch):
+    """Every row's status goes beside the entries, a codeless row's too."""
+    task, host, writer, calls, _, _ = await _listing(
+        monkeypatch, [_entrant("7"), _entrant("8", status="DNF"), _entrant("9", "", status="DNS")],
+    )
+    try:
+        host.queue.append(_run_state())
+        await _until(lambda: _entry_lists(calls))
+    finally:
+        await _finish(task)
+    (msg,) = _entry_lists(calls)
+    assert [e["number"] for e in msg["entries"]] == ["7", "8"]
+    assert [(s["number"], s["status"]) for s in msg["statuses"]] == [
+        ("7", "Active"), ("8", "DNF"), ("9", "DNS"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -3427,6 +3531,7 @@ async def test_a_push_read_with_an_entry_list_reply_goes_to_the_server_after_it(
 
 def _held(*numbers):
     return {"run_id": RUN_ID, "entries": [_listed(n) for n in numbers],
+            "statuses": ccc.entry_list_statuses([_row(n) for n in numbers]),
             "_observed": ccc.time.monotonic()}
 
 

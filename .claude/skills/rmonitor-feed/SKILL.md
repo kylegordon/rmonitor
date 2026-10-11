@@ -1,6 +1,6 @@
 ---
 name: rmonitor-feed
-description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py or their tests.
+description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py or their tests.
 paths:
   - server/race_state.py
   - relay/rmonitor_client.py
@@ -67,3 +67,17 @@ An operator's manual time correction is added into the `$G` race time with no ma
 `:50000`. On `:51738` it shows in the results view as `TotalTimeCorrection` above zero on the
 car's row, while `HasPenalties` stays 0. Nothing reads that column yet; its framing, the cell
 encoding and columns 57–67 are in [results-view.md](results-view.md).
+
+## A car's DNF, DNS or DQ is only in the `:51738` results view, read from the row middle
+
+No rMonitor record carries a per-car status. Each results-view row's middle holds it as a
+`str` followed by ten zero bytes and a time `str` — `Active` (finishers too), DNF, DNS or
+DQ — which `_entry_list_status` in `relay/class_code_client.py` reads; the `str` before the
+row's head holds a position or a status and is not read. The relay sends every row's status in
+`statuses` on the entry-list message, code or none. `RaceState` keeps only DNF/DNS/DQ in
+`run_statuses`, one set per run that each list replaces whole, apart from the class-code records
+because a push overwrites those. Like them it survives `reset()`, expires on
+`_PUSHED_CODE_TTL_SECONDS` and is saved with the class-code store. Guarded by
+`test_results_excerpt_reads_real_statuses` and `test_entry_list_rows_read_each_rows_status` in
+`tests/test_class_code_client.py`, and `test_a_push_does_not_clear_a_status` and
+`test_a_newer_entry_list_withdraws_a_cleared_status` in `tests/test_race_state.py`.
