@@ -463,6 +463,35 @@ def test_the_tv_page_holds_a_stale_full_back_until_no_feed_is_ruled_out() -> Non
     )
 
 
+def test_the_tv_tower_marks_overtakes_only_on_live_updates() -> None:
+    """Guards the ``rmonitor-display`` skill: ``/tv`` animates a change of places.
+
+    Position numbers sit in a fixed column, and a row that gained places is lifted
+    over the rows it passed with a gain/loss marker, worked out from the row's index
+    in the previous snapshot. Only a live ``update`` is a change of places on track:
+    a ``full`` resyncs after an outage and ``init`` starts a session, so marking
+    either would flash a burst of false overtakes on air. Reduced motion stops the nudge.
+    """
+    source = TV_PAGE.read_text(encoding="utf-8")
+    lines = source.splitlines()
+
+    assert "#slots" in source and "slots[idx].textContent" in source, (
+        "tv.html no longer holds position numbers in a fixed column"
+    )
+    assert "lastIdx[key] - idx" in source, "tv.html no longer works out places gained"
+    assert ".tv-row.gaining { z-index: 3" in source, "an overtaking row no longer draws on top"
+    for event, marks in (("full", "false"), ("update", "true"), ("init", "false")):
+        start = next(n for n, line in enumerate(lines) if f"msg.event === '{event}'" in line)
+        branch = "\n".join(lines[start + 1:start + 5])
+        assert f"render(msg.data, {marks})" in branch, (
+            f"tv.html's {event} branch should render with markMoves={marks}"
+        )
+    start, end = _js_block(lines, "@media (prefers-reduced-motion: reduce)")
+    assert any("animation: none" in line for line in lines[start - 1:end]), (
+        "reduced motion no longer stops the overtaking nudge"
+    )
+
+
 def test_the_tv_page_shows_the_finish_flag_as_chequered() -> None:
     """Guards the ``rmonitor-display`` skill: ``Finish`` is a real ``$F`` value, so the
     TV flag bar gives it its own chequered state rather than the unknown grey."""
