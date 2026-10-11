@@ -3904,6 +3904,8 @@ def test_saved_status_rows_are_filtered_on_load(state):
     state.load_class_codes({"run_statuses": {"0x4000ABCD": {"received_at": now + 600, "rows": [
         _status_row("7", "DNF"), _status_row("8", "Active"), "junk",
         {**_status_row("9", "DNS"), "number": ""},
+        {**_status_row("10", "DNF"), "status": ["DNF"]},
+        {**_status_row("11", "DNF"), "status": {"DNF": 1}},
     ]}}})
     held = state.run_statuses["0x4000abcd"]
     assert held["received_at"] <= time.time()

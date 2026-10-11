@@ -2091,7 +2091,9 @@ def _restore_run_statuses(value, now: float) -> dict[str, dict]:
             "rows": [
                 {f: str(r[f]) if r.get(f) is not None else "" for f in _STATUS_FIELDS}
                 for r in rows
-                if isinstance(r, dict) and r.get("status") in _SHOWN_STATUSES
+                # A saved list or object would be unhashable in the set test.
+                if isinstance(r, dict) and isinstance(r.get("status"), str)
+                and r["status"] in _SHOWN_STATUSES
                 # The invariant _class_codes holds on ingest.
                 and r.get("number") and r.get("class_name")
             ],

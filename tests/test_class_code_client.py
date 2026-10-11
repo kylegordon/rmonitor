@@ -5,10 +5,11 @@ scrubbed, and push records are built in-test from invented names, numbers and
 codes — never from a capture.  The one exception is the Announcements view:
 its records and frames are captured layouts, kept byte for byte because the
 layout is the thing under test, with every identity slot zeroed and only an
-operator's test text in them.  Results view replies are built from the
-layout alone, with invented entrants.  The model excerpt in
-``tests/fixtures/`` is the other exception: captured bytes with every string
-overwritten by a placeholder, as its README describes.
+operator's test text in them.  Results view replies are mostly built from
+the layout alone, with invented entrants.  The two excerpts in
+``tests/fixtures/`` — a model pull and one results-view reply — are the
+other exceptions: captured bytes with every identifying string overwritten
+by a placeholder of the same length, as their README describes.
 """
 
 import asyncio

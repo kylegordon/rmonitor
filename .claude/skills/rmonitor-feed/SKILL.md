@@ -1,11 +1,13 @@
 ---
 name: rmonitor-feed
-description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py or their tests.
+description: Traps in the rMonitor feed and the race state built from it, and how a time penalty shows on both ports. Use when touching rMonitor parsing, time penalties or corrections, the :51738 results view columns, RaceState, session mode, session boundaries, competitor keying, a car's DNF/DNS/DQ status or any protocol record ($A, $COMP, $B, $I, $F, $G, $SP, $SR) in server/race_state.py, relay/rmonitor_client.py, relay/class_code_client.py or their tests.
 paths:
   - server/race_state.py
   - relay/rmonitor_client.py
+  - relay/class_code_client.py
   - tests/test_parser.py
   - tests/test_race_state.py
+  - tests/test_class_code_client.py
   - "captures/*.log"
 ---
 
