@@ -206,13 +206,15 @@
        as a URL breaks too rather than being clipped. */
     .announcement-text { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
     .announcement.marquee .announcement-text { max-width: none; }
-    /* Only a row wider than the screen scrolls; a row that fits stays still. */
+    /* Only a row wider than the screen scrolls; a row that fits stays still.
+       Every scrolling row travels the longest row's distance, so the set loops
+       together rather than each row restarting on its own. */
     .announcement.marquee .announcement-text {
       animation: announce-scroll var(--marquee-s, 12s) linear infinite;
     }
     @keyframes announce-scroll {
       from { transform: translateX(var(--row-w)); }
-      to   { transform: translateX(-100%); }
+      to   { transform: translateX(calc(-1 * var(--marquee-w))); }
     }
     /* Stopped, a long row wraps and stands still instead. */
     .announcements.still .announcement.marquee { white-space: normal; }
@@ -538,7 +540,10 @@
     function layoutAnnouncements() {
       // Measured unwrapped, so a stopped row still counts as too wide.
       announcementsEl.classList.remove('still');
-      let anyLong = false;
+      // Measure every row before marking any, then give the long rows one shared
+      // cycle so they stay in step (issue #122).
+      const long = [];
+      let widest = 0;
       for (const row of announcementRowsEl.children) {
         const text = row.firstChild;
         row.classList.remove('marquee');
@@ -547,12 +552,17 @@
         const width = row.clientWidth
           - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
         if (text.scrollWidth > width) {
-          anyLong = true;
-          row.classList.add('marquee');
-          row.style.setProperty('--row-w', width + 'px');
-          row.style.setProperty('--marquee-s', ((width + text.scrollWidth) / MARQUEE_PX_PER_S) + 's');
+          long.push({ row, width });
+          widest = Math.max(widest, text.scrollWidth);
         }
       }
+      for (const { row, width } of long) {
+        row.classList.add('marquee');
+        row.style.setProperty('--row-w', width + 'px');
+        row.style.setProperty('--marquee-w', widest + 'px');
+        row.style.setProperty('--marquee-s', ((width + widest) / MARQUEE_PX_PER_S) + 's');
+      }
+      const anyLong = long.length > 0;
       announcementsEl.classList.toggle('still', announcementsStill);
       announceMotionEl.hidden = !anyLong;
       announceMotionEl.setAttribute('aria-pressed', String(announcementsStill));
