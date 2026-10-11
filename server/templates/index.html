@@ -89,22 +89,28 @@
     .mode-qualifying { background: var(--purple); color: #fff; }
 
     .heartbeat {
-      font-size: 1.3rem;
+      display: inline-flex;
+      gap: 0.2em;
+      margin-left: 0.5rem;
+      font-size: 1rem;
       line-height: 1;
       user-select: none;
-      transition: transform 0.1s ease, color 0.1s ease;
       color: var(--highlight);
+    }
+    .heartbeat span {
       display: inline-block;
+      opacity: 0.18;
     }
-    @keyframes pulse {
-      0%   { transform: scale(1);    color: var(--highlight); }
-      30%  { transform: scale(1.5);  color: #ff6b8a; }
-      60%  { transform: scale(0.95); color: var(--highlight); }
-      100% { transform: scale(1);    color: var(--highlight); }
+    @keyframes wave {
+      0%        { opacity: 0.18; transform: translateY(0) scale(1); }
+      30%       { opacity: 1;    transform: translateY(-0.18em) scale(1.25); }
+      65%, 100% { opacity: 0.18; transform: translateY(0) scale(1); }
     }
-    .heartbeat.beating {
-      animation: pulse 0.4s ease forwards;
+    .heartbeat.beating span {
+      animation: wave 1.2s ease-in-out forwards;
     }
+    .heartbeat.beating span:nth-child(2) { animation-delay: 0.22s; }
+    .heartbeat.beating span:nth-child(3) { animation-delay: 0.44s; }
 
     .connection-status {
       position: fixed;
@@ -215,6 +221,8 @@
       .announcement.marquee { white-space: normal; }
       .announcement.marquee .announcement-text { animation: none; max-width: 100%; }
       .announce-motion { display: none; }
+      .heartbeat span { opacity: 1; }
+      .heartbeat.beating span { animation: none; }
     }
     .visually-hidden {
       position: absolute;
@@ -338,10 +346,10 @@
     @media (max-width: 768px) {
       header {
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 1fr auto auto;
         grid-template-areas:
-          "title pills"
-          "meta  meta";
+          "title beat pills"
+          "meta  meta meta";
         gap: 0.25rem 0.5rem;
         align-items: center;
         padding: 0.5rem 1rem;
@@ -349,6 +357,7 @@
       header h1 { grid-area: title; }
       .header-right { display: contents; }
       .pills-column { grid-area: pills; flex-direction: row; gap: 0.4rem; align-items: center; }
+      .heartbeat { grid-area: beat; margin-left: 0; }
       .status-bar { grid-area: meta; gap: 0.6rem; font-size: 0.8rem; padding-top: 0.1rem; }
       main { padding: 0.25rem 0.5rem calc(0.25rem + var(--announce-h, 0px)); }
       td, th { padding: 0.3rem 0.4rem; font-size: 0.8rem; }
@@ -383,8 +392,8 @@
         <span id="time-to-go-wrap"><span class="label">Time To Go:</span> <span id="time-to-go">—</span></span>
         <span id="laps-to-go-wrap"><span class="label">Laps To Go:</span> <span id="laps-to-go">—</span></span>
         <span id="class-code-missing-wrap" hidden><span class="label">Without class code:</span> <span id="class-code-missing">0</span></span>
-        <span id="heartbeat" class="heartbeat" title="Data heartbeat">♥</span>
       </div>
+      <span id="heartbeat" class="heartbeat" title="Data heartbeat"><span>•</span><span>•</span><span>•</span></span>
     </div>
   </header>
   <main>
@@ -439,9 +448,11 @@
     const classCodeMissingWrapEl = document.getElementById('class-code-missing-wrap');
     const flagEl = document.getElementById('flag-badge');
     const heartbeatEl = document.getElementById('heartbeat');
-    // The ♥ means "data is flowing", not "a message arrived": messages land on the
-    // server's 0.25 s broadcast grid at irregular gaps, and pulsing on each restarted the
-    // 0.4 s animation mid-beat. So arrivals only raise a flag, and the beat samples it.
+    // The heartbeat dots mean "data is flowing", not "a message arrived": messages land
+    // on the server's 0.25 s broadcast grid at irregular gaps, and pulsing on each
+    // restarted the (then 0.4 s) animation mid-beat. So arrivals only raise a flag, and
+    // the beat samples it. The 1.2 s dot wave (last dot delayed 0.44 s) must finish
+    // inside HEARTBEAT_PERIOD_MS.
     const HEARTBEAT_PERIOD_MS = 2000;
     let dataArrived = false;
     function heartbeatTick() {

@@ -463,7 +463,7 @@ def test_an_outdated_page_prompts_rather_than_reloading_itself() -> None:
 
 
 def test_the_heartbeat_samples_arrivals_rather_than_pulsing_per_message() -> None:
-    """The page's heart beats on a fixed cadence while data flows, not once per message.
+    """The page's heartbeat fires on a fixed cadence while data flows, not once per message.
 
     Reported as the heart beating "randomly and extremely often". Messages land on the
     server's 0.25 s broadcast grid at irregular gaps -- measured over the committed
@@ -471,7 +471,7 @@ def test_the_heartbeat_samples_arrivals_rather_than_pulsing_per_message() -> Non
     0.4 s pulse animation, so pulsing per message restarted the animation mid-beat at
     no steady rhythm. Arrivals now only raise a flag, and one interval samples it.
 
-    ``no_feed`` deliberately raises no flag, so the heart does not beat as the no-feed
+    ``no_feed`` deliberately raises no flag, so the heartbeat does not fire as the no-feed
     notice appears. The interval is started once at top level rather than in
     ``connect()``, which reruns on every reconnect and would stack another interval
     each time, quickening the beat.
@@ -482,7 +482,7 @@ def test_the_heartbeat_samples_arrivals_rather_than_pulsing_per_message() -> Non
     first, last = _js_block(lines, "ws.onmessage")
     body = "\n".join(lines[first - 1 : last])
     assert "beating" not in body and "offsetWidth" not in body, (
-        "ws.onmessage pulses the heart directly again; it must only raise dataArrived"
+        "ws.onmessage pulses the heartbeat directly again; it must only raise dataArrived"
     )
 
     tick_first, tick_last = _js_block(lines, "function heartbeatTick()")
@@ -492,7 +492,7 @@ def test_the_heartbeat_samples_arrivals_rather_than_pulsing_per_message() -> Non
         if "classList.add('beating')" in line
     ]
     assert len(adds) == 1 and tick_first < adds[0] < tick_last, (
-        f"the heart must be pulsed only from heartbeatTick, found pulses at {adds}"
+        f"the heartbeat must be pulsed only from heartbeatTick, found pulses at {adds}"
     )
 
     connect_first, connect_last = _js_block(lines, "function connect()")
